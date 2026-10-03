@@ -158,8 +158,14 @@ fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Opt
             Some(path),
         );
         tool.runtime = runtime.clone();
-        tool.can_update = ["npm", "pnpm"].contains(&source);
-        tool.can_remove = tool.can_update && !["npm", "pnpm", "corepack", "yarn"].contains(&name);
+        let linked = tool
+            .path
+            .as_ref()
+            .and_then(|p| std::fs::symlink_metadata(p).ok())
+            .is_some_and(|m| m.file_type().is_symlink());
+        tool.can_update = ["npm", "pnpm"].contains(&source) && !(source == "npm" && linked);
+        tool.can_remove = ["npm", "pnpm"].contains(&source)
+            && !["npm", "pnpm", "corepack", "yarn"].contains(&name);
         tool.note = manifest["description"].as_str().map(str::to_owned);
         provider.tools.push(tool);
     }

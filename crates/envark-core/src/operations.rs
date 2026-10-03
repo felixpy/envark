@@ -99,6 +99,10 @@ enum Step {
         command: CommandSpec,
     },
     Command(CommandSpec),
+    Tool {
+        tool: crate::model::Tool,
+        command: CommandSpec,
+    },
 }
 
 pub struct Plan {
@@ -144,14 +148,18 @@ fn eligible_project(project: &Project, settings: &Settings) -> Result<()> {
     Ok(())
 }
 
-fn command_item(title: String, command: CommandSpec, view: &mut PlanView, steps: &mut Vec<Step>) {
-    view.items.push(PlanItem {
+fn command_description(title: String, command: &CommandSpec) -> PlanItem {
+    PlanItem {
         title,
         path: None,
         command: Some(command.display()),
         bytes: 0,
         restore: None,
-    });
+    }
+}
+
+fn command_item(title: String, command: CommandSpec, view: &mut PlanView, steps: &mut Vec<Step>) {
+    view.items.push(command_description(title, &command));
     steps.push(Step::Command(command));
 }
 
@@ -315,12 +323,18 @@ pub fn prepare(
                     "This installation must be managed with its original installer.".into(),
                 ));
             }
-            command_item(
+            let command = providers::tool_command(ctx, tool, remove)?;
+            view.items.push(command_description(
                 format!("{} {}", if remove { "Remove" } else { "Update" }, tool.name),
-                providers::tool_command(ctx, tool, remove)?,
-                &mut view,
-                &mut steps,
-            );
+                &command,
+            ));
+            steps.push(Step::Tool {
+                tool: tool.clone(),
+                command,
+            });
+            if !remove {
+                view.warnings.push(format!("{} will be updated by {}. Updates can include breaking changes and may update its dependencies.", tool.name, tool.source));
+            }
         }
         ActionRequest::RemoveAssets { provider, ids } => {
             let owner = inventory
@@ -472,6 +486,45 @@ async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Resul
     ))
 }
 
+async fn run_tool(
+    ctx: &Context,
+    tool: crate::model::Tool,
+    command: CommandSpec,
+) -> Result<(u64, String)> {
+    if tool.source == "pnpm" {
+        let path = tool.path.as_ref().ok_or_else(|| {
+            Error::Conflict("The tool no longer has an installation path.".into())
+        })?;
+        let root = if tool.name.starts_with('@') {
+            path.parent().and_then(Path::parent)
+        } else {
+            path.parent()
+        }
+        .ok_or_else(|| Error::Conflict("The tool no longer has an installation root.".into()))?;
+        let mut probe = ctx.command("pnpm", &["root", "--global"])?;
+        probe.cwd = command.cwd.clone();
+        probe.env = command.env.clone();
+        let output = ctx.runner.run(&probe, &ctx.cancel).await?;
+        let current = output
+            .stdout
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|line| Path::new(line).is_absolute())
+            .find_map(|line| std::fs::canonicalize(line).ok());
+        if probe.program != command.program
+            || current.as_ref() != Some(&std::fs::canonicalize(root)?)
+        {
+            return Err(Error::Conflict(
+                "The pnpm global installation changed. Refresh before updating or removing tools."
+                    .into(),
+            ));
+        }
+    }
+    let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    Ok((0, output.stdout.trim().chars().take(4000).collect()))
+}
+
 pub async fn execute(
     plan: Plan,
     settings: Settings,
@@ -503,6 +556,7 @@ pub async fn execute(
             message: title.clone(),
         });
         let outcome = match step {
+            Step::Tool { tool, command } => run_tool(&ctx, tool, command).await,
             Step::Command(command) => ctx.runner.run(&command, &ctx.cancel).await.map(|output| {
                 (
                     0,

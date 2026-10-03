@@ -230,8 +230,11 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                     "cargo",
                     None,
                 );
-                tool.can_update = true;
+                tool.can_update = !line.contains('(');
                 tool.can_remove = true;
+                if !tool.can_update {
+                    tool.note = Some("Update this Git, path, or alternate source installation with its original install specification.".into());
+                }
                 provider.tools.push(tool);
             }
         }
@@ -328,9 +331,24 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                 if let Some(module) = module {
                     let fields: Vec<_> = module.split_whitespace().collect();
                     if fields.len() >= 2 {
-                        let mut tool = basic_tool(fields[0], fields[1].into(), "go", Some(path));
-                        tool.can_update = false;
-                        tool.note = Some("The module and command import paths can differ; ownership is displayed without guessing an update target.".into());
+                        let command = info
+                            .lines()
+                            .map(str::trim)
+                            .find_map(|line| line.strip_prefix("path\t"))
+                            .map(str::trim);
+                        let name = command.unwrap_or(fields[0]);
+                        let verified =
+                            command.is_some_and(|name| {
+                                name.rsplit('/').next() == path.file_stem().and_then(|p| p.to_str())
+                            }) && !info.lines().any(|line| line.trim_start().starts_with("=>"))
+                                && fields[1] != "(devel)";
+                        let mut tool = basic_tool(name, fields[1].into(), "go", Some(path));
+                        tool.can_update = verified;
+                        tool.note = Some(if verified {
+                            format!("Verified command import path; module {}.", fields[0])
+                        } else {
+                            "Local builds, replaced modules, and renamed executables remain read-only.".into()
+                        });
                         provider.tools.push(tool);
                     }
                 }

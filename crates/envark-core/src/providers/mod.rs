@@ -1,6 +1,8 @@
 mod javascript;
 mod languages;
 mod resources;
+mod tool_commands;
+pub use tool_commands::tool_command;
 pub mod updates;
 
 use crate::{
@@ -10,10 +12,7 @@ use crate::{
     process::{CommandSpec, Runner},
 };
 use directories::BaseDirs;
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -250,13 +249,23 @@ pub(super) fn directories(path: &Path) -> Vec<PathBuf> {
 }
 
 pub(super) fn package_manifests(root: &Path) -> Vec<(PathBuf, serde_json::Value)> {
+    fn packages(root: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect()
+    }
     let mut paths = vec![];
-    for path in directories(root) {
+    for path in packages(root) {
         if path
             .file_name()
             .is_some_and(|n| n.to_string_lossy().starts_with('@'))
         {
-            paths.extend(directories(&path));
+            paths.extend(packages(&path));
         } else {
             paths.push(path);
         }
@@ -394,70 +403,4 @@ pub fn cache_probe(cache: &Cache, command: &CommandSpec) -> Option<CommandSpec> 
     *probe.args.iter_mut().find(|a| *a == action)? = replacement.into();
     probe.timeout = std::time::Duration::from_secs(20);
     Some(probe)
-}
-
-pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> {
-    valid_identifier(&tool.name)?;
-    let mut spec = match tool.source.as_str() {
-        "npm" | "pnpm" => {
-            let mut spec = ctx.command(
-                &tool.source,
-                &[
-                    if remove { "uninstall" } else { "install" },
-                    "--global",
-                    &tool.name,
-                ],
-            )?;
-            if let Some(path) = &tool.path
-                && tool.source == "npm"
-            {
-                let root = if tool.name.starts_with('@') {
-                    path.parent().and_then(Path::parent)
-                } else {
-                    path.parent()
-                }
-                .ok_or_else(|| Error::InvalidInput("Missing global installation root.".into()))?;
-                let prefix = if cfg!(windows) {
-                    root.parent()
-                } else {
-                    root.parent().and_then(Path::parent)
-                }
-                .ok_or_else(|| Error::InvalidInput("Missing global prefix.".into()))?;
-                spec.args
-                    .extend(["--prefix".into(), prefix.to_string_lossy().into_owned()]);
-            }
-            spec
-        }
-        "uv" => ctx.command(
-            "uv",
-            &[
-                "tool",
-                if remove { "uninstall" } else { "upgrade" },
-                &tool.name,
-            ],
-        )?,
-        "pipx" => ctx.command(
-            "pipx",
-            &[if remove { "uninstall" } else { "upgrade" }, &tool.name],
-        )?,
-        "cargo" => ctx.command(
-            "cargo",
-            &[if remove { "uninstall" } else { "install" }, &tool.name],
-        )?,
-        "go" if !remove => ctx.command("go", &["install", &format!("{}@latest", tool.name)])?,
-        _ => {
-            return Err(Error::Unavailable(
-                "The owner of this installation does not expose a supported operation.".into(),
-            ));
-        }
-    };
-    spec.timeout = std::time::Duration::from_secs(1800);
-    Ok(spec)
-}
-
-pub fn installed_map(providers: &[Provider]) -> HashMap<String, String> {
-    providers
-        .iter()
-        .flat_map(|p| p.tools.iter().map(|t| (t.id.clone(), t.version.clone())))
-        .collect()
 }
