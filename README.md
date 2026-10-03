@@ -28,6 +28,8 @@ pnpm desktop:build
 
 Run `pnpm locales` after adding interface strings. Traditional Chinese is generated at development time, keeping conversion dictionaries out of the application bundle. Source identifiers, comments, and contributor documentation use English.
 
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). After installing dependencies, run `pnpm prepare` to enable the local `commit-msg` check; CI validates new commits and pull request titles. See [CONTRIBUTING.md](CONTRIBUTING.md) for examples and commit scope guidance.
+
 ## Structure
 
 | Directory            | Responsibility                                                                  |

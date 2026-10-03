@@ -1,6 +1,7 @@
 # Envark contributor instructions
 
 - Keep source code, comments, identifiers, commit messages, and technical documentation in English.
+- Follow Conventional Commits and the guidance in CONTRIBUTING.md. Keep each commit focused on one logical change with its relevant tests; separate unrelated fixes, refactors, and formatting.
 - Preserve the Figma Make design while replacing prototype data and simulated actions with real desktop services.
 - Keep provider integrations independent from the interface. New providers should declare capabilities rather than require new page structures.
 - Perform filesystem traversal and process execution in the Rust core, away from the UI thread.
