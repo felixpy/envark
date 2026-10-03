@@ -15,19 +15,19 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
 }
 
 async fn ollama(ctx: &Context, provider: &mut Provider) {
-    if let Ok(version) = ctx.read("ollama", &["--version"]).await {
-        if let Some(path) = ctx.executable("ollama") {
-            provider.runtimes.push(Runtime {
-                id: id_for("runtime", &path),
-                version: version.trim().into(),
-                manager: "system".into(),
-                path,
-                active: true,
-                managed: false,
-                size: None,
-                note: Some("Use the Ollama installer to update the application.".into()),
-            });
-        }
+    if let Ok(version) = ctx.read("ollama", &["--version"]).await
+        && let Some(path) = ctx.executable("ollama")
+    {
+        provider.runtimes.push(Runtime {
+            id: id_for("runtime", &path),
+            version: version.trim().into(),
+            manager: "system".into(),
+            path,
+            active: true,
+            managed: false,
+            size: None,
+            note: Some("Use the Ollama installer to update the application.".into()),
+        });
     }
     let models_root = std::env::var_os("OLLAMA_MODELS")
         .map(PathBuf::from)
@@ -50,14 +50,14 @@ async fn ollama(ctx: &Context, provider: &mut Provider) {
         endpoint: "http://127.0.0.1:11434".into(),
     });
     if let Ok(response) = response {
-        if let Ok(data) = response.json::<serde_json::Value>().await {
-            if let Some(models) = data["models"].as_array() {
-                for model in models {
-                    let Some(name) = model["name"].as_str() else {
-                        continue;
-                    };
-                    provider.assets.push(Asset { id: format!("ollama:{name}"), name: name.into(), version: model["digest"].as_str().unwrap_or_default().chars().take(12).collect(), path: models_root.clone(), size: crate::model::Measurement { bytes: model["size"].as_u64().unwrap_or(0), complete: true, ..Default::default() }, last_used: None, modified: None, used_by: vec![], can_remove: true, note: Some("Model layers may be shared. Reported size is logical size; actual reclaimed space can be smaller.".into()) });
-                }
+        if let Ok(data) = response.json::<serde_json::Value>().await
+            && let Some(models) = data["models"].as_array()
+        {
+            for model in models {
+                let Some(name) = model["name"].as_str() else {
+                    continue;
+                };
+                provider.assets.push(Asset { id: format!("ollama:{name}"), name: name.into(), version: model["digest"].as_str().unwrap_or_default().chars().take(12).collect(), path: models_root.clone(), size: crate::model::Measurement { bytes: model["size"].as_u64().unwrap_or(0), complete: true, ..Default::default() }, last_used: None, modified: None, used_by: vec![], can_remove: true, note: Some("Model layers may be shared. Reported size is logical size; actual reclaimed space can be smaller.".into()) });
             }
         }
     } else if models_root.exists() {

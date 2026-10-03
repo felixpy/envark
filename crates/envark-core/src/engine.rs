@@ -301,15 +301,15 @@ impl Engine {
                     result.freed_bytes,
                 )
                 .await?;
-                if !token.is_cancelled() {
-                    if let Err(error) = self.refresh_inner(&job_id, token, progress).await {
-                        self.state
-                            .write()
-                            .await
-                            .inventory
-                            .issues
-                            .push(format!("Refresh after operation: {error}"));
-                    }
+                if !token.is_cancelled()
+                    && let Err(error) = self.refresh_inner(&job_id, token, progress).await
+                {
+                    self.state
+                        .write()
+                        .await
+                        .inventory
+                        .issues
+                        .push(format!("Refresh after operation: {error}"));
                 }
             }
             Err(error) => {

@@ -51,13 +51,13 @@ pub fn reject_links(path: &Path) -> Result<()> {
     let mut current = std::path::PathBuf::new();
     for part in path.components() {
         current.push(part.as_os_str());
-        if let Ok(meta) = fs::symlink_metadata(&current) {
-            if is_link(&meta) {
-                return Err(Error::unsafe_path(
-                    &current,
-                    "symbolic links and junctions are not eligible",
-                ));
-            }
+        if let Ok(meta) = fs::symlink_metadata(&current)
+            && is_link(&meta)
+        {
+            return Err(Error::unsafe_path(
+                &current,
+                "symbolic links and junctions are not eligible",
+            ));
         }
     }
     Ok(())

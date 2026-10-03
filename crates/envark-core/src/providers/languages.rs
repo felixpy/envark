@@ -136,30 +136,29 @@ async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             }
         }
     }
-    if let Ok(output) = ctx.read("pipx", &["list", "--json"]).await {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&output) {
-            if let Some(venvs) = json["venvs"].as_object() {
-                for (name, entry) in venvs {
-                    let mut tool = basic_tool(
-                        name,
-                        entry["metadata"]["main_package"]["package_version"]
-                            .as_str()
-                            .unwrap_or("unknown")
-                            .into(),
-                        "pipx",
-                        None,
-                    );
-                    tool.can_update = true;
-                    tool.can_remove = true;
-                    provider.tools.push(tool);
-                }
-            }
+    if let Ok(output) = ctx.read("pipx", &["list", "--json"]).await
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&output)
+        && let Some(venvs) = json["venvs"].as_object()
+    {
+        for (name, entry) in venvs {
+            let mut tool = basic_tool(
+                name,
+                entry["metadata"]["main_package"]["package_version"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .into(),
+                "pipx",
+                None,
+            );
+            tool.can_update = true;
+            tool.can_remove = true;
+            provider.tools.push(tool);
         }
     }
-    if let Some(path) = ctx.cache_path("uv", &["cache", "dir"]).await {
-        if let Some(item) = cache(ProviderId::Py, "uv", path, "uv-prune", true) {
-            caches.push(item);
-        }
+    if let Some(path) = ctx.cache_path("uv", &["cache", "dir"]).await
+        && let Some(item) = cache(ProviderId::Py, "uv", path, "uv-prune", true)
+    {
+        caches.push(item);
     }
     let pip_path = if cfg!(windows) {
         ctx.home.join("AppData/Local/pip/Cache")
@@ -312,28 +311,27 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                 .and_then(|p| std::env::split_paths(p).next())
                 .map(|p| p.join("bin"))
         });
-    if let Some(bin) = bin {
-        if let Ok(entries) = std::fs::read_dir(&bin) {
-            for entry in entries.flatten().take(1000) {
-                if !entry.file_type().is_ok_and(|t| t.is_file()) {
-                    continue;
-                }
-                let path = entry.path();
-                let text_path = path.to_string_lossy();
-                if let Ok(info) = ctx.read("go", &["version", "-m", &text_path]).await {
-                    let module = info
-                        .lines()
-                        .map(str::trim)
-                        .find_map(|line| line.strip_prefix("mod\t"));
-                    if let Some(module) = module {
-                        let fields: Vec<_> = module.split_whitespace().collect();
-                        if fields.len() >= 2 {
-                            let mut tool =
-                                basic_tool(fields[0], fields[1].into(), "go", Some(path));
-                            tool.can_update = false;
-                            tool.note = Some("The module and command import paths can differ; ownership is displayed without guessing an update target.".into());
-                            provider.tools.push(tool);
-                        }
+    if let Some(bin) = bin
+        && let Ok(entries) = std::fs::read_dir(&bin)
+    {
+        for entry in entries.flatten().take(1000) {
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                continue;
+            }
+            let path = entry.path();
+            let text_path = path.to_string_lossy();
+            if let Ok(info) = ctx.read("go", &["version", "-m", &text_path]).await {
+                let module = info
+                    .lines()
+                    .map(str::trim)
+                    .find_map(|line| line.strip_prefix("mod\t"));
+                if let Some(module) = module {
+                    let fields: Vec<_> = module.split_whitespace().collect();
+                    if fields.len() >= 2 {
+                        let mut tool = basic_tool(fields[0], fields[1].into(), "go", Some(path));
+                        tool.can_update = false;
+                        tool.note = Some("The module and command import paths can differ; ownership is displayed without guessing an update target.".into());
+                        provider.tools.push(tool);
                     }
                 }
             }
@@ -363,13 +361,13 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if cfg!(target_os = "linux") {
         roots.extend(directories(Path::new("/usr/lib/jvm")));
     }
-    if cfg!(windows) {
-        if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            roots.extend(directories(&PathBuf::from(&program_files).join("Java")));
-            roots.extend(directories(
-                &PathBuf::from(program_files).join("Eclipse Adoptium"),
-            ));
-        }
+    if cfg!(windows)
+        && let Some(program_files) = std::env::var_os("ProgramFiles")
+    {
+        roots.extend(directories(&PathBuf::from(&program_files).join("Java")));
+        roots.extend(directories(
+            &PathBuf::from(program_files).join("Eclipse Adoptium"),
+        ));
     }
     if let Some(home) = std::env::var_os("JAVA_HOME") {
         roots.push(PathBuf::from(home));

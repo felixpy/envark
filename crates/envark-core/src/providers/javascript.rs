@@ -89,11 +89,11 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             add_packages(provider, &modules, "npm", Some(format!("Node {version}")));
         }
     }
-    if let (Some(path), Some(version)) = (active_path, active_version) {
-        if !provider.runtimes.iter().any(|r| r.active) {
-            let root = path.parent().unwrap_or(&path).to_path_buf();
-            provider.runtimes.push(Runtime { id: id_for("runtime", &path), version, manager: "PATH".into(), path: root, active: true, managed: false, size: None, note: Some("The installation owner is unknown; manage this runtime with its original installer.".into()) });
-        }
+    if let (Some(path), Some(version)) = (active_path, active_version)
+        && !provider.runtimes.iter().any(|r| r.active)
+    {
+        let root = path.parent().unwrap_or(&path).to_path_buf();
+        provider.runtimes.push(Runtime { id: id_for("runtime", &path), version, manager: "PATH".into(), path: root, active: true, managed: false, size: None, note: Some("The installation owner is unknown; manage this runtime with its original installer.".into()) });
     }
     for manager in ["npm", "pnpm", "yarn", "bun", "corepack"] {
         if let Ok(version) = ctx.read(manager, &["--version"]).await {
@@ -128,10 +128,10 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         ("pnpm", vec!["store", "path"], "pnpm-prune"),
         ("yarn", vec!["cache", "dir"], "yarn-clean"),
     ] {
-        if let Some(path) = ctx.cache_path(manager, &args).await {
-            if let Some(found) = cache(ProviderId::Js, manager, path, strategy, true) {
-                caches.push(found);
-            }
+        if let Some(path) = ctx.cache_path(manager, &args).await
+            && let Some(found) = cache(ProviderId::Js, manager, path, strategy, true)
+        {
+            caches.push(found);
         }
     }
     config(provider, ctx.home.join(".npmrc"), "ini", true);

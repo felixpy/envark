@@ -77,26 +77,26 @@ impl Context {
             ))
         })?;
         // Use Node directly for npm, avoiding cmd.exe and shell metacharacters on Windows.
-        if name == "npm" {
-            if let Some(node) = self.executable("node") {
-                let mut roots = vec![
-                    program.parent().unwrap_or(Path::new(".")).to_path_buf(),
-                    node.parent().unwrap_or(Path::new(".")).to_path_buf(),
-                ];
-                if let Ok(real) = std::fs::canonicalize(&program) {
-                    roots.push(real.parent().unwrap_or(Path::new(".")).to_path_buf());
-                }
-                for root in roots {
-                    for candidate in [
-                        root.join("node_modules/npm/bin/npm-cli.js"),
-                        root.join("../lib/node_modules/npm/bin/npm-cli.js"),
-                    ] {
-                        if candidate.is_file() {
-                            let mut spec =
-                                CommandSpec::new(node, [candidate.to_string_lossy().into_owned()]);
-                            spec.args.extend(args.iter().map(|s| s.to_string()));
-                            return Ok(spec);
-                        }
+        if name == "npm"
+            && let Some(node) = self.executable("node")
+        {
+            let mut roots = vec![
+                program.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                node.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            ];
+            if let Ok(real) = std::fs::canonicalize(&program) {
+                roots.push(real.parent().unwrap_or(Path::new(".")).to_path_buf());
+            }
+            for root in roots {
+                for candidate in [
+                    root.join("node_modules/npm/bin/npm-cli.js"),
+                    root.join("../lib/node_modules/npm/bin/npm-cli.js"),
+                ] {
+                    if candidate.is_file() {
+                        let mut spec =
+                            CommandSpec::new(node, [candidate.to_string_lossy().into_owned()]);
+                        spec.args.extend(args.iter().map(|s| s.to_string()));
+                        return Ok(spec);
                     }
                 }
             }
@@ -374,25 +374,23 @@ pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandS
                     &tool.name,
                 ],
             )?;
-            if let Some(path) = &tool.path {
-                if tool.source == "npm" {
-                    let root = if tool.name.starts_with('@') {
-                        path.parent().and_then(Path::parent)
-                    } else {
-                        path.parent()
-                    }
-                    .ok_or_else(|| {
-                        Error::InvalidInput("Missing global installation root.".into())
-                    })?;
-                    let prefix = if cfg!(windows) {
-                        root.parent()
-                    } else {
-                        root.parent().and_then(Path::parent)
-                    }
-                    .ok_or_else(|| Error::InvalidInput("Missing global prefix.".into()))?;
-                    spec.args
-                        .extend(["--prefix".into(), prefix.to_string_lossy().into_owned()]);
+            if let Some(path) = &tool.path
+                && tool.source == "npm"
+            {
+                let root = if tool.name.starts_with('@') {
+                    path.parent().and_then(Path::parent)
+                } else {
+                    path.parent()
                 }
+                .ok_or_else(|| Error::InvalidInput("Missing global installation root.".into()))?;
+                let prefix = if cfg!(windows) {
+                    root.parent()
+                } else {
+                    root.parent().and_then(Path::parent)
+                }
+                .ok_or_else(|| Error::InvalidInput("Missing global prefix.".into()))?;
+                spec.args
+                    .extend(["--prefix".into(), prefix.to_string_lossy().into_owned()]);
             }
             spec
         }

@@ -229,10 +229,10 @@ pub fn scan(
             let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
-                    if let Some(path) = e.path() {
-                        if let Some(owner) = path.ancestors().find_map(|p| index.get(p).copied()) {
-                            result.projects[owner].activity_complete = false;
-                        }
+                    if let Some(path) = e.path()
+                        && let Some(owner) = path.ancestors().find_map(|p| index.get(p).copied())
+                    {
+                        result.projects[owner].activity_complete = false;
                     }
                     if result.issues.len() < 100 {
                         result.issues.push(e.to_string());
@@ -298,23 +298,23 @@ pub fn scan(
                         artifacts: found,
                     });
                 }
-            } else if meta.is_file() {
-                if let Some(owner) = path.parent().and_then(|p| {
+            } else if meta.is_file()
+                && let Some(owner) = path.parent().and_then(|p| {
                     p.ancestors()
                         .find_map(|ancestor| index.get(ancestor).copied())
-                }) {
-                    let project = &mut result.projects[owner];
-                    match meta
-                        .modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|t| t.as_secs())
-                    {
-                        Some(time) => {
-                            project.last_active = Some(project.last_active.unwrap_or(0).max(time))
-                        }
-                        None => project.activity_complete = false,
+                })
+            {
+                let project = &mut result.projects[owner];
+                match meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|t| t.as_secs())
+                {
+                    Some(time) => {
+                        project.last_active = Some(project.last_active.unwrap_or(0).max(time))
                     }
+                    None => project.activity_complete = false,
                 }
             }
             if last_report.elapsed().as_millis() >= 150 {
@@ -398,7 +398,10 @@ mod tests {
     fn finds_projects_without_entering_dependencies_and_deduplicates_roots() {
         let root = fixture();
         let settings = Settings {
-            roots: vec![root.path().into(), root.path().join("frontend")],
+            roots: vec![
+                fs::canonicalize(root.path()).unwrap(),
+                fs::canonicalize(root.path().join("frontend")).unwrap(),
+            ],
             excludes: vec!["excluded".into()],
             ..Settings::default()
         };
@@ -428,7 +431,7 @@ mod tests {
         assert!(matches!(
             scan(
                 &Settings {
-                    roots: vec![root.path().into()],
+                    roots: vec![fs::canonicalize(root.path()).unwrap()],
                     ..Settings::default()
                 },
                 &cancel,
