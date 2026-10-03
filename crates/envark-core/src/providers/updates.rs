@@ -50,14 +50,22 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
             let cancel = cancel.clone();
             jobs.spawn(async move {
                 let request = async {
-                    let response = client.get(url).send().await.ok()?.error_for_status().ok()?;
+                    let mut response =
+                        client.get(url).send().await.ok()?.error_for_status().ok()?;
                     if response
                         .content_length()
                         .is_some_and(|length| length > 2_097_152)
                     {
                         return None;
                     }
-                    let data = response.json::<serde_json::Value>().await.ok()?;
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = response.chunk().await.ok()? {
+                        if bytes.len().saturating_add(chunk.len()) > 2_097_152 {
+                            return None;
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    let data = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
                     let value = field.split('.').fold(&data, |value, key| &value[key]);
                     Some((id, value.as_str()?.to_owned()))
                 };
