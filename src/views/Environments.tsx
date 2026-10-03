@@ -228,7 +228,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                     <TableCell>
                       <div className="flex items-center gap-2 font-mono">
                         {runtime.version}
-                        {runtime.active && <Badge>{t('默认', 'Default')}</Badge>}
+                        {runtime.active && <Badge>{t('当前环境', 'Current environment')}</Badge>}
                         {!runtime.managed && (
                           <Badge variant="outline">{t('只读', 'Read-only')}</Badge>
                         )}
@@ -249,13 +249,18 @@ export default function Environments({ id }: { id: ProviderId }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={runtime.active || !runtime.managed || s.busy}
+                          disabled={
+                            !runtime.managed ||
+                            !provider.managers.some(
+                              (manager) =>
+                                manager.name === runtime.manager && manager.supportsDefault,
+                            ) ||
+                            s.busy
+                          }
                           onClick={() => operation('setDefault', runtime.id)}
                         >
-                          {runtime.active ? <Check /> : <Star />}
-                          {runtime.active
-                            ? t('当前默认', 'Current default')
-                            : t('设为默认', 'Set default')}
+                          <Star />
+                          {t('设为默认', 'Set default')}
                         </Button>
                         <Button
                           variant="outline"

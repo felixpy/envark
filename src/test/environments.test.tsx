@@ -79,3 +79,40 @@ it('bulk resource removal excludes resources with incomplete size scans', async 
     }),
   )
 })
+
+it('does not mistake an inherited active runtime for the manager default', async () => {
+  const provider = emptyProvider('js')
+  provider.managers = [
+    {
+      name: 'fnm',
+      version: 'test',
+      path: '/example/fnm',
+      supportsInstall: true,
+      supportsDefault: true,
+    },
+  ]
+  provider.runtimes = [
+    {
+      id: 'runtime',
+      version: '24.0.0',
+      manager: 'fnm',
+      path: '/example/node',
+      active: true,
+      managed: true,
+      size: null,
+      note: null,
+    },
+  ]
+  const prepare = fixture(provider)
+  const user = userEvent.setup()
+  await screen.findByText('Current environment')
+  await user.click(screen.getByRole('button', { name: 'Set default' }))
+  await waitFor(() =>
+    expect(prepare).toHaveBeenCalledWith({
+      kind: 'setDefault',
+      provider: 'js',
+      id: 'runtime',
+    }),
+  )
+  expect((screen.getByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true)
+})

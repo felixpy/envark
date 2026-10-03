@@ -309,6 +309,8 @@ pub fn prepare(
                         view.warnings.push(format!("{} has runtime version pins. Verify compatibility before uninstalling.", project.path.display()));
                     }
                 }
+            } else {
+                view.warnings.push("This changes the manager's default. Already-open terminals and Envark may keep their inherited environment until restarted.".into());
             }
             command_item(
                 format!(
