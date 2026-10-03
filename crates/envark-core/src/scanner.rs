@@ -59,6 +59,35 @@ fn exclusions(settings: &Settings) -> Result<GlobSet> {
         .map_err(|e| Error::InvalidInput(e.to_string()))
 }
 
+pub(crate) fn canonical_roots(settings: &Settings) -> Result<Vec<PathBuf>> {
+    let mut roots = settings
+        .roots
+        .iter()
+        .map(fs::canonicalize)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    roots.sort();
+    roots.dedup();
+    let all = roots.clone();
+    roots.retain(|root| {
+        !all.iter()
+            .any(|other| root != other && root.starts_with(other))
+    });
+    Ok(roots)
+}
+
+pub(crate) fn project_in_scope(path: &Path, settings: &Settings) -> Result<bool> {
+    let ignored = exclusions(settings)?;
+    for root in canonical_roots(settings)? {
+        if path.starts_with(&root) {
+            return Ok(!path.ancestors().take_while(|p| *p != root).any(|p| {
+                p.file_name().is_some_and(|name| ignored.is_match(name))
+                    || ignored.is_match(p.strip_prefix(&root).unwrap_or(p))
+            }));
+        }
+    }
+    Ok(false)
+}
+
 fn providers_at(path: &Path) -> Vec<ProviderId> {
     let mut providers = vec![];
     for (provider, manifests) in [
@@ -194,19 +223,7 @@ pub fn scan(
     validate_settings(settings)?;
     let started = Instant::now();
     let ignored = exclusions(settings)?;
-    let mut roots = settings
-        .roots
-        .iter()
-        .map(fs::canonicalize)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    roots.sort();
-    roots.dedup();
-    let all_roots = roots.clone();
-    roots.retain(|root| {
-        !all_roots
-            .iter()
-            .any(|other| other != root && root.starts_with(other))
-    });
+    let roots = canonical_roots(settings)?;
     let protected: Vec<_> = settings
         .protected_projects
         .iter()

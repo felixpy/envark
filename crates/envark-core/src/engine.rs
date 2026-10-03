@@ -61,6 +61,7 @@ impl Engine {
         })?;
         scanner::validate_settings(&settings)?;
         self.storage.save_settings(&settings)?;
+        self.plans.lock().await.clear();
         let mut state = self.state.write().await;
         state.settings = settings;
         Ok(state.clone())

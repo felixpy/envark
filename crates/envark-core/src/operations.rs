@@ -7,7 +7,7 @@ use crate::{
     },
     process::CommandSpec,
     providers::{self, Context},
-    scanner::is_project_artifact,
+    scanner::{is_project_artifact, project_in_scope},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -125,24 +125,20 @@ pub struct OperationResult {
 
 fn eligible_project(project: &Project, settings: &Settings) -> Result<()> {
     reject_links(&project.path)?;
+    let canonical = std::fs::canonicalize(&project.path)?;
     if project.protected
         || settings
             .protected_projects
             .iter()
-            .any(|p| project.path.starts_with(p))
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .any(|p| canonical.starts_with(p))
     {
         return Err(Error::UnsafePath("A selected project is protected.".into()));
     }
-    let canonical = std::fs::canonicalize(&project.path)?;
-    let allowed = settings
-        .roots
-        .iter()
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .any(|root| canonical.starts_with(root));
-    if !allowed {
+    if !project_in_scope(&canonical, settings)? {
         return Err(Error::unsafe_path(
             &project.path,
-            "the project is outside the current scan roots",
+            "the project is outside the current scan scope or is excluded",
         ));
     }
     Ok(())
@@ -614,6 +610,46 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::{model::silent_progress, scanner};
+
+    #[tokio::test]
+    async fn cleanup_rechecks_protection_exclusions_and_scan_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let project = root_path.join("archived/project");
+        std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+        std::fs::write(project.join("package.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/pkg/code.js"), "generated").unwrap();
+        let settings = Settings {
+            roots: vec![root_path],
+            use_trash: false,
+            ..Default::default()
+        };
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let scan = scanner::scan(&settings, &ctx.cancel, silent_progress(), "test").unwrap();
+        let id = scan.projects[0].artifacts[0].id.clone();
+        let inventory = Inventory {
+            projects: scan.projects,
+            ..Default::default()
+        };
+        let mut excluded = settings.clone();
+        excluded.excludes.push("archived".into());
+        let mut protected = settings.clone();
+        protected.protected_projects.push(project.clone());
+        let mut removed_root = settings.clone();
+        removed_root.roots.clear();
+        for changed in [excluded, protected, removed_root] {
+            let request = ActionRequest::CleanProjects {
+                artifact_ids: vec![id.clone()],
+            };
+            assert!(prepare(request.clone(), &inventory, &changed, &ctx).is_err());
+            let plan = prepare(request, &inventory, &settings, &ctx).unwrap();
+            let result = execute(plan, changed, ctx.clone(), silent_progress(), "test".into())
+                .await
+                .unwrap();
+            assert_eq!(result.items[0].status, "failed");
+            assert!(project.join("node_modules/pkg/code.js").is_file());
+        }
+    }
 
     #[tokio::test]
     async fn cleanup_preserves_source_and_rejects_changed_content() {
