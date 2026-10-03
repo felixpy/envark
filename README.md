@@ -6,7 +6,7 @@ Envark uses a React interface based on the supplied Figma Make design and a stan
 
 ## Development
 
-Use an existing stable Rust toolchain, Node.js 24, and pnpm 11.19.0. Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
+Use an existing Rust toolchain (1.99 or newer), Node.js 24, and pnpm 11.19.0. Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -14,6 +14,8 @@ pnpm desktop
 ```
 
 `pnpm dev` opens the interface in a browser. Browser mode clearly identifies itself and does not read or modify the host filesystem. Native operations require the desktop application.
+
+For populated-screen development checks, open `/preview.html` on the development server. It uses clearly labeled synthetic fixtures, rejects host operations, and is excluded from production builds.
 
 ```sh
 pnpm check
@@ -42,6 +44,7 @@ Provider adapters discover installation owners and supported capabilities. Unkno
 
 - Project scanning prunes dependency and build trees before discovering nested projects. Directory measurement uses at most four workers. Child process concurrency is bounded independently.
 - Scans support cancellation and report inaccessible paths. Unknown activity is never classified as inactivity.
+- Native file notifications allow reuse of unchanged roots for up to 60 seconds. Cleanup always remeasures its targets.
 - Cleanup plans are stored in the native process, expire after ten minutes, and can be executed only once. The renderer sends identifiers, never arbitrary executable commands.
 - Project cleanup requires current project markers, an approved scan root, an allowlisted generated directory, and unchanged contents. Symbolic links and Windows junctions cannot be cleanup roots.
 - Project artifacts and browser downloads go to the system Trash by default. Moving to Trash is not reported as reclaimed disk space.
