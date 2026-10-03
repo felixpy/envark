@@ -1,0 +1,27 @@
+[package]
+name = "envark-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+directories = "6"
+walkdir = "2"
+rayon = "1"
+globset = "0.4"
+trash = "5"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sysinfo = "0.37"
+which = "8"
+
+[dev-dependencies]
+tempfile = "3"
