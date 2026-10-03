@@ -369,6 +369,9 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
 }
 
 async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
+    if let Some(manager) = ctx.manager("SDKMAN!", true, true).await {
+        provider.managers.push(manager);
+    }
     let sdkman = std::env::var_os("SDKMAN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.home.join(".sdkman"));
@@ -421,9 +424,18 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                     .to_string_lossy()
                     .into_owned()
             });
+        let managed = path.starts_with(sdkman.join("candidates/java"))
+            && provider.managers.iter().any(|m| m.name == "SDKMAN!");
+        let selector = if managed {
+            path.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or(version.clone())
+        } else {
+            version.clone()
+        };
         provider.runtimes.push(Runtime {
             id: id_for("runtime", &path),
-            version,
+            version: selector,
             manager: if path.starts_with(&sdkman) {
                 "SDKMAN!"
             } else {
@@ -433,9 +445,13 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             active: std::fs::canonicalize(&binary).ok().as_ref() == active.as_ref()
                 && active.is_some(),
             path,
-            managed: false,
+            managed,
             size: None,
-            note: Some("This JDK is managed by its original installer.".into()),
+            note: Some(if managed {
+                format!("Java {version}; managed by SDKMAN!.")
+            } else {
+                "This JDK is managed by its original installer.".into()
+            }),
         });
     }
     for name in ["mvn", "gradle"] {

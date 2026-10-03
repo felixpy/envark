@@ -1,6 +1,7 @@
 mod javascript;
 mod languages;
 mod resources;
+mod shell_managers;
 mod tool_commands;
 pub use tool_commands::tool_command;
 pub mod updates;
@@ -70,6 +71,9 @@ impl Context {
     }
 
     pub fn command(&self, name: &str, args: &[&str]) -> Result<CommandSpec> {
+        if !cfg!(windows) && ["nvm", "SDKMAN!"].contains(&name) {
+            return shell_managers::command(self, name, args);
+        }
         let program = self.executable(name).ok_or_else(|| {
             Error::Unavailable(format!(
                 "{name} is not installed or cannot be found in PATH."
@@ -118,9 +122,29 @@ impl Context {
     }
 
     pub async fn manager(&self, name: &str, install: bool, default: bool) -> Option<Manager> {
-        let path = self.executable(name)?;
+        let path = shell_managers::initialization(self, name).or_else(|| self.executable(name))?;
+        if name == "SDKMAN!" {
+            self.executable("bash")?;
+            let root = path.parent()?.parent()?;
+            return Some(Manager {
+                name: name.into(),
+                version: read_small(&root.join("var/version"), 128)
+                    .map(|v| v.trim().into())
+                    .unwrap_or_else(|_| "unknown".into()),
+                path,
+                supports_install: install,
+                supports_default: default,
+            });
+        }
         let version = self
-            .read(name, &["--version"])
+            .read(
+                name,
+                &[if name == "SDKMAN!" {
+                    "version"
+                } else {
+                    "--version"
+                }],
+            )
             .await
             .ok()?
             .lines()
@@ -329,6 +353,12 @@ pub fn runtime_command(
                 version,
             ],
         )?,
+        ("nvm", "install") => ctx.command("nvm", &["install", version])?,
+        ("nvm", "default") => ctx.command("nvm", &["alias", "default", version])?,
+        ("nvm", "remove") => ctx.command("nvm", &["uninstall", version])?,
+        ("SDKMAN!", "install") => ctx.command("SDKMAN!", &["install", "java", version])?,
+        ("SDKMAN!", "default") => ctx.command("SDKMAN!", &["default", "java", version])?,
+        ("SDKMAN!", "remove") => ctx.command("SDKMAN!", &["uninstall", "java", version])?,
         _ => {
             return Err(Error::Unavailable(format!(
                 "{manager} does not support {verb} on this installation."
