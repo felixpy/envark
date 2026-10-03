@@ -45,4 +45,4 @@ Do not bypass a failed message check. Correct the message and commit again.
 
 CI checks every commit introduced by a push to `main`, every commit in a pull request, and the PR title used for squash merging. A manual workflow run checks the selected tip. Dependency update messages use the same convention through Dependabot's `build` prefix and dependency scope.
 
-The initial published commits predate this policy. Routine checks apply to incoming changes rather than retroactively rejecting the entire repository. Rewriting public history requires coordination with collaborators and existing pull requests; do not force-push `main` as part of an ordinary message correction.
+Published history follows this policy. Routine checks validate incoming commits; a branch rewrite validates the replacement history in full. Rewriting public history requires explicit authorization, a recoverable backup, and coordination with existing pull requests. Use an explicit `--force-with-lease` expectation to avoid overwriting concurrent changes.
