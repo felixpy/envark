@@ -71,9 +71,7 @@ impl Engine {
                 "This configuration is read-only.".into(),
             ));
         }
-        if config.format == "json" {
-            serde_json::from_str::<serde_json::Value>(&content)?;
-        }
+        validate(&config.format, &content)?;
         let parent = config
             .path
             .parent()
@@ -110,5 +108,54 @@ impl Engine {
         )
         .await?;
         self.read_config(id).await
+    }
+}
+
+fn validate(format: &str, content: &str) -> Result<()> {
+    let error = match format {
+        "json" => serde_json::from_str::<serde_json::Value>(content)
+            .err()
+            .map(|e| e.to_string()),
+        "toml" => content.parse::<toml::Table>().err().map(|e| e.to_string()),
+        "yaml" => serde_yaml_ng::from_str::<serde_yaml_ng::Value>(content)
+            .err()
+            .map(|e| e.to_string()),
+        "xml" => roxmltree::Document::parse(content)
+            .err()
+            .map(|e| e.to_string()),
+        // INI dialects, Java properties, and version pin files are validated by their owners.
+        _ => None,
+    };
+    match error {
+        Some(message) => Err(Error::InvalidInput(format!(
+            "Invalid {format} configuration: {message}"
+        ))),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_structured_configuration_is_rejected() {
+        for (format, content) in [
+            ("json", "{broken"),
+            ("toml", "[broken"),
+            ("yaml", "key: [broken"),
+            ("xml", "<settings></other>"),
+        ] {
+            assert!(validate(format, content).is_err(), "{format}");
+        }
+        for (format, content) in [
+            ("json", "{}"),
+            ("toml", "[settings]\nvalue = true"),
+            ("yaml", "key: value"),
+            ("xml", "<settings/>"),
+            ("ini", "//registry.npmjs.org/:_authToken=${TOKEN}"),
+        ] {
+            assert!(validate(format, content).is_ok(), "{format}");
+        }
     }
 }
