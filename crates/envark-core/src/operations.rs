@@ -46,6 +46,10 @@ pub enum ActionRequest {
         provider: ProviderId,
         id: String,
     },
+    UpdateTools {
+        provider: ProviderId,
+        ids: Vec<String>,
+    },
     RemoveTool {
         provider: ProviderId,
         id: String,
@@ -181,6 +185,23 @@ pub fn prepare(
     let is_remove_runtime = matches!(&request, ActionRequest::RemoveRuntime { .. });
     let is_remove_tool = matches!(&request, ActionRequest::RemoveTool { .. });
     match request {
+        ActionRequest::UpdateTools { provider, ids } => {
+            view.kind = "update".into();
+            if ids.len() > 500 {
+                return Err(Error::InvalidInput("Select at most 500 tools.".into()));
+            }
+            for id in ids.into_iter().collect::<HashSet<_>>() {
+                let child = prepare(
+                    ActionRequest::UpdateTool { provider, id },
+                    inventory,
+                    settings,
+                    ctx,
+                )?;
+                view.items.extend(child.view.items);
+                view.warnings.extend(child.view.warnings);
+                steps.extend(child.steps);
+            }
+        }
         ActionRequest::CleanProjects { artifact_ids } => {
             view.kind = "clean".into();
             let mut pending: HashSet<_> = artifact_ids.into_iter().collect();

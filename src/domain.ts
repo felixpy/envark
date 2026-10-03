@@ -163,6 +163,7 @@ export type ActionRequest =
       id: string
     }
   | { kind: 'removeAssets'; provider: ProviderId; ids: string[] }
+  | { kind: 'updateTools'; provider: ProviderId; ids: string[] }
   | { kind: 'downloadAsset'; provider: ProviderId; name: string }
 export interface Plan {
   id: string
