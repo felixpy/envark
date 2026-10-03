@@ -83,7 +83,7 @@ impl Engine {
         status: &str,
         detail: String,
         freed_bytes: u64,
-    ) -> Result<()> {
+    ) {
         let mut state = self.state.write().await;
         state.activity.insert(
             0,
@@ -98,7 +98,12 @@ impl Engine {
             },
         );
         state.activity.truncate(1000);
-        self.storage.save_activity(&state.activity)
+        if let Err(error) = self.storage.save_activity(&state.activity) {
+            // A persistence failure must not turn a completed mutation into a failed operation.
+            state.inventory.issues.push(format!(
+                "Activity is available for this session but could not be saved: {error}"
+            ));
+        }
     }
 
     pub async fn refresh(&self, job_id: String, progress: ProgressSink) -> Result<Snapshot> {
@@ -120,7 +125,7 @@ impl Engine {
                     "Environment and project inventory refreshed.".into(),
                     0,
                 )
-                .await?
+                .await
             }
             Err(error) => {
                 self.log(
@@ -134,7 +139,7 @@ impl Engine {
                     error.to_string(),
                     0,
                 )
-                .await?
+                .await
             }
         }
         result?;
@@ -289,6 +294,16 @@ impl Engine {
             operations::execute(plan, settings, context, progress.clone(), job_id.clone()).await;
         match &outcome {
             Ok(result) => {
+                if !token.is_cancelled()
+                    && let Err(error) = self.refresh_inner(&job_id, token, progress, true).await
+                {
+                    self.state
+                        .write()
+                        .await
+                        .inventory
+                        .issues
+                        .push(format!("Refresh after operation: {error}"));
+                }
                 let failed = result
                     .items
                     .iter()
@@ -312,17 +327,7 @@ impl Engine {
                         .join("\n"),
                     result.freed_bytes,
                 )
-                .await?;
-                if !token.is_cancelled()
-                    && let Err(error) = self.refresh_inner(&job_id, token, progress, true).await
-                {
-                    self.state
-                        .write()
-                        .await
-                        .inventory
-                        .issues
-                        .push(format!("Refresh after operation: {error}"));
-                }
+                .await;
             }
             Err(error) => {
                 self.log(
@@ -332,10 +337,29 @@ impl Engine {
                     error.to_string(),
                     0,
                 )
-                .await?
+                .await
             }
         }
         self.jobs.lock().await.remove(&job_id);
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn activity_write_failure_preserves_the_result_in_memory() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Engine::new(root.path().into()).unwrap();
+        std::fs::create_dir(root.path().join("activity.json")).unwrap();
+        engine
+            .log("clean", "Completed".into(), "success", "Removed".into(), 12)
+            .await;
+        let snapshot = engine.snapshot().await;
+        assert_eq!(snapshot.activity[0].status, "success");
+        assert_eq!(snapshot.activity[0].freed_bytes, 12);
+        assert!(snapshot.inventory.issues[0].contains("could not be saved"));
     }
 }
