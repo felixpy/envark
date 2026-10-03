@@ -14,12 +14,13 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ScanResult {
     pub projects: Vec<Project>,
     pub issues: Vec<String>,
     pub visited: u64,
     pub elapsed_ms: u128,
+    pub cached_roots: u64,
 }
 
 pub fn validate_settings(settings: &Settings) -> Result<()> {

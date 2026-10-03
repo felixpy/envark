@@ -5,6 +5,7 @@ use crate::{
     operations::{self, ActionRequest, OperationResult, Plan, PlanView},
     persistence::Storage,
     providers::{self, Context},
+    scan_cache::ScanCache,
     scanner,
 };
 use serde::Serialize;
@@ -29,6 +30,7 @@ pub struct Engine {
     jobs: Mutex<HashMap<String, CancellationToken>>,
     plans: Mutex<HashMap<String, Plan>>,
     pub(crate) work: Arc<Mutex<()>>,
+    scans: Arc<std::sync::Mutex<ScanCache>>,
 }
 
 impl Engine {
@@ -48,6 +50,7 @@ impl Engine {
             jobs: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
             work: Arc::new(Mutex::new(())),
+            scans: Arc::new(std::sync::Mutex::new(ScanCache::default())),
         })
     }
 
@@ -106,7 +109,7 @@ impl Engine {
             .map_err(|_| Error::Conflict("An operation is already running.".into()))?;
         let token = CancellationToken::new();
         self.jobs.lock().await.insert(job_id.clone(), token.clone());
-        let result = self.refresh_inner(&job_id, token, progress).await;
+        let result = self.refresh_inner(&job_id, token, progress, false).await;
         self.jobs.lock().await.remove(&job_id);
         match &result {
             Ok(()) => {
@@ -143,14 +146,22 @@ impl Engine {
         job_id: &str,
         token: CancellationToken,
         progress: ProgressSink,
+        force: bool,
     ) -> Result<()> {
+        let context = Context::new(token.clone())?;
         let settings = self.state.read().await.settings.clone();
         let check_updates = settings.check_updates;
         let scan_token = token.clone();
         let scan_progress = progress.clone();
         let scan_id = job_id.to_owned();
+        let scans = self.scans.clone();
         let project_job = tokio::task::spawn_blocking(move || {
-            scanner::scan(&settings, &scan_token, scan_progress, &scan_id)
+            scans
+                .lock()
+                .map_err(|_| {
+                    Error::Unavailable("The scan cache is unavailable. Restart Envark.".into())
+                })?
+                .scan(&settings, &scan_token, scan_progress, &scan_id, force)
         });
         progress(Progress {
             job_id: job_id.into(),
@@ -159,7 +170,7 @@ impl Engine {
             total: None,
             message: "Discovering installed environments".into(),
         });
-        let discovered = providers::discover(Context::new(token.clone())?).await;
+        let discovered = providers::discover(context).await;
         let projects = project_job
             .await
             .map_err(|e| Error::Unavailable(e.to_string()))??;
@@ -303,7 +314,7 @@ impl Engine {
                 )
                 .await?;
                 if !token.is_cancelled()
-                    && let Err(error) = self.refresh_inner(&job_id, token, progress).await
+                    && let Err(error) = self.refresh_inner(&job_id, token, progress, true).await
                 {
                     self.state
                         .write()

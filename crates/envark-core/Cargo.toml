@@ -26,6 +26,7 @@ which = "8"
 toml = "1"
 serde_yaml_ng = "0.10"
 roxmltree = "0.21"
+notify = "8"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_System_Threading"] }
