@@ -92,6 +92,8 @@ pub struct Measurement {
     pub files: u64,
     pub skipped: u64,
     pub complete: bool,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

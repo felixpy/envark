@@ -83,9 +83,12 @@ pub fn measure(path: &Path, cancel: &CancellationToken) -> Result<Measurement> {
         complete: true,
         ..Measurement::default()
     };
+    let mut fingerprint = Sha256::new();
     // Link entries contribute no target data; no symlink or junction is followed.
     let iter = WalkDir::new(path)
         .follow_links(false)
+        .max_open(16)
+        .sort_by_file_name()
         .into_iter()
         .filter_entry(|e| {
             e.path()
@@ -98,17 +101,34 @@ pub fn measure(path: &Path, cancel: &CancellationToken) -> Result<Measurement> {
             return Err(Error::Cancelled);
         }
         match entry.and_then(|e| e.metadata().map(|m| (e, m))) {
-            Ok((_, meta)) if meta.is_file() => {
-                result.bytes = result.bytes.saturating_add(meta.len());
-                result.files += 1;
+            Ok((entry, meta)) => {
+                let relative = entry.path().strip_prefix(path).unwrap_or(entry.path());
+                let name = relative.as_os_str().as_encoded_bytes();
+                fingerprint.update(name.len().to_le_bytes());
+                fingerprint.update(name);
+                fingerprint.update([u8::from(meta.is_file())]);
+                fingerprint.update(meta.len().to_le_bytes());
+                if let Ok(timestamp) = meta
+                    .modified()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).map_err(std::io::Error::other))
+                {
+                    fingerprint.update(timestamp.as_nanos().to_le_bytes());
+                } else {
+                    result.complete = false;
+                    result.skipped += 1;
+                }
+                if meta.is_file() {
+                    result.bytes = result.bytes.saturating_add(meta.len());
+                    result.files += 1;
+                }
             }
-            Ok(_) => (),
             Err(_) => {
                 result.complete = false;
                 result.skipped += 1;
             }
         }
     }
+    result.fingerprint = Some(format!("{:x}", fingerprint.finalize()));
     Ok(result)
 }
 
@@ -124,4 +144,60 @@ pub fn read_small(path: &Path, max_bytes: u64) -> Result<String> {
         )));
     }
     Ok(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equal_size_changes_in_nested_files_change_the_fingerprint() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("package/index.js");
+        fs::create_dir(path.parent().unwrap()).unwrap();
+        fs::write(&path, "before").unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let before = measure(&root_path, &CancellationToken::new()).unwrap();
+        fs::write(&path, "after!").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
+            )
+            .unwrap();
+        let after = measure(&root_path, &CancellationToken::new()).unwrap();
+        assert_eq!(before.bytes, after.bytes);
+        assert_ne!(before.fingerprint, after.fingerprint);
+    }
+
+    #[test]
+    fn containment_rejects_the_root_and_parent_traversal() {
+        let root = tempfile::tempdir().unwrap();
+        let path = fs::canonicalize(root.path()).unwrap();
+        assert!(contained_directory(&path, &path).is_err());
+        let traversal =
+            std::path::PathBuf::from(format!("{}/child/../other", root.path().display()));
+        assert!(reject_links(&traversal).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_are_not_measured_and_cannot_be_cleanup_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("source"), "private source").unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let link = root_path.join("node_modules");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        assert_eq!(
+            measure(&root_path, &CancellationToken::new())
+                .unwrap()
+                .bytes,
+            0
+        );
+        assert!(contained_directory(&root_path, &link).is_err());
+    }
 }

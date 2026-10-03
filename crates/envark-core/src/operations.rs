@@ -2,7 +2,8 @@ use crate::{
     Error, Result,
     filesystem::{contained_directory, measure, modified, reject_links},
     model::{
-        Artifact, Cache, Inventory, Progress, ProgressSink, Project, ProviderId, Settings, now,
+        Artifact, Cache, Inventory, Measurement, Progress, ProgressSink, Project, ProviderId,
+        Settings, now,
     },
     process::CommandSpec,
     providers::{self, Context},
@@ -90,7 +91,7 @@ enum Step {
     Asset {
         root: PathBuf,
         path: PathBuf,
-        bytes: u64,
+        size: Measurement,
         modified: Option<u64>,
     },
     Cache {
@@ -361,7 +362,7 @@ pub fn prepare(
                     steps.push(Step::Asset {
                         root,
                         path: asset.path.clone(),
-                        bytes: asset.size.bytes,
+                        size: asset.size.clone(),
                         modified: modified(&asset.path),
                     });
                 }
@@ -394,7 +395,7 @@ pub fn prepare(
 fn remove_directory(
     root: &Path,
     path: &Path,
-    bytes: u64,
+    expected: &Measurement,
     timestamp: Option<u64>,
     use_trash: bool,
     token: &CancellationToken,
@@ -406,7 +407,11 @@ fn remove_directory(
         ));
     }
     let current = measure(path, token)?;
-    if !current.complete || current.bytes != bytes {
+    if !current.complete
+        || current.bytes != expected.bytes
+        || expected.fingerprint.is_none()
+        || current.fingerprint != expected.fingerprint
+    {
         return Err(Error::Conflict(
             "The contents changed after review. Scan again before cleaning.".into(),
         ));
@@ -426,6 +431,49 @@ fn remove_directory(
         std::fs::remove_dir_all(path)?;
         Ok(current.bytes)
     }
+}
+
+async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<u64> {
+    tokio::task::spawn_blocking(move || {
+        let size = measure(&path, &token)?;
+        if !size.complete {
+            return Err(Error::Conflict("The cache cannot be measured completely. Check access permissions before cleaning.".into()));
+        }
+        Ok(size.bytes)
+    }).await.map_err(|e| Error::Unavailable(e.to_string()))?
+}
+
+async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Result<(u64, String)> {
+    reject_links(&cache.path)?;
+    let approved = std::fs::canonicalize(&cache.path)?;
+    if let Some(probe) = providers::cache_probe(&cache, &command) {
+        let output = ctx.runner.run(&probe, &ctx.cancel).await?;
+        let resolved = output
+            .stdout
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|line| Path::new(line).is_absolute())
+            .find_map(|line| std::fs::canonicalize(line).ok());
+        if resolved.as_ref() != Some(&approved) {
+            return Err(Error::Conflict("The tool resolved a different cache directory. Refresh the inventory before cleaning.".into()));
+        }
+    }
+    let before = measured_bytes(cache.path.clone(), ctx.cancel.clone()).await?;
+    reject_links(&cache.path)?;
+    if std::fs::canonicalize(&cache.path)? != approved {
+        return Err(Error::Conflict("The cache moved after review.".into()));
+    }
+    let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    let after = if cache.path.try_exists()? {
+        measured_bytes(cache.path, ctx.cancel.clone()).await?
+    } else {
+        0
+    };
+    Ok((
+        before.saturating_sub(after),
+        output.stdout.trim().chars().take(4000).collect(),
+    ))
 }
 
 pub async fn execute(
@@ -465,24 +513,7 @@ pub async fn execute(
                     output.stdout.trim().chars().take(4000).collect::<String>(),
                 )
             }),
-            Step::Cache { cache, command } => match ctx.runner.run(&command, &ctx.cancel).await {
-                Ok(output) => {
-                    let cancel = ctx.cancel.clone();
-                    let path = cache.path.clone();
-                    let after = tokio::task::spawn_blocking(move || measure(&path, &cancel))
-                        .await
-                        .ok()
-                        .and_then(std::result::Result::ok);
-                    Ok((
-                        after
-                            .filter(|m| m.complete)
-                            .map(|m| cache.size.bytes.saturating_sub(m.bytes))
-                            .unwrap_or(0),
-                        output.stdout.trim().chars().take(4000).collect::<String>(),
-                    ))
-                }
-                Err(e) => Err(e),
-            },
+            Step::Cache { cache, command } => clean_cache(&ctx, cache, command).await,
             Step::Project {
                 project,
                 artifact,
@@ -501,7 +532,7 @@ pub async fn execute(
                     remove_directory(
                         &project.path,
                         &artifact.path,
-                        artifact.size.bytes,
+                        &artifact.size,
                         modified,
                         settings.use_trash,
                         &token,
@@ -524,13 +555,13 @@ pub async fn execute(
             Step::Asset {
                 root,
                 path,
-                bytes,
+                size,
                 modified,
             } => {
                 let token = ctx.cancel.clone();
                 let use_trash = settings.use_trash;
                 tokio::task::spawn_blocking(move || {
-                    remove_directory(&root, &path, bytes, modified, use_trash, &token)
+                    remove_directory(&root, &path, &size, modified, use_trash, &token)
                 })
                 .await
                 .map_err(|e| Error::Unavailable(e.to_string()))?
@@ -593,7 +624,7 @@ mod tests {
         std::fs::write(project.join("index.ts"), "source").unwrap();
         std::fs::write(project.join("node_modules/pkg/index.js"), "generated").unwrap();
         let settings = Settings {
-            roots: vec![root.path().into()],
+            roots: vec![std::fs::canonicalize(root.path()).unwrap()],
             use_trash: false,
             ..Default::default()
         };

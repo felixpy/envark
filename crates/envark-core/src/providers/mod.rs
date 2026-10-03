@@ -331,35 +331,69 @@ pub fn runtime_command(
 }
 
 pub fn cache_command(ctx: &Context, cache: &Cache) -> Result<CommandSpec> {
-    match cache.strategy.as_str() {
+    let mut spec = match cache.strategy.as_str() {
         "npm-verify" => ctx.command("npm", &["cache", "verify"]),
         "pnpm-prune" => ctx.command("pnpm", &["store", "prune"]),
         "yarn-clean" => ctx.command("yarn", &["cache", "clean"]),
         "uv-prune" => ctx.command("uv", &["cache", "prune"]),
-        "pip-clean" => ctx.command(
-            "uv",
-            &[
-                "run",
-                "--no-project",
-                "--no-python-downloads",
-                "--",
-                "python",
-                "-m",
-                "pip",
-                "cache",
-                "purge",
-            ],
-        ),
         "go-build" => ctx.command("go", &["clean", "-cache"]),
         "go-modules" => ctx.command("go", &["clean", "-modcache"]),
         _ => Err(Error::Unavailable(
             "This cache must be managed by its owning tool.".into(),
         )),
+    }?;
+    let path = cache.path.to_string_lossy().into_owned();
+    match cache.strategy.as_str() {
+        "npm-verify" => spec.args.extend(["--cache".into(), path]),
+        "pnpm-prune" | "yarn-clean" => {
+            let versioned = cache
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| {
+                    n.strip_prefix('v')
+                        .is_some_and(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+                });
+            let root = if versioned {
+                cache.path.parent().unwrap_or(&cache.path)
+            } else {
+                &cache.path
+            };
+            spec.args.extend([
+                if cache.strategy == "pnpm-prune" {
+                    "--store-dir"
+                } else {
+                    "--cache-folder"
+                }
+                .into(),
+                root.to_string_lossy().into_owned(),
+            ]);
+        }
+        "uv-prune" => spec.args.extend(["--cache-dir".into(), path]),
+        "go-build" => {
+            spec.env.insert("GOCACHE".into(), path);
+        }
+        "go-modules" => {
+            spec.env.insert("GOMODCACHE".into(), path);
+        }
+        _ => unreachable!("unsupported strategies were rejected above"),
     }
-    .map(|mut spec| {
-        spec.timeout = std::time::Duration::from_secs(600);
-        spec
-    })
+    spec.cwd = Some(ctx.home.clone());
+    spec.env.insert("GOTOOLCHAIN".into(), "local".into());
+    spec.timeout = std::time::Duration::from_secs(600);
+    Ok(spec)
+}
+
+pub fn cache_probe(cache: &Cache, command: &CommandSpec) -> Option<CommandSpec> {
+    let (action, replacement) = match cache.strategy.as_str() {
+        "pnpm-prune" => ("prune", "path"),
+        "yarn-clean" => ("clean", "dir"),
+        _ => return None,
+    };
+    let mut probe = command.clone();
+    *probe.args.iter_mut().find(|a| *a == action)? = replacement.into();
+    probe.timeout = std::time::Duration::from_secs(20);
+    Some(probe)
 }
 
 pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> {
