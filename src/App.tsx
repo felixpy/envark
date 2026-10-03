@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react'
+import type { Backend } from './bridge'
 import {
   Boxes,
   Database,
@@ -266,9 +267,9 @@ function Page({ view }: { view: View }) {
   }
 }
 
-export default function App() {
+export default function App({ api }: { api?: Backend }) {
   return (
-    <StoreProvider>
+    <StoreProvider api={api}>
       <Shell />
     </StoreProvider>
   )
