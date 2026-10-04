@@ -5,6 +5,7 @@ use crate::{
     operations::{self, ActionRequest, OperationResult, Plan, PlanView},
     persistence::Storage,
     providers::{self, Context},
+    scan_cache::ScanCache,
     scanner,
 };
 use serde::Serialize;
@@ -29,12 +30,13 @@ pub struct Engine {
     jobs: Mutex<HashMap<String, CancellationToken>>,
     plans: Mutex<HashMap<String, Plan>>,
     pub(crate) work: Arc<Mutex<()>>,
+    scans: Arc<std::sync::Mutex<ScanCache>>,
 }
 
 impl Engine {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         let storage = Storage::new(data_dir.clone())?;
-        let state = Snapshot {
+        let mut state = Snapshot {
             settings: storage.settings()?,
             inventory: storage.inventory()?,
             activity: storage.activity()?,
@@ -42,12 +44,14 @@ impl Engine {
             platform: std::env::consts::OS.into(),
             version: env!("CARGO_PKG_VERSION").into(),
         };
+        state.inventory.issues.extend(storage.recovery_notices());
         Ok(Self {
             storage,
             state: RwLock::new(state),
             jobs: Mutex::new(HashMap::new()),
             plans: Mutex::new(HashMap::new()),
             work: Arc::new(Mutex::new(())),
+            scans: Arc::new(std::sync::Mutex::new(ScanCache::default())),
         })
     }
 
@@ -61,6 +65,7 @@ impl Engine {
         })?;
         scanner::validate_settings(&settings)?;
         self.storage.save_settings(&settings)?;
+        self.plans.lock().await.clear();
         let mut state = self.state.write().await;
         state.settings = settings;
         Ok(state.clone())
@@ -78,8 +83,8 @@ impl Engine {
         title: String,
         status: &str,
         detail: String,
-        freed_bytes: u64,
-    ) -> Result<()> {
+        removed_bytes: u64,
+    ) {
         let mut state = self.state.write().await;
         state.activity.insert(
             0,
@@ -90,11 +95,17 @@ impl Engine {
                 title,
                 status: status.into(),
                 detail,
-                freed_bytes,
+                removed_bytes,
+                reclaimed_bytes: None,
             },
         );
         state.activity.truncate(1000);
-        self.storage.save_activity(&state.activity)
+        if let Err(error) = self.storage.save_activity(&state.activity) {
+            // A persistence failure must not turn a completed mutation into a failed operation.
+            state.inventory.issues.push(format!(
+                "Activity is available for this session but could not be saved: {error}"
+            ));
+        }
     }
 
     pub async fn refresh(&self, job_id: String, progress: ProgressSink) -> Result<Snapshot> {
@@ -105,7 +116,7 @@ impl Engine {
             .map_err(|_| Error::Conflict("An operation is already running.".into()))?;
         let token = CancellationToken::new();
         self.jobs.lock().await.insert(job_id.clone(), token.clone());
-        let result = self.refresh_inner(&job_id, token, progress).await;
+        let result = self.refresh_inner(&job_id, token, progress, false).await;
         self.jobs.lock().await.remove(&job_id);
         match &result {
             Ok(()) => {
@@ -116,7 +127,7 @@ impl Engine {
                     "Environment and project inventory refreshed.".into(),
                     0,
                 )
-                .await?
+                .await
             }
             Err(error) => {
                 self.log(
@@ -130,7 +141,7 @@ impl Engine {
                     error.to_string(),
                     0,
                 )
-                .await?
+                .await
             }
         }
         result?;
@@ -142,14 +153,22 @@ impl Engine {
         job_id: &str,
         token: CancellationToken,
         progress: ProgressSink,
+        force: bool,
     ) -> Result<()> {
+        let context = Context::new(token.clone())?;
         let settings = self.state.read().await.settings.clone();
         let check_updates = settings.check_updates;
         let scan_token = token.clone();
         let scan_progress = progress.clone();
         let scan_id = job_id.to_owned();
+        let scans = self.scans.clone();
         let project_job = tokio::task::spawn_blocking(move || {
-            scanner::scan(&settings, &scan_token, scan_progress, &scan_id)
+            scans
+                .lock()
+                .map_err(|_| {
+                    Error::Unavailable("The scan cache is unavailable. Restart Envark.".into())
+                })?
+                .scan(&settings, &scan_token, scan_progress, &scan_id, force)
         });
         progress(Progress {
             job_id: job_id.into(),
@@ -158,7 +177,7 @@ impl Engine {
             total: None,
             message: "Discovering installed environments".into(),
         });
-        let discovered = providers::discover(Context::new(token.clone())?).await;
+        let discovered = providers::discover(context).await;
         let projects = project_job
             .await
             .map_err(|e| Error::Unavailable(e.to_string()))??;
@@ -207,7 +226,7 @@ impl Engine {
         })
         .await
         .map_err(|e| Error::Unavailable(e.to_string()))?;
-        let inventory = Inventory {
+        let mut inventory = Inventory {
             providers: discovered.providers,
             caches: discovered.caches,
             projects: projects.projects,
@@ -215,6 +234,7 @@ impl Engine {
             disks,
             scanned_at: Some(now()),
         };
+        inventory.issues.extend(self.storage.recovery_notices());
         self.storage.save_inventory(&inventory)?;
         self.state.write().await.inventory = inventory;
         progress(Progress {
@@ -232,13 +252,14 @@ impl Engine {
             .work
             .try_lock()
             .map_err(|_| Error::Conflict("Wait for the current operation to finish.".into()))?;
-        let state = self.state.read().await;
+        let state = self.snapshot().await;
         let plan = operations::prepare(
             request,
             &state.inventory,
             &state.settings,
             &Context::new(CancellationToken::new())?,
-        )?;
+        )
+        .await?;
         let view = plan.view.clone();
         let mut plans = self.plans.lock().await;
         plans.retain(|_, plan| now().saturating_sub(plan.view.created_at) < 600);
@@ -277,6 +298,16 @@ impl Engine {
             operations::execute(plan, settings, context, progress.clone(), job_id.clone()).await;
         match &outcome {
             Ok(result) => {
+                if !token.is_cancelled()
+                    && let Err(error) = self.refresh_inner(&job_id, token, progress, true).await
+                {
+                    self.state
+                        .write()
+                        .await
+                        .inventory
+                        .issues
+                        .push(format!("Refresh after operation: {error}"));
+                }
                 let failed = result
                     .items
                     .iter()
@@ -298,19 +329,9 @@ impl Engine {
                         .map(|r| format!("{}: {} {}", r.title, r.status, r.message))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                    result.freed_bytes,
+                    result.removed_bytes,
                 )
-                .await?;
-                if !token.is_cancelled()
-                    && let Err(error) = self.refresh_inner(&job_id, token, progress).await
-                {
-                    self.state
-                        .write()
-                        .await
-                        .inventory
-                        .issues
-                        .push(format!("Refresh after operation: {error}"));
-                }
+                .await;
             }
             Err(error) => {
                 self.log(
@@ -320,10 +341,59 @@ impl Engine {
                     error.to_string(),
                     0,
                 )
-                .await?
+                .await
             }
         }
         self.jobs.lock().await.remove(&job_id);
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn damaged_inventory_and_activity_do_not_prevent_startup() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("inventory.json"), "corrupt inventory").unwrap();
+        std::fs::write(root.path().join("activity.json"), "corrupt activity").unwrap();
+        let engine = Engine::new(root.path().into()).unwrap();
+        let snapshot = engine.snapshot().await;
+        assert!(snapshot.inventory.projects.is_empty());
+        assert!(snapshot.activity.is_empty());
+        assert_eq!(snapshot.inventory.issues.len(), 2);
+        engine
+            .log(
+                "scan",
+                "Recovered".into(),
+                "success",
+                "New session".into(),
+                0,
+            )
+            .await;
+        assert_eq!(engine.storage.activity().unwrap()[0].title, "Recovered");
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".recovery-"))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_write_failure_preserves_the_result_in_memory() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Engine::new(root.path().into()).unwrap();
+        std::fs::create_dir(root.path().join("activity.json")).unwrap();
+        engine
+            .log("clean", "Completed".into(), "success", "Removed".into(), 12)
+            .await;
+        let snapshot = engine.snapshot().await;
+        assert_eq!(snapshot.activity[0].status, "success");
+        assert_eq!(snapshot.activity[0].removed_bytes, 12);
+        assert!(snapshot.inventory.issues[0].contains("could not be saved"));
     }
 }

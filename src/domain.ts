@@ -21,9 +21,11 @@ export interface Measurement {
 export interface Runtime {
   id: string
   version: string
+  selector: string | null
   manager: string
   path: string
   active: boolean
+  activeKnown: boolean
   managed: boolean
   size: Measurement | null
   note: string | null
@@ -40,6 +42,7 @@ export interface Tool {
   name: string
   version: string
   latest: string | null
+  updateStatus: 'unknown' | 'latest' | 'ahead' | 'major' | 'minor'
   source: string
   runtime: string | null
   path: string | null
@@ -92,6 +95,8 @@ export interface Artifact {
   kind: string
   size: Measurement
   restore: string
+  canClean: boolean
+  cleanupIssue: string | null
 }
 export interface Project {
   id: string
@@ -136,7 +141,8 @@ export interface Activity {
   title: string
   status: string
   detail: string
-  freedBytes: number
+  removedBytes: number
+  reclaimedBytes: number | null
 }
 export interface Snapshot {
   settings: Settings
@@ -163,6 +169,7 @@ export type ActionRequest =
       id: string
     }
   | { kind: 'removeAssets'; provider: ProviderId; ids: string[] }
+  | { kind: 'updateTools'; provider: ProviderId; ids: string[] }
   | { kind: 'downloadAsset'; provider: ProviderId; name: string }
 export interface Plan {
   id: string
@@ -179,9 +186,10 @@ export interface Plan {
   useTrash: boolean
 }
 export interface OperationResult {
-  items: { title: string; status: string; message: string; freedBytes: number }[]
+  items: { title: string; status: string; message: string; removedBytes: number }[]
   cancelled: boolean
-  freedBytes: number
+  removedBytes: number
+  reclaimedBytes: number | null
 }
 
 export const defaultSettings: Settings = {
@@ -330,11 +338,9 @@ export function idle(project: Project, days: number, time = Date.now()) {
 export function projectBytes(project: Project) {
   return project.artifacts.reduce((sum, artifact) => sum + artifact.size.bytes, 0)
 }
-export function updateKind(tool: Tool): 'unknown' | 'latest' | 'major' | 'minor' {
-  if (!tool.latest) return 'unknown'
-  if (tool.latest === tool.version) return 'latest'
-  return Number(tool.latest.replace(/^v/, '').split('.')[0]) >
-    Number(tool.version.replace(/^v/, '').split('.')[0])
-    ? 'major'
-    : 'minor'
+export function updateKind(tool: Tool): Tool['updateStatus'] {
+  return tool.updateStatus ?? 'unknown'
+}
+export function canUpdateTool(tool: Tool) {
+  return tool.canUpdate && ['major', 'minor'].includes(updateKind(tool))
 }

@@ -1,3 +1,5 @@
+import { lazy, Suspense } from 'react'
+import type { Backend } from './bridge'
 import {
   Boxes,
   Database,
@@ -35,13 +37,13 @@ import { Progress } from './components/ui/progress'
 import { Button } from './components/ui/button'
 import { EcoDot, Spinner } from './components/shared'
 import { OperationDialog } from './components/OperationDialog'
-import Overview from './views/Overview'
-import Catalog from './views/Catalog'
-import Environments from './views/Environments'
-import Projects from './views/Projects'
-import Caches from './views/Caches'
-import Activity from './views/Activity'
-import Settings from './views/Settings'
+const Overview = lazy(() => import('./views/Overview'))
+const Catalog = lazy(() => import('./views/Catalog'))
+const Environments = lazy(() => import('./views/Environments'))
+const Projects = lazy(() => import('./views/Projects'))
+const Caches = lazy(() => import('./views/Caches'))
+const Activity = lazy(() => import('./views/Activity'))
+const Settings = lazy(() => import('./views/Settings'))
 
 function Shell() {
   const s = useStore()
@@ -234,7 +236,9 @@ function Shell() {
                 {t('加载中…', 'Loading…')}
               </div>
             ) : (
-              <Page view={s.view} />
+              <Suspense fallback={<Spinner />}>
+                <Page view={s.view} />
+              </Suspense>
             )}
           </main>
         </SidebarInset>
@@ -263,9 +267,9 @@ function Page({ view }: { view: View }) {
   }
 }
 
-export default function App() {
+export default function App({ api }: { api?: Backend }) {
   return (
-    <StoreProvider>
+    <StoreProvider api={api}>
       <Shell />
     </StoreProvider>
   )

@@ -106,7 +106,7 @@ impl Engine {
             "A backup was saved before replacing the configuration file.".into(),
             0,
         )
-        .await?;
+        .await;
         self.read_config(id).await
     }
 }

@@ -72,6 +72,8 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             });
             let version = name.trim_start_matches('v').to_owned();
             provider.runtimes.push(Runtime {
+                selector: None,
+                active_known: true,
                 id: id_for("runtime", &installation),
                 version: version.clone(),
                 manager: manager.into(),
@@ -93,7 +95,7 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         && !provider.runtimes.iter().any(|r| r.active)
     {
         let root = path.parent().unwrap_or(&path).to_path_buf();
-        provider.runtimes.push(Runtime { id: id_for("runtime", &path), version, manager: "PATH".into(), path: root, active: true, managed: false, size: None, note: Some("The installation owner is unknown; manage this runtime with its original installer.".into()) });
+        provider.runtimes.push(Runtime { selector: None, active_known: true, id: id_for("runtime", &path), version, manager: "PATH".into(), path: root, active: true, managed: false, size: None, note: Some("The installation owner is unknown; manage this runtime with its original installer.".into()) });
     }
     for manager in ["npm", "pnpm", "yarn", "bun", "corepack"] {
         if let Ok(version) = ctx.read(manager, &["--version"]).await {
@@ -158,8 +160,14 @@ fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Opt
             Some(path),
         );
         tool.runtime = runtime.clone();
-        tool.can_update = ["npm", "pnpm"].contains(&source);
-        tool.can_remove = tool.can_update && !["npm", "pnpm", "corepack", "yarn"].contains(&name);
+        let linked = tool
+            .path
+            .as_ref()
+            .and_then(|p| std::fs::symlink_metadata(p).ok())
+            .is_some_and(|m| m.file_type().is_symlink());
+        tool.can_update = ["npm", "pnpm"].contains(&source) && !(source == "npm" && linked);
+        tool.can_remove = ["npm", "pnpm"].contains(&source)
+            && !["npm", "pnpm", "corepack", "yarn"].contains(&name);
         tool.note = manifest["description"].as_str().map(str::to_owned);
         provider.tools.push(tool);
     }

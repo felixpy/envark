@@ -8,6 +8,8 @@ describe('uncertain inventory data', () => {
   })
   it('does not report a tool as current before a successful version check', () => {
     expect(updateKind({ version: '2.0.0', latest: null } as Tool)).toBe('unknown')
-    expect(updateKind({ version: '2.0.0', latest: '3.0.0' } as Tool)).toBe('major')
+    expect(updateKind({ version: '2.0.0', latest: '3.0.0', updateStatus: 'major' } as Tool)).toBe(
+      'major',
+    )
   })
 })
