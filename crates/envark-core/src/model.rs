@@ -251,6 +251,29 @@ pub struct Project {
     pub pins: BTreeMap<String, String>,
     pub protected: bool,
     pub artifacts: Vec<Artifact>,
+    #[serde(default)]
+    pub repository: Option<Repository>,
+    #[serde(default)]
+    pub is_worktree: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Repository {
+    pub id: String,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    pub id: String,
+    pub repository: Repository,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub locked: bool,
+    pub issue: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +303,8 @@ pub struct Disk {
 pub struct Inventory {
     pub providers: Vec<Provider>,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub worktrees: Vec<Worktree>,
     pub caches: Vec<Cache>,
     pub disks: Vec<Disk>,
     pub scanned_at: Option<u64>,

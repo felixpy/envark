@@ -128,10 +128,11 @@ impl ScanCache {
                 reused.visited = 0;
                 reused
             } else {
-                let mut scope = settings.clone();
-                scope.roots = vec![root];
-                let scanned = scanner::scan(&scope, cancel, progress.clone(), job_id)?;
+                let scanned =
+                    scanner::scan_roots(settings, vec![root], cancel, progress.clone(), job_id)?;
                 if scanned.issues.is_empty()
+                    // Root watchers do not cover linked worktrees elsewhere.
+                    && scanned.worktrees.is_empty()
                     && generation == entry.generation.load(Ordering::SeqCst)
                     && entry.healthy.load(Ordering::SeqCst)
                 {
@@ -142,10 +143,15 @@ impl ScanCache {
                 scanned
             };
             result.projects.extend(scan.projects);
+            result.worktrees.extend(scan.worktrees);
             result.issues.extend(scan.issues);
             result.visited += scan.visited;
         }
         result.projects.sort_by_key(|p| p.last_active);
+        let mut seen = std::collections::HashSet::new();
+        result.projects.retain(|p| seen.insert(p.id.clone()));
+        result.worktrees.sort_by(|a, b| a.id.cmp(&b.id));
+        result.worktrees.dedup_by(|a, b| a.id == b.id);
         result.elapsed_ms = start.elapsed().as_millis();
         Ok(result)
     }
@@ -160,6 +166,7 @@ mod tests {
     fn unchanged_roots_are_reused_and_explicit_rescans_read_the_tree() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("package.json"), "{}").unwrap();
+        crate::git::init(root.path());
         let path = std::fs::canonicalize(root.path()).unwrap();
         let settings = Settings {
             roots: vec![path.clone()],

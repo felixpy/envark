@@ -33,6 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let generated = project.join(artifact);
         fs::create_dir_all(&generated)?;
+        fs::create_dir_all(project.join(".git/objects"))?;
+        fs::create_dir_all(project.join(".git/refs"))?;
+        fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n")?;
         fs::write(project.join(manifest), "{}")?;
         fs::write(project.join("source.txt"), "source")?;
         if index % 4 == 1 {

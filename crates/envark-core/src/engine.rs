@@ -45,6 +45,21 @@ impl Engine {
             version: env!("CARGO_PKG_VERSION").into(),
         };
         state.inventory.issues.extend(storage.recovery_notices());
+        if state
+            .inventory
+            .projects
+            .iter()
+            .any(|project| project.repository.is_none())
+        {
+            // Legacy inventories describe manifest directories rather than Git roots.
+            state.inventory.projects.clear();
+            state.inventory.worktrees.clear();
+            state.inventory.scanned_at = None;
+            state.inventory.issues.push(
+                "Rescan project folders to group Git repositories and their linked worktrees."
+                    .into(),
+            );
+        }
         Ok(Self {
             storage,
             state: RwLock::new(state),
@@ -230,6 +245,7 @@ impl Engine {
             providers: discovered.providers,
             caches: discovered.caches,
             projects: projects.projects,
+            worktrees: projects.worktrees,
             issues: projects.issues,
             disks,
             scanned_at: Some(now()),
@@ -381,6 +397,40 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_project_inventory_requires_rescanning_without_losing_preferences() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = Storage::new(root.path().into()).unwrap();
+        let settings = Settings {
+            roots: vec![root.path().join("projects")],
+            scan_on_launch: false,
+            ..Default::default()
+        };
+        storage.save_settings(&settings).unwrap();
+        let legacy = serde_json::json!({
+            "providers": [], "caches": [], "disks": [], "issues": [], "scannedAt": 42,
+            "projects": [{
+                "id": "legacy", "name": "web", "path": root.path().join("projects/apps/web"),
+                "providers": ["js"], "lastActive": null, "activityComplete": true,
+                "branch": null, "pins": {}, "protected": false, "artifacts": []
+            }]
+        });
+        std::fs::write(root.path().join("inventory.json"), legacy.to_string()).unwrap();
+        let snapshot = Engine::new(root.path().into()).unwrap().snapshot().await;
+        assert!(snapshot.inventory.projects.is_empty());
+        assert!(snapshot.inventory.worktrees.is_empty());
+        assert!(snapshot.inventory.scanned_at.is_none());
+        assert!(
+            snapshot
+                .inventory
+                .issues
+                .iter()
+                .any(|issue| issue.contains("Rescan"))
+        );
+        assert_eq!(snapshot.settings.roots, settings.roots);
+        assert!(!snapshot.settings.scan_on_launch);
     }
 
     #[tokio::test]
