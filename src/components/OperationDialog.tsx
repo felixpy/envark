@@ -55,8 +55,14 @@ export function OperationDialog() {
               </div>
             ))}
             <p className="text-sm">
-              {t('已确认释放', 'Verified reclaimed')}:{' '}
-              <span className="font-mono text-emerald-600">{formatBytes(result.freedBytes)}</span>
+              {t('已移除的逻辑大小', 'Logical size removed')}:{' '}
+              <span className="font-mono text-emerald-600">{formatBytes(result.removedBytes)}</span>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                '实际磁盘释放量未测量。回收站、硬链接和共享文件可能继续占用空间。',
+                'Physical disk reclamation is unmeasured. Trash, hard links, and shared files can retain disk space.',
+              )}
             </p>
             {result.cancelled && (
               <p className="text-sm text-amber-600">

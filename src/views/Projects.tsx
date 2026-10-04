@@ -33,7 +33,7 @@ export default function Projects() {
       `${p.name} ${p.path}`.toLowerCase().includes(query.trim().toLowerCase()),
   )
   const eligible = list.flatMap((p) =>
-    p.protected ? [] : p.artifacts.filter((a) => a.size.complete),
+    p.protected ? [] : p.artifacts.filter((a) => a.canClean && a.size.complete),
   )
   const checked = eligible.length > 0 && eligible.every((a) => selected.has(a.id))
   const toggle = (ids: string[], on: boolean) =>
@@ -130,15 +130,20 @@ export default function Projects() {
                     <Checkbox
                       aria-label={`${t('选择', 'Select')} ${project.name}`}
                       disabled={
-                        project.protected || !project.artifacts.some((a) => a.size.complete)
+                        project.protected ||
+                        !project.artifacts.some((a) => a.canClean && a.size.complete)
                       }
                       checked={
-                        project.artifacts.length > 0 &&
-                        project.artifacts.every((a) => selected.has(a.id))
+                        project.artifacts.some((a) => a.canClean && a.size.complete) &&
+                        project.artifacts
+                          .filter((a) => a.canClean && a.size.complete)
+                          .every((a) => selected.has(a.id))
                       }
                       onCheckedChange={(on) =>
                         toggle(
-                          project.artifacts.filter((a) => a.size.complete).map((a) => a.id),
+                          project.artifacts
+                            .filter((a) => a.canClean && a.size.complete)
+                            .map((a) => a.id),
                           on === true,
                         )
                       }
@@ -174,15 +179,21 @@ export default function Projects() {
                       {project.artifacts.map((artifact) => (
                         <label
                           key={artifact.id}
+                          title={artifact.cleanupIssue ?? undefined}
                           className="flex cursor-pointer items-center gap-1 rounded border px-1.5 py-1 text-xs"
                         >
                           <Checkbox
                             className="size-3"
                             checked={selected.has(artifact.id)}
-                            disabled={project.protected || !artifact.size.complete}
+                            disabled={
+                              project.protected || !artifact.canClean || !artifact.size.complete
+                            }
                             onCheckedChange={(on) => toggle([artifact.id], on === true)}
                           />
                           {artifact.name}
+                          {!artifact.canClean && (
+                            <span className="text-muted-foreground">{t('只读', 'Read-only')}</span>
+                          )}
                         </label>
                       ))}
                     </div>

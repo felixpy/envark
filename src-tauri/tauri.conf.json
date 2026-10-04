@@ -11,7 +11,13 @@
   },
   "app": {
     "windows": [
-      { "title": "Envark", "width": 1360, "height": 900, "minWidth": 980, "minHeight": 680 }
+      {
+        "title": "Envark",
+        "width": 1360,
+        "height": 900,
+        "minWidth": 980,
+        "minHeight": 680
+      }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src ipc: http://ipc.localhost"

@@ -36,7 +36,7 @@ pub struct Engine {
 impl Engine {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         let storage = Storage::new(data_dir.clone())?;
-        let state = Snapshot {
+        let mut state = Snapshot {
             settings: storage.settings()?,
             inventory: storage.inventory()?,
             activity: storage.activity()?,
@@ -44,6 +44,7 @@ impl Engine {
             platform: std::env::consts::OS.into(),
             version: env!("CARGO_PKG_VERSION").into(),
         };
+        state.inventory.issues.extend(storage.recovery_notices());
         Ok(Self {
             storage,
             state: RwLock::new(state),
@@ -82,7 +83,7 @@ impl Engine {
         title: String,
         status: &str,
         detail: String,
-        freed_bytes: u64,
+        removed_bytes: u64,
     ) {
         let mut state = self.state.write().await;
         state.activity.insert(
@@ -94,7 +95,8 @@ impl Engine {
                 title,
                 status: status.into(),
                 detail,
-                freed_bytes,
+                removed_bytes,
+                reclaimed_bytes: None,
             },
         );
         state.activity.truncate(1000);
@@ -224,7 +226,7 @@ impl Engine {
         })
         .await
         .map_err(|e| Error::Unavailable(e.to_string()))?;
-        let inventory = Inventory {
+        let mut inventory = Inventory {
             providers: discovered.providers,
             caches: discovered.caches,
             projects: projects.projects,
@@ -232,6 +234,7 @@ impl Engine {
             disks,
             scanned_at: Some(now()),
         };
+        inventory.issues.extend(self.storage.recovery_notices());
         self.storage.save_inventory(&inventory)?;
         self.state.write().await.inventory = inventory;
         progress(Progress {
@@ -249,13 +252,14 @@ impl Engine {
             .work
             .try_lock()
             .map_err(|_| Error::Conflict("Wait for the current operation to finish.".into()))?;
-        let state = self.state.read().await;
+        let state = self.snapshot().await;
         let plan = operations::prepare(
             request,
             &state.inventory,
             &state.settings,
             &Context::new(CancellationToken::new())?,
-        )?;
+        )
+        .await?;
         let view = plan.view.clone();
         let mut plans = self.plans.lock().await;
         plans.retain(|_, plan| now().saturating_sub(plan.view.created_at) < 600);
@@ -325,7 +329,7 @@ impl Engine {
                         .map(|r| format!("{}: {} {}", r.title, r.status, r.message))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                    result.freed_bytes,
+                    result.removed_bytes,
                 )
                 .await;
             }
@@ -350,6 +354,36 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn damaged_inventory_and_activity_do_not_prevent_startup() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("inventory.json"), "corrupt inventory").unwrap();
+        std::fs::write(root.path().join("activity.json"), "corrupt activity").unwrap();
+        let engine = Engine::new(root.path().into()).unwrap();
+        let snapshot = engine.snapshot().await;
+        assert!(snapshot.inventory.projects.is_empty());
+        assert!(snapshot.activity.is_empty());
+        assert_eq!(snapshot.inventory.issues.len(), 2);
+        engine
+            .log(
+                "scan",
+                "Recovered".into(),
+                "success",
+                "New session".into(),
+                0,
+            )
+            .await;
+        assert_eq!(engine.storage.activity().unwrap()[0].title, "Recovered");
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".recovery-"))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn activity_write_failure_preserves_the_result_in_memory() {
         let root = tempfile::tempdir().unwrap();
         let engine = Engine::new(root.path().into()).unwrap();
@@ -359,7 +393,7 @@ mod tests {
             .await;
         let snapshot = engine.snapshot().await;
         assert_eq!(snapshot.activity[0].status, "success");
-        assert_eq!(snapshot.activity[0].freed_bytes, 12);
+        assert_eq!(snapshot.activity[0].removed_bytes, 12);
         assert!(snapshot.inventory.issues[0].contains("could not be saved"));
     }
 }

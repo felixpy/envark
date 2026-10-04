@@ -14,10 +14,10 @@
     "tauri": "tauri",
     "desktop": "tauri dev",
     "desktop:build": "tauri build",
-    "check": "tsc --noEmit && oxlint src",
+    "check": "node scripts/check-versions.mjs && tsc --noEmit && oxlint src",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "vitest run"
+    "test": "vitest run && node --test scripts/release.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
