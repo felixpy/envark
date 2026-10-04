@@ -131,13 +131,17 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         Err(e) if ctx.executable("rustup").is_some() => provider.issues.push(e.to_string()),
         _ => (),
     }
-    if let Ok(version) = ctx.read("cargo", &["--version"]).await {
-        provider.package_managers.push(basic_tool(
+    match ctx.read("cargo", &["--version"]).await {
+        Ok(version) => provider.package_managers.push(basic_tool(
             "cargo",
             version.trim().into(),
             "rustup",
             ctx.executable("cargo"),
-        ));
+        )),
+        Err(error) if ctx.executable("cargo").is_some() => provider.issues.push(format!(
+            "Cargo could not be inspected without installing a toolchain: {error}"
+        )),
+        _ => (),
     }
     if let Ok(output) = ctx.read("cargo", &["install", "--list"]).await {
         for line in output
