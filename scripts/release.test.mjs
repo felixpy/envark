@@ -34,12 +34,24 @@ test('release validation rejects version drift in every package and lockfile', (
   const version = checkVersions(root)
   assert.equal(checkVersions(root, `v${version}`), version)
   assert.throws(() => checkVersions(root, 'v999.0.0'))
-  for (const file of files.slice(0, 5)) {
+  for (const file of files.slice(0, 5).filter((file) => file !== 'Cargo.lock')) {
     const path = join(root, file)
     const original = readFileSync(path, 'utf8')
     writeFileSync(path, original.replace(`"${version}"`, '"999.0.0"'))
     assert.throws(() => checkVersions(root), file)
     writeFileSync(path, original)
+  }
+  const lockPath = join(root, 'Cargo.lock')
+  const originalLock = readFileSync(lockPath, 'utf8')
+  for (const name of ['envark', 'envark-core']) {
+    const changedLock = originalLock.replace(
+      new RegExp(`(name = "${name}"\\r?\\nversion = ")[^"]+"`),
+      (_, prefix) => `${prefix}999.0.0"`,
+    )
+    assert.notEqual(changedLock, originalLock, `Missing ${name} fixture entry`)
+    writeFileSync(lockPath, changedLock)
+    assert.throws(() => checkVersions(root), new RegExp(`${name} lockfile version drift`))
+    writeFileSync(lockPath, originalLock)
   }
 })
 
