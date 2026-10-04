@@ -229,6 +229,9 @@ export default function Environments({ id }: { id: ProviderId }) {
                       <div className="flex items-center gap-2 font-mono">
                         {runtime.version}
                         {runtime.active && <Badge>{t('当前环境', 'Current environment')}</Badge>}
+                        {!runtime.activeKnown && (
+                          <Badge variant="outline">{t('活动状态未知', 'Activity unknown')}</Badge>
+                        )}
                         {!runtime.managed && (
                           <Badge variant="outline">{t('只读', 'Read-only')}</Badge>
                         )}
@@ -265,7 +268,9 @@ export default function Environments({ id }: { id: ProviderId }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={runtime.active || !runtime.managed || s.busy}
+                          disabled={
+                            runtime.active || !runtime.activeKnown || !runtime.managed || s.busy
+                          }
                           onClick={() => operation('removeRuntime', runtime.id)}
                         >
                           <Trash2 />

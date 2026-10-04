@@ -21,9 +21,11 @@ export interface Measurement {
 export interface Runtime {
   id: string
   version: string
+  selector: string | null
   manager: string
   path: string
   active: boolean
+  activeKnown: boolean
   managed: boolean
   size: Measurement | null
   note: string | null

@@ -101,9 +101,13 @@ pub struct Measurement {
 pub struct Runtime {
     pub id: String,
     pub version: String,
+    #[serde(default)]
+    pub selector: Option<String>,
     pub manager: String,
     pub path: PathBuf,
     pub active: bool,
+    #[serde(default)]
+    pub active_known: bool,
     pub managed: bool,
     pub size: Option<Measurement>,
     pub note: Option<String>,

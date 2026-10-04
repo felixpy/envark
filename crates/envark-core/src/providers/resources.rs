@@ -18,6 +18,8 @@ async fn ollama(ctx: &Context, provider: &mut Provider) {
         && let Some(path) = ctx.executable("ollama")
     {
         provider.runtimes.push(Runtime {
+            selector: None,
+            active_known: true,
             id: id_for("runtime", &path),
             version: version.trim().into(),
             manager: "system".into(),

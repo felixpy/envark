@@ -18,99 +18,19 @@ async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             provider.managers.push(manager);
         }
     }
-    let uv_root = ctx.cache_path("uv", &["python", "dir"]).await;
-    let active = ctx
-        .read("uv", &["python", "find", "--no-python-downloads"])
-        .await
-        .ok()
-        .and_then(|s| std::fs::canonicalize(s.trim()).ok());
-    match ctx
-        .read(
-            "uv",
-            &[
-                "python",
-                "list",
-                "--only-installed",
-                "--output-format",
-                "json",
-            ],
-        )
-        .await
-    {
-        Ok(json) => match serde_json::from_str::<Vec<serde_json::Value>>(&json) {
-            Ok(items) => {
-                let mut seen = std::collections::HashSet::new();
-                for item in items {
-                    let (Some(path), Some(version)) =
-                        (item["path"].as_str(), item["version"].as_str())
-                    else {
-                        continue;
-                    };
-                    let binary = PathBuf::from(path);
-                    let managed = uv_root
-                        .as_ref()
-                        .is_some_and(|root| binary.starts_with(root));
-                    if !managed
-                        && provider
-                            .runtimes
-                            .iter()
-                            .any(|r| r.version == version && r.managed)
-                    {
-                        continue;
-                    }
-                    if !seen.insert((version.to_owned(), managed)) {
-                        continue;
-                    }
-                    let real = std::fs::canonicalize(&binary).ok();
-                    let root = if cfg!(windows) {
-                        binary.parent()
-                    } else {
-                        binary.parent().and_then(Path::parent)
-                    }
-                    .unwrap_or(&binary)
-                    .to_path_buf();
-                    provider.runtimes.push(Runtime {
-                        id: id_for("runtime", &binary),
-                        version: version.into(),
-                        manager: if managed { "uv" } else { "PATH" }.into(),
-                        path: root,
-                        active: active.is_some() && real == active,
-                        managed,
-                        size: None,
-                        note: if managed {
-                            None
-                        } else {
-                            Some("Installation ownership is not verified.".into())
-                        },
-                    });
-                }
-            }
-            Err(e) => provider
-                .issues
-                .push(format!("Cannot parse uv Python inventory: {e}")),
-        },
-        Err(e) if ctx.executable("uv").is_some() => provider.issues.push(e.to_string()),
-        _ => (),
-    }
-    let pyenv_root = std::env::var_os("PYENV_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ctx.home.join(".pyenv"));
-    for path in directories(&pyenv_root.join("versions")) {
-        let version = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        provider.runtimes.push(Runtime {
-            id: id_for("runtime", &path),
-            version,
-            manager: "pyenv".into(),
-            path,
-            active: false,
-            managed: provider.managers.iter().any(|m| m.name == "pyenv"),
-            size: None,
-            note: None,
-        });
+    for name in ["uv", "pyenv"] {
+        if !provider.managers.iter().any(|manager| manager.name == name) {
+            continue;
+        }
+        let result = if name == "uv" {
+            super::python::uv(ctx).await
+        } else {
+            super::python::pyenv(ctx).await
+        };
+        match result {
+            Ok(runtimes) => provider.runtimes.extend(runtimes),
+            Err(error) => provider.issues.push(format!("{name}: {error}")),
+        }
     }
     for name in ["uv", "pipx", "poetry"] {
         if let Ok(version) = ctx.read(name, &["--version"]).await {
@@ -194,6 +114,8 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                 let path = rustup_root.join("toolchains").join(version);
                 if path.is_dir() {
                     provider.runtimes.push(Runtime {
+                        selector: None,
+                        active_known: true,
                         id: id_for("runtime", &path),
                         version: version.into(),
                         manager: "rustup".into(),
@@ -290,6 +212,8 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if let Some(root) = env["GOROOT"].as_str() {
         let path = PathBuf::from(root);
         provider.runtimes.push(Runtime {
+            selector: None,
+            active_known: true,
             id: id_for("runtime", &path),
             version: env["GOVERSION"]
                 .as_str()
@@ -434,6 +358,8 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             version.clone()
         };
         provider.runtimes.push(Runtime {
+            selector: None,
+            active_known: true,
             id: id_for("runtime", &path),
             version: selector,
             manager: if path.starts_with(&sdkman) {

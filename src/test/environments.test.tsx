@@ -94,6 +94,8 @@ it('does not mistake an inherited active runtime for the manager default', async
   provider.runtimes = [
     {
       id: 'runtime',
+      selector: null,
+      activeKnown: true,
       version: '24.0.0',
       manager: 'fnm',
       path: '/example/node',

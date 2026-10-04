@@ -1,6 +1,7 @@
 mod javascript;
 mod languages;
 pub mod ollama;
+pub mod python;
 mod resources;
 mod shell_managers;
 mod tool_commands;

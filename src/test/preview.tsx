@@ -80,6 +80,8 @@ js.managers = [
 ]
 js.runtimes = ['24.0.0', '22.0.0'].map((version, index) => ({
   id: version,
+  selector: null,
+  activeKnown: true,
   version,
   manager: 'fnm',
   path: `/example/fnm/${version}`,

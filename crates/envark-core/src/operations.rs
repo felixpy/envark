@@ -104,6 +104,11 @@ enum Step {
         command: CommandSpec,
     },
     Command(CommandSpec),
+    Runtime {
+        runtime: crate::model::Runtime,
+        remove: bool,
+        command: CommandSpec,
+    },
     Ollama {
         endpoint: String,
         name: String,
@@ -186,6 +191,14 @@ pub async fn prepare(
             .await
             .map_err(|e| Error::Unavailable(e.to_string()))??;
     for step in &plan.steps {
+        if let Step::Runtime {
+            runtime,
+            remove: true,
+            ..
+        } = step
+        {
+            providers::python::verify_removal(ctx, runtime).await?;
+        }
         if let Step::Project {
             project, artifact, ..
         } = step
@@ -340,9 +353,9 @@ fn prepare_steps(
                 .find(|p| p.id == provider)
                 .and_then(|p| p.runtimes.iter().find(|r| r.id == id))
                 .ok_or_else(|| Error::Conflict("Runtime no longer exists.".into()))?;
-            if !runtime.managed || (remove && runtime.active) {
+            if !runtime.managed || (remove && (runtime.active || !runtime.active_known)) {
                 return Err(Error::Unavailable(
-                    "Active or externally managed runtimes cannot be removed.".into(),
+                    "Active, unverified, or externally managed runtimes cannot be removed.".into(),
                 ));
             }
             if remove {
@@ -354,21 +367,27 @@ fn prepare_steps(
             } else {
                 view.warnings.push("This changes the manager's default. Already-open terminals and Envark may keep their inherited environment until restarted.".into());
             }
-            command_item(
+            let verb = if remove { "remove" } else { "default" };
+            let command = if ["uv", "pyenv"].contains(&runtime.manager.as_str()) {
+                providers::python::command(ctx, runtime, verb)?
+            } else {
+                providers::runtime_command(ctx, &runtime.manager, verb, &runtime.version)?
+            };
+            let mut item = command_description(
                 format!(
                     "{} {}",
                     if remove { "Remove" } else { "Set default" },
                     runtime.version
                 ),
-                providers::runtime_command(
-                    ctx,
-                    &runtime.manager,
-                    if remove { "remove" } else { "default" },
-                    &runtime.version,
-                )?,
-                &mut view,
-                &mut steps,
+                &command,
             );
+            item.path = Some(runtime.path.clone());
+            view.items.push(item);
+            steps.push(Step::Runtime {
+                runtime: runtime.clone(),
+                remove,
+                command,
+            });
         }
         ActionRequest::UpdateTool { provider, id } | ActionRequest::RemoveTool { provider, id } => {
             let remove = is_remove_tool;
@@ -609,6 +628,31 @@ async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Resul
     ))
 }
 
+async fn run_runtime(
+    ctx: &Context,
+    runtime: crate::model::Runtime,
+    remove: bool,
+    command: CommandSpec,
+) -> Result<(u64, String)> {
+    if remove {
+        providers::python::verify_removal(ctx, &runtime).await?;
+    }
+    if ["uv", "pyenv"].contains(&runtime.manager.as_str()) {
+        let current =
+            providers::python::command(ctx, &runtime, if remove { "remove" } else { "default" })?;
+        if current.program != command.program
+            || current.args != command.args
+            || current.env != command.env
+        {
+            return Err(Error::Conflict(
+                "The runtime manager changed after review. Create a new plan.".into(),
+            ));
+        }
+    }
+    let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    Ok((0, output.stdout.trim().chars().take(4000).collect()))
+}
+
 async fn run_tool(
     ctx: &Context,
     tool: crate::model::Tool,
@@ -679,6 +723,11 @@ pub async fn execute(
             message: title.clone(),
         });
         let outcome = match step {
+            Step::Runtime {
+                runtime,
+                remove,
+                command,
+            } => run_runtime(&ctx, runtime, remove, command).await,
             Step::Ollama {
                 endpoint,
                 name,
