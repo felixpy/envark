@@ -125,9 +125,10 @@ mod tests {
     #[test]
     fn cache_ownership_requires_a_valid_signature() {
         let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("CACHEDIR.TAG"), "source").unwrap();
-        assert!(ownership_issue(root.path(), ".pytest_cache").is_some());
-        std::fs::write(root.path().join("CACHEDIR.TAG"), CACHE_SIGNATURE).unwrap();
-        assert!(ownership_issue(root.path(), ".pytest_cache").is_none());
+        let path = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::write(path.join("CACHEDIR.TAG"), "source").unwrap();
+        assert!(ownership_issue(&path, ".pytest_cache").is_some());
+        std::fs::write(path.join("CACHEDIR.TAG"), CACHE_SIGNATURE).unwrap();
+        assert!(ownership_issue(&path, ".pytest_cache").is_none());
     }
 }

@@ -832,9 +832,10 @@ mod tests {
     #[tokio::test]
     async fn hard_link_cleanup_reports_logical_bytes_without_claiming_disk_reclamation() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("artifact");
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let path = root_path.join("artifact");
         std::fs::create_dir(&path).unwrap();
-        let shared = root.path().join("shared-store");
+        let shared = root_path.join("shared-store");
         std::fs::write(&shared, vec![1_u8; 2 * 1024 * 1024]).unwrap();
         std::fs::hard_link(&shared, path.join("package")).unwrap();
         let ctx = Context::new(CancellationToken::new()).unwrap();
@@ -855,7 +856,7 @@ mod tests {
                 use_trash: false,
             },
             steps: vec![Step::Asset {
-                root: root.path().into(),
+                root: root_path,
                 modified: modified(&path),
                 path,
                 size,
