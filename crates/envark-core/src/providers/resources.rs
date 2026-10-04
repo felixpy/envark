@@ -3,7 +3,6 @@ use crate::{
     filesystem::{measure, modified},
     model::{Asset, Runtime, ServiceStatus},
 };
-use std::time::Duration;
 
 pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if provider.id == ProviderId::Ollama {
@@ -32,36 +31,37 @@ async fn ollama(ctx: &Context, provider: &mut Provider) {
     let models_root = std::env::var_os("OLLAMA_MODELS")
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.home.join(".ollama/models"));
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .no_proxy()
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            provider.issues.push(e.to_string());
-            return;
-        }
-    };
-    let response = client.get("http://127.0.0.1:11434/api/tags").send().await;
+    let response = super::ollama::models(super::ollama::ENDPOINT, &ctx.cancel).await;
     provider.service = Some(ServiceStatus {
-        running: response.as_ref().is_ok_and(|r| r.status().is_success()),
+        running: response.is_ok(),
         owned: false,
-        endpoint: "http://127.0.0.1:11434".into(),
+        endpoint: super::ollama::ENDPOINT.into(),
     });
-    if let Ok(response) = response {
-        if let Ok(data) = response.json::<serde_json::Value>().await
-            && let Some(models) = data["models"].as_array()
-        {
+    match response {
+        Ok(models) => {
             for model in models {
-                let Some(name) = model["name"].as_str() else {
-                    continue;
-                };
-                provider.assets.push(Asset { id: format!("ollama:{name}"), name: name.into(), version: model["digest"].as_str().unwrap_or_default().chars().take(12).collect(), path: models_root.clone(), size: crate::model::Measurement { bytes: model["size"].as_u64().unwrap_or(0), complete: true, ..Default::default() }, last_used: None, modified: None, used_by: vec![], can_remove: true, note: Some("Model layers may be shared. Reported size is logical size; actual reclaimed space can be smaller.".into()) });
+                provider.assets.push(Asset {
+                    id: format!("ollama:{}:{}", super::ollama::ENDPOINT, model.name),
+                    name: model.name,
+                    version: model.digest,
+                    path: models_root.clone(),
+                    size: crate::model::Measurement {
+                        bytes: model.size,
+                        complete: true,
+                        ..Default::default()
+                    },
+                    last_used: None,
+                    modified: None,
+                    used_by: vec![],
+                    can_remove: ctx.executable("ollama").is_some(),
+                    note: Some(format!(
+                        "Local service: {}. Model layers may be shared; size is logical.",
+                        super::ollama::ENDPOINT
+                    )),
+                });
             }
         }
-    } else if models_root.exists() {
-        provider.issues.push("Ollama is stopped. Start its service to inspect model ownership before removing models.".into());
+        Err(error) => provider.issues.push(error.to_string()),
     }
 }
 

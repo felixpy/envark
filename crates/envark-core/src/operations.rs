@@ -104,6 +104,12 @@ enum Step {
         command: CommandSpec,
     },
     Command(CommandSpec),
+    Ollama {
+        endpoint: String,
+        name: String,
+        digest: String,
+        command: CommandSpec,
+    },
     Tool {
         tool: crate::model::Tool,
         command: CommandSpec,
@@ -185,6 +191,15 @@ pub async fn prepare(
         } = step
         {
             protect_tracked_files(ctx, project, artifact).await?;
+        }
+        if let Step::Ollama {
+            endpoint,
+            name,
+            digest,
+            ..
+        } = step
+        {
+            providers::ollama::verify(ctx, endpoint, name, digest).await?;
         }
     }
     Ok(plan)
@@ -404,13 +419,27 @@ fn prepare_steps(
                     ));
                 }
                 if provider == ProviderId::Ollama {
-                    providers::valid_identifier(&asset.name)?;
-                    command_item(
-                        format!("Remove {}", asset.name),
-                        ctx.command("ollama", &["rm", &asset.name])?,
-                        &mut view,
-                        &mut steps,
-                    );
+                    let endpoint = owner
+                        .service
+                        .as_ref()
+                        .filter(|service| service.running)
+                        .map(|service| service.endpoint.clone())
+                        .ok_or_else(|| {
+                            Error::Unavailable(
+                                "Refresh the local Ollama service before removing models.".into(),
+                            )
+                        })?;
+                    let command = providers::ollama::command(ctx, &endpoint, "rm", &asset.name)?;
+                    view.items.push(command_description(
+                        format!("Remove {} at {endpoint}", asset.name),
+                        &command,
+                    ));
+                    steps.push(Step::Ollama {
+                        endpoint,
+                        name: asset.name.clone(),
+                        digest: asset.version.clone(),
+                        command,
+                    });
                 } else {
                     let root = asset
                         .path
@@ -433,10 +462,14 @@ fn prepare_steps(
             provider: ProviderId::Ollama,
             name,
         } => {
-            providers::valid_identifier(&name)?;
-            let mut command = ctx.command("ollama", &["pull", &name])?;
-            command.timeout = std::time::Duration::from_secs(7200);
-            command_item(format!("Download {name}"), command, &mut view, &mut steps);
+            let endpoint = providers::ollama::ENDPOINT;
+            let command = providers::ollama::command(ctx, endpoint, "pull", &name)?;
+            command_item(
+                format!("Download {name} at {endpoint}"),
+                command,
+                &mut view,
+                &mut steps,
+            );
         }
         ActionRequest::DownloadAsset { .. } => {
             return Err(Error::Unavailable(
@@ -646,6 +679,19 @@ pub async fn execute(
             message: title.clone(),
         });
         let outcome = match step {
+            Step::Ollama {
+                endpoint,
+                name,
+                digest,
+                command,
+            } => match providers::ollama::verify(&ctx, &endpoint, &name, &digest).await {
+                Ok(()) => ctx
+                    .runner
+                    .run(&command, &ctx.cancel)
+                    .await
+                    .map(|output| (0, output.stdout.trim().chars().take(4000).collect())),
+                Err(error) => Err(error),
+            },
             Step::Tool { tool, command } => run_tool(&ctx, tool, command).await,
             Step::Command(command) => ctx.runner.run(&command, &ctx.cancel).await.map(|output| {
                 (
