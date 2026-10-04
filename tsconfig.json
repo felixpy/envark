@@ -12,7 +12,6 @@
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "baseUrl": ".",
     "paths": { "@/*": ["./src/*"] },
     "types": ["vite/client"]
   },

@@ -31,7 +31,7 @@ impl Engine {
         let content = read_small(&config.path, 1_048_576)?;
         Ok(ConfigContent {
             id: id.into(),
-            revision: format!("{:x}", Sha256::digest(content.as_bytes())),
+            revision: hex::encode(Sha256::digest(content.as_bytes())),
             content,
             path: config.path.clone(),
         })
@@ -137,6 +137,50 @@ fn validate(format: &str, content: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ConfigFile, Provider, ProviderId};
+
+    #[tokio::test]
+    async fn existing_config_revisions_remain_valid_for_saving() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.ini");
+        std::fs::write(&path, "abc").unwrap();
+        let engine = Engine::new(root.path().join("state")).unwrap();
+        let mut provider = Provider::empty(ProviderId::Js);
+        provider.configs.push(ConfigFile {
+            id: "settings".into(),
+            path: std::fs::canonicalize(&path).unwrap(),
+            format: "ini".into(),
+            editable: true,
+            warning: None,
+        });
+        engine
+            .state
+            .write()
+            .await
+            .inventory
+            .providers
+            .push(provider);
+
+        let revision = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(
+            engine.read_config("settings").await.unwrap().revision,
+            revision
+        );
+        let saved = engine
+            .save_config("settings", String::new(), revision)
+            .await
+            .unwrap();
+        assert_eq!(
+            saved.revision,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert!(matches!(
+            engine
+                .save_config("settings", "stale".into(), revision)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+    }
 
     #[test]
     fn malformed_structured_configuration_is_rejected() {
