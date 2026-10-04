@@ -101,9 +101,13 @@ pub struct Measurement {
 pub struct Runtime {
     pub id: String,
     pub version: String,
+    #[serde(default)]
+    pub selector: Option<String>,
     pub manager: String,
     pub path: PathBuf,
     pub active: bool,
+    #[serde(default)]
+    pub active_known: bool,
     pub managed: bool,
     pub size: Option<Measurement>,
     pub note: Option<String>,
@@ -126,6 +130,8 @@ pub struct Tool {
     pub name: String,
     pub version: String,
     pub latest: Option<String>,
+    #[serde(default)]
+    pub update_status: UpdateStatus,
     pub source: String,
     pub runtime: Option<String>,
     pub path: Option<PathBuf>,
@@ -133,6 +139,23 @@ pub struct Tool {
     pub can_update: bool,
     pub can_remove: bool,
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateStatus {
+    #[default]
+    Unknown,
+    Latest,
+    Ahead,
+    Major,
+    Minor,
+}
+
+impl UpdateStatus {
+    pub fn is_upgrade(self) -> bool {
+        matches!(self, Self::Major | Self::Minor)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +232,10 @@ pub struct Artifact {
     pub kind: String,
     pub size: Measurement,
     pub restore: String,
+    #[serde(default)]
+    pub can_clean: bool,
+    #[serde(default)]
+    pub cleanup_issue: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,7 +295,10 @@ pub struct Activity {
     pub title: String,
     pub status: String,
     pub detail: String,
-    pub freed_bytes: u64,
+    #[serde(default, alias = "freedBytes")]
+    pub removed_bytes: u64,
+    #[serde(default)]
+    pub reclaimed_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

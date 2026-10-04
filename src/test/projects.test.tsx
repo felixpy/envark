@@ -25,6 +25,8 @@ function project(id: string, protectedProject: boolean, ageDays: number): Projec
         kind: 'dependencies',
         size: { bytes: 1024, files: 1, skipped: 0, complete: true },
         restore: 'pnpm install',
+        canClean: true,
+        cleanupIssue: null,
       },
     ],
   }
@@ -40,7 +42,10 @@ function fixture() {
     project('older', false, 45),
     project('recent', false, 5),
     project('protected', true, 60),
+    project('unverified', false, 60),
   ]
+  data.inventory.projects[3].artifacts[0].canClean = false
+  data.inventory.projects[3].artifacts[0].cleanupIssue = 'Ownership is unverified.'
   const prepare = vi.fn(async () => ({
     id: 'plan',
     kind: 'clean',
@@ -86,6 +91,10 @@ describe('project cleanup selection', () => {
     expect(
       (screen.getByRole('checkbox', { name: 'Select protected' }) as HTMLButtonElement).disabled,
     ).toBe(true)
+    expect(
+      (screen.getByRole('checkbox', { name: 'Select unverified' }) as HTMLButtonElement).disabled,
+    ).toBe(true)
+    expect(screen.getByTitle('Ownership is unverified.')).toBeTruthy()
   })
   it('uses the saved inactivity threshold, not the prototype’s fixed 90 days', async () => {
     fixture()

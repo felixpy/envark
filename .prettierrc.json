@@ -1,1 +1,7 @@
-{ "semi": false, "singleQuote": true, "trailingComma": "all", "printWidth": 100 }
+{
+  "semi": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "printWidth": 100,
+  "overrides": [{ "files": "src-tauri/tauri.conf.json", "options": { "parser": "json-stringify" } }]
+}
