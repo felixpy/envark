@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/felixpy/envark/compare/v0.1.0...v0.2.0) (2026-10-04)
+
+
+### Features
+
+* improve repository workflows and desktop controls ([ef5b900](https://github.com/felixpy/envark/commit/ef5b90020889cacf4a2defdd962753b2a38e2bac))
+
 ## 0.1.0 (2026-10-04)
 
 
