@@ -24,6 +24,7 @@ export interface Backend {
   readConfig(id: string): Promise<ConfigContent>
   saveConfig(id: string, content: string, revision: string): Promise<ConfigContent>
   subscribe(callback: (progress: Progress) => void): Promise<() => void>
+  subscribeMenu?(callback: (action: string) => void): Promise<() => void>
 }
 
 const native: Backend = {
@@ -42,6 +43,7 @@ const native: Backend = {
   saveConfig: (id, content, revision) => invoke('save_config', { id, content, revision }),
   subscribe: (callback) =>
     listen<Progress>('envark://progress', (event) => callback(event.payload)),
+  subscribeMenu: (callback) => listen<string>('envark://menu', (event) => callback(event.payload)),
 }
 
 function browserBackend(): Backend {

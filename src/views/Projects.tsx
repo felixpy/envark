@@ -1,80 +1,64 @@
 import { useState } from 'react'
-import { FolderPlus, GitBranch, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
-import { formatBytes, idle, metadata, projectBytes, type ProviderId } from '@/domain'
+import { FolderPlus, RefreshCw, Trash2 } from 'lucide-react'
+import { formatBytes, idle, metadata, type ProviderId } from '@/domain'
 import { useStore } from '@/store'
-import { EcoDot, Empty, PageHeader, SearchInput } from '@/components/shared'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { useSelection } from '@/hooks/use-selection'
+import { Empty, PageHeader, SearchInput } from '@/components/shared'
+import { ActionButton, SelectionCheckbox } from '@/components/action-controls'
+import { ProjectTable, cleanupReason } from '@/components/ProjectTable'
+import { WorktreeTree } from '@/components/WorktreeTree'
 import { Badge } from '@/components/ui/badge'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
 
-export default function Projects() {
+export default function Projects({ worktrees = false }: { worktrees?: boolean }) {
   const s = useStore()
   const { t } = s
   const { inventory, settings } = s.data
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState('all')
-  const [idleOnly, setIdleOnly] = useState(false)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [idleOnly, setIdleOnly] = useState(s.focus.filter === 'idle')
+  const busyReason = s.busy
+    ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
+    : null
   const list = inventory.projects.filter(
     (p) =>
+      Boolean(p.isWorktree) === worktrees &&
       (provider === 'all' || p.providers.includes(provider as ProviderId)) &&
       (!idleOnly || idle(p, settings.idleDays)) &&
-      `${p.name} ${p.path}`.toLowerCase().includes(query.trim().toLowerCase()),
+      [p.name, p.path, p.branch, p.repository?.name]
+        .join(' ')
+        .toLowerCase()
+        .includes(query.trim().toLowerCase()),
   )
-  const eligible = list.flatMap((p) =>
-    p.protected ? [] : p.artifacts.filter((a) => a.canClean && a.size.complete),
-  )
-  const checked = eligible.length > 0 && eligible.every((a) => selected.has(a.id))
-  const toggle = (ids: string[], on: boolean) =>
-    setSelected((current) => {
-      const next = new Set(current)
-      for (const id of ids) {
-        if (on) next.add(id)
-        else next.delete(id)
-      }
-      return next
-    })
-  const chosen = eligible.filter((a) => selected.has(a.id))
-  const protect = (path: string, on: boolean) =>
-    void s
-      .saveSettings({
-        ...settings,
-        protectedProjects: on
-          ? [...settings.protectedProjects, path]
-          : settings.protectedProjects.filter((p) => p !== path),
-      })
-      .then((saved) => {
-        if (saved) void s.refresh()
-      })
+  const eligible = list.flatMap((p) => p.artifacts.filter((a) => !cleanupReason(p, a, t)))
+  const selection = useSelection(eligible.map((a) => a.id))
+  const chosen = eligible.filter((a) => selection.selected.has(a.id))
   return (
     <div className="space-y-6">
       <PageHeader
-        title={t('项目空间', 'Project space')}
-        description={t(
-          '清理可重建的依赖、虚拟环境与构建产物，保留源码和关键配置。',
-          'Review regenerable dependencies, environments, and build artifacts while preserving source and configuration.',
-        )}
+        title={worktrees ? 'Worktrees' : t('项目空间', 'Project space')}
+        description={
+          worktrees
+            ? t(
+                '主仓库在扫描范围内即可自动发现关联工作树，无需逐个添加。清理产物会保留工作树与分支。',
+                'Linked worktrees are included automatically when their main repository is in scope. Cleanup preserves worktrees and branches.',
+              )
+            : t(
+                '按 Git 仓库根目录汇总，子项目的依赖和构建产物归入所属仓库。',
+                'One entry per Git repository, including dependencies and build artifacts from its subprojects.',
+              )
+        }
         actions={
           <>
-            <Button variant="outline" disabled={s.busy} onClick={() => void s.addRoot()}>
+            <ActionButton variant="outline" reason={busyReason} onClick={() => void s.addRoot()}>
               <FolderPlus />
               {t('添加目录', 'Add folder')}
-            </Button>
-            <Button variant="outline" disabled={s.busy} onClick={() => void s.refresh()}>
+            </ActionButton>
+            <ActionButton variant="outline" reason={busyReason} onClick={() => void s.refresh()}>
               <RefreshCw />
               {t('重新扫描', 'Rescan')}
-            </Button>
+            </ActionButton>
           </>
         }
       />
@@ -82,7 +66,11 @@ export default function Projects() {
         <SearchInput
           value={query}
           onChange={setQuery}
-          placeholder={t('搜索项目', 'Search projects')}
+          placeholder={
+            worktrees
+              ? t('搜索仓库、分支或路径', 'Search repositories, branches, or paths')
+              : t('搜索项目', 'Search projects')
+          }
         />
         <Tabs value={provider} onValueChange={setProvider}>
           <TabsList>
@@ -99,139 +87,56 @@ export default function Projects() {
           {t('仅闲置', 'Idle only')} &gt; {settings.idleDays} {t('天', 'days')}
         </label>
       </div>
-      <Card className="overflow-hidden py-0 shadow-none">
-        <CardContent className="px-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10 pl-4">
-                  <Checkbox
-                    aria-label={t('选择所有可清理项目', 'Select all eligible artifacts')}
-                    checked={checked ? true : chosen.length ? 'indeterminate' : false}
-                    onCheckedChange={(on) =>
-                      toggle(
-                        eligible.map((a) => a.id),
-                        on === true,
-                      )
-                    }
-                  />
-                </TableHead>
-                <TableHead>{t('项目', 'Project')}</TableHead>
-                <TableHead>{t('最近活动', 'Last activity')}</TableHead>
-                <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>
-                <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {list.map((project) => (
-                <TableRow key={project.id}>
-                  <TableCell className="pl-4">
-                    <Checkbox
-                      aria-label={`${t('选择', 'Select')} ${project.name}`}
-                      disabled={
-                        project.protected ||
-                        !project.artifacts.some((a) => a.canClean && a.size.complete)
-                      }
-                      checked={
-                        project.artifacts.some((a) => a.canClean && a.size.complete) &&
-                        project.artifacts
-                          .filter((a) => a.canClean && a.size.complete)
-                          .every((a) => selected.has(a.id))
-                      }
-                      onCheckedChange={(on) =>
-                        toggle(
-                          project.artifacts
-                            .filter((a) => a.canClean && a.size.complete)
-                            .map((a) => a.id),
-                          on === true,
-                        )
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2 font-medium">
-                      <EcoDot id={project.providers[0]} />
-                      {project.name}
-                      {project.protected && <ShieldCheck className="size-3.5 text-emerald-600" />}
-                    </div>
-                    <div
-                      className="mt-1 max-w-80 truncate font-mono text-xs text-muted-foreground"
-                      title={project.path}
-                    >
-                      {project.path}
-                    </div>
-                    {project.branch && (
-                      <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                        <GitBranch className="size-3" />
-                        {project.branch}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {project.lastActive
-                      ? new Date(project.lastActive * 1000).toLocaleDateString()
-                      : t('未知', 'Unknown')}
-                    {!project.activityComplete && <p>{t('扫描不完整', 'Partial scan')}</p>}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex max-w-64 flex-wrap gap-1">
-                      {project.artifacts.map((artifact) => (
-                        <label
-                          key={artifact.id}
-                          title={artifact.cleanupIssue ?? undefined}
-                          className="flex cursor-pointer items-center gap-1 rounded border px-1.5 py-1 text-xs"
-                        >
-                          <Checkbox
-                            className="size-3"
-                            checked={selected.has(artifact.id)}
-                            disabled={
-                              project.protected || !artifact.canClean || !artifact.size.complete
-                            }
-                            onCheckedChange={(on) => toggle([artifact.id], on === true)}
-                          />
-                          {artifact.name}
-                          {!artifact.canClean && (
-                            <span className="text-muted-foreground">{t('只读', 'Read-only')}</span>
-                          )}
-                        </label>
-                      ))}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {formatBytes(projectBytes(project))}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={
-                        project.protected
-                          ? t('取消保护', 'Unprotect project')
-                          : t('保护项目', 'Protect project')
-                      }
-                      disabled={s.busy}
-                      onClick={() => protect(project.path, !project.protected)}
-                    >
-                      <ShieldCheck className={project.protected ? 'text-emerald-600' : ''} />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          {!list.length && (
-            <Empty>
-              {settings.roots.length
-                ? t(
-                    '没有符合条件的项目。点击重新扫描获取最新结果。',
-                    'No matching projects. Rescan to refresh the inventory.',
-                  )
-                : t('添加项目目录后开始扫描。', 'Add a project folder to get started.')}
-            </Empty>
-          )}
-        </CardContent>
-      </Card>
+      <p role="status" className="text-xs text-muted-foreground">
+        {eligible.length}{' '}
+        {t(
+          '个目录可选；受保护、归属不明或扫描不完整的目录不可清理。',
+          'directories selectable. Protected, unverified, or partially scanned directories cannot be cleaned.',
+        )}
+      </p>
+      {worktrees && (
+        <label className="flex items-center gap-2 text-xs">
+          <SelectionCheckbox
+            aria-label={t(
+              '选择全部工作树的可清理目录',
+              'Select eligible artifacts across all worktrees',
+            )}
+            reason={
+              busyReason ||
+              (!eligible.length
+                ? t('当前没有可清理目录。', 'No eligible directories in this view.')
+                : null)
+            }
+            checked={selection.checked ? true : selection.chosen.length ? 'indeterminate' : false}
+            onCheckedChange={(on) => selection.toggleAll(on === true)}
+          />
+          {t('选择全部工作树的可清理目录', 'Select eligible artifacts across all worktrees')}
+        </label>
+      )}
+      {worktrees ? (
+        <WorktreeTree
+          projects={list}
+          selected={selection.selected}
+          toggle={selection.toggle}
+          query={query}
+          showUnscanned={provider === 'all' && !idleOnly}
+        />
+      ) : (
+        <ProjectTable projects={list} selected={selection.selected} toggle={selection.toggle} />
+      )}
+      {!worktrees && !list.length && (
+        <Empty>
+          {settings.roots.length
+            ? t(
+                '没有符合条件的 Git 仓库。请检查筛选条件和扫描范围，或重新扫描。',
+                'No matching Git repositories. Check filters and scan roots, or rescan.',
+              )
+            : t(
+                '添加存放 Git 仓库的目录后开始扫描。',
+                'Add a folder containing Git repositories to start scanning.',
+              )}
+        </Empty>
+      )}
       {chosen.length > 0 && (
         <div className="sticky bottom-4 flex items-center justify-between rounded-xl border bg-background p-4 shadow-lg">
           <span className="text-sm">
@@ -240,15 +145,15 @@ export default function Projects() {
               {formatBytes(chosen.reduce((sum, a) => sum + a.size.bytes, 0))}
             </span>
           </span>
-          <Button
-            disabled={s.busy}
+          <ActionButton
+            reason={busyReason}
             onClick={() =>
               void s.prepare({ kind: 'cleanProjects', artifactIds: chosen.map((a) => a.id) })
             }
           >
             <Trash2 />
             {t('审阅清理', 'Review cleanup')}
-          </Button>
+          </ActionButton>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">

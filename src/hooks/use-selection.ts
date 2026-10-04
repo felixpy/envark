@@ -13,6 +13,7 @@ export function useSelection(eligible: string[]) {
       return next
     })
   return {
+    eligibleCount: eligible.length,
     selected,
     chosen,
     checked: chosen.length > 0 && chosen.length === eligible.length,

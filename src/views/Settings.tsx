@@ -107,8 +107,8 @@ export default function Settings() {
           <CardTitle>{t('项目扫描', 'Project scanning')}</CardTitle>
           <CardDescription>
             {t(
-              '仅扫描你选择的目录。重叠目录自动去重。',
-              'Only scan folders you choose. Overlapping roots are deduplicated.',
+              '扫描所选目录中的 Git 仓库及其关联 Worktree；无需单独添加工作树目录。重叠目录自动去重。',
+              'Scan Git repositories in selected folders and their linked worktrees. Worktrees need no separate scan root. Overlapping folders are deduplicated.',
             )}
           </CardDescription>
         </CardHeader>

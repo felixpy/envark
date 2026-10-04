@@ -6,6 +6,7 @@ use envark_core::{
 };
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
+mod menu;
 
 type NativeResult<T> = std::result::Result<T, String>;
 
@@ -22,11 +23,20 @@ async fn snapshot(engine: State<'_, Engine>) -> NativeResult<Snapshot> {
 }
 
 #[tauri::command]
-async fn save_settings(engine: State<'_, Engine>, settings: Settings) -> NativeResult<Snapshot> {
-    engine
+async fn save_settings(
+    app: tauri::AppHandle,
+    engine: State<'_, Engine>,
+    settings: Settings,
+) -> NativeResult<Snapshot> {
+    let language_changed = engine.snapshot().await.settings.language != settings.language;
+    let snapshot = engine
         .save_settings(settings)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if language_changed {
+        menu::install(&app, &snapshot.settings.language).map_err(|e| e.to_string())?;
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -91,8 +101,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app.manage(Engine::new(app.path().app_data_dir()?)?);
+            let engine = Engine::new(app.path().app_data_dir()?)?;
+            let language = tauri::async_runtime::block_on(engine.snapshot())
+                .settings
+                .language;
+            menu::install(app.handle(), &language)?;
+            app.manage(engine);
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            let _ = app.emit("envark://menu", event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,

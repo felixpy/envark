@@ -1,6 +1,16 @@
-import { Archive, ArrowRight, Database, FolderPlus, RefreshCw, AlertTriangle } from 'lucide-react'
+import {
+  Archive,
+  ArrowRight,
+  Database,
+  FolderPlus,
+  FolderGit2,
+  GitFork,
+  HardDriveDownload,
+  RefreshCw,
+  AlertTriangle,
+} from 'lucide-react'
 import { useStore } from '@/store'
-import { formatBytes, idle, metadata, projectBytes, providerIds, updateKind } from '@/domain'
+import { formatBytes, idle, metadata, projectBytes, updateKind } from '@/domain'
 import { EcoDot, Empty, PageHeader } from '@/components/shared'
 import {
   Card,
@@ -27,16 +37,24 @@ export default function Overview() {
       label: t('可审阅空间', 'Space to review'),
       value: formatBytes(idleSize + cacheSize),
       hint: t('闲置项目产物与已识别缓存', 'Inactive project artifacts and known caches'),
+      action: () =>
+        inactive.length
+          ? s.go(inactive.some((p) => !p.isWorktree) ? 'projects' : 'worktrees', null, {
+              filter: 'idle',
+            })
+          : s.go('caches'),
     },
     {
       label: t('运行时版本', 'Runtime versions'),
       value: inventory.providers.reduce((sum, p) => sum + p.runtimes.length, 0),
       hint: t('本机已检测到的版本', 'Installed versions detected on this computer'),
+      action: () => s.go('env', null, { filter: 'runtimes' }),
     },
     {
       label: t('项目', 'Projects'),
-      value: inventory.projects.length,
-      hint: `${inactive.length} ${t('个闲置超过', 'inactive for over')} ${settings.idleDays} ${t('天', 'days')}`,
+      value: inventory.projects.filter((p) => !p.isWorktree).length,
+      hint: `${inactive.filter((p) => !p.isWorktree).length} ${t('个闲置超过', 'inactive for over')} ${settings.idleDays} ${t('天', 'days')}`,
+      action: () => s.go('projects'),
     },
     {
       label: t('可用更新', 'Available updates'),
@@ -44,20 +62,25 @@ export default function Overview() {
       hint: settings.checkUpdates
         ? t('包管理器与全局工具', 'Package managers and global tools')
         : t('联网检查尚未开启', 'Online checks are turned off'),
+      action: () =>
+        settings.checkUpdates ? s.go('env', null, { filter: 'updates' }) : s.go('settings'),
     },
   ]
   const tasks = [
-    ...(inactive.length
-      ? [
-          {
-            icon: Archive,
-            title: `${inactive.length} ${t('个项目长期未活动', 'inactive projects')}`,
-            description: `${t('可重建产物占用', 'Regenerable artifacts use')} ${formatBytes(idleSize)}`,
-            cta: t('审阅清理', 'Review cleanup'),
-            action: () => s.go('projects'),
-          },
-        ]
-      : []),
+    ...(['projects', 'worktrees'] as const).flatMap((view) => {
+      const projects = inactive.filter((p) => Boolean(p.isWorktree) === (view === 'worktrees'))
+      return projects.length
+        ? [
+            {
+              icon: Archive,
+              title: `${projects.length} ${view === 'worktrees' ? t('个工作树长期未活动', 'inactive worktrees') : t('个项目长期未活动', 'inactive projects')}`,
+              description: `${t('可重建产物占用', 'Regenerable artifacts use')} ${formatBytes(projects.reduce((sum, p) => sum + projectBytes(p), 0))}`,
+              cta: t('审阅清理', 'Review cleanup'),
+              action: () => s.go(view, null, { filter: 'idle' }),
+            },
+          ]
+        : []
+    }),
     ...(cacheSize
       ? [
           {
@@ -112,17 +135,40 @@ export default function Overview() {
         ]
       : []),
   ]
-  const spaces = providerIds.map((id) => ({
-    id,
-    bytes:
-      inventory.projects
-        .filter((p) => p.providers[0] === id)
-        .reduce((sum, p) => sum + projectBytes(p), 0) +
-      inventory.caches.filter((c) => c.provider === id).reduce((sum, c) => sum + c.size.bytes, 0) +
-      (inventory.providers
-        .find((p) => p.id === id)
-        ?.assets.reduce((sum, a) => sum + a.size.bytes, 0) ?? 0),
-  }))
+  const spaces = [
+    {
+      label: t('项目产物', 'Project artifacts'),
+      icon: FolderGit2,
+      color: '#3b82f6',
+      bytes: inventory.projects
+        .filter((p) => !p.isWorktree)
+        .reduce((sum, p) => sum + projectBytes(p), 0),
+      action: () => s.go('projects'),
+    },
+    {
+      label: t('工作树产物', 'Worktree artifacts'),
+      icon: GitFork,
+      color: '#8b5cf6',
+      bytes: inventory.projects
+        .filter((p) => p.isWorktree)
+        .reduce((sum, p) => sum + projectBytes(p), 0),
+      action: () => s.go('worktrees'),
+    },
+    {
+      label: t('全局缓存', 'Global caches'),
+      icon: Database,
+      color: '#f59e0b',
+      bytes: cacheSize,
+      action: () => s.go('caches'),
+    },
+    {
+      label: t('模型与浏览器', 'Models & browsers'),
+      icon: HardDriveDownload,
+      color: '#10b981',
+      bytes: inventory.providers.flatMap((p) => p.assets).reduce((sum, a) => sum + a.size.bytes, 0),
+      action: () => s.go('env', null, { filter: 'downloads' }),
+    },
+  ]
   const total = spaces.reduce((sum, item) => sum + item.bytes, 0)
   return (
     <div className="space-y-6">
@@ -135,13 +181,21 @@ export default function Overview() {
       />
       <div className="grid grid-cols-4 gap-4 max-lg:grid-cols-2">
         {stats.map((stat) => (
-          <Card key={stat.label} className="gap-3 py-4 shadow-none">
-            <CardHeader className="px-4">
-              <CardDescription>{stat.label}</CardDescription>
-              <CardTitle className="text-2xl font-semibold tabular-nums">{stat.value}</CardTitle>
-            </CardHeader>
-            <CardContent className="px-4 text-xs text-muted-foreground">{stat.hint}</CardContent>
-          </Card>
+          <button
+            key={stat.label}
+            type="button"
+            onClick={stat.action}
+            className="group rounded-xl text-left focus-visible:outline-2 focus-visible:outline-ring"
+            aria-label={stat.label}
+          >
+            <Card className="h-full gap-3 py-4 shadow-none transition-colors group-hover:border-foreground/30">
+              <CardHeader className="px-4">
+                <CardDescription>{stat.label}</CardDescription>
+                <CardTitle className="text-2xl font-semibold tabular-nums">{stat.value}</CardTitle>
+              </CardHeader>
+              <CardContent className="px-4 text-xs text-muted-foreground">{stat.hint}</CardContent>
+            </Card>
+          </button>
         ))}
       </div>
       <div className="grid grid-cols-[1fr_340px] gap-4 max-lg:grid-cols-1">
@@ -158,7 +212,25 @@ export default function Overview() {
           <CardContent className="space-y-2">
             {tasks.length ? (
               tasks.map((task) => (
-                <div key={task.title} className="flex items-center gap-4 rounded-lg border p-3">
+                <button
+                  key={task.title}
+                  type="button"
+                  onClick={task.action}
+                  disabled={
+                    (task.icon === FolderPlus || task.icon === RefreshCw) &&
+                    (s.busy || !s.api.native)
+                  }
+                  title={
+                    task.icon === FolderPlus || task.icon === RefreshCw
+                      ? s.busy
+                        ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
+                        : !s.api.native
+                          ? t('请在桌面应用中执行扫描。', 'Scan from the desktop application.')
+                          : undefined
+                      : undefined
+                  }
+                  className="flex w-full items-center gap-4 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
                     <task.icon className="size-4 text-muted-foreground" />
                   </div>
@@ -166,11 +238,11 @@ export default function Overview() {
                     <div className="text-sm font-medium">{task.title}</div>
                     <div className="truncate text-xs text-muted-foreground">{task.description}</div>
                   </div>
-                  <Button variant="outline" size="sm" disabled={s.busy} onClick={task.action}>
+                  <span className="flex shrink-0 items-center gap-2 text-xs font-medium">
                     {task.cta}
-                    <ArrowRight />
-                  </Button>
-                </div>
+                    <ArrowRight className="size-3.5" />
+                  </span>
+                </button>
               ))
             ) : (
               <Empty>
@@ -190,11 +262,16 @@ export default function Overview() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            {spaces.map(({ id, bytes }) => (
-              <div key={id} className="space-y-1.5">
+            {spaces.map(({ label, bytes, color, icon: Icon, action }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={action}
+                className="block w-full space-y-1.5 rounded-md p-2 text-left transition-colors hover:bg-muted/50 focus-visible:outline-2 focus-visible:outline-ring"
+              >
                 <div className="flex items-center gap-2 text-sm">
-                  <EcoDot id={id} />
-                  {metadata[id].name}
+                  <Icon className="size-3.5" style={{ color }} />
+                  {label}
                   <span className="ml-auto font-mono text-xs text-muted-foreground">
                     {formatBytes(bytes)}
                   </span>
@@ -204,11 +281,11 @@ export default function Overview() {
                     className="h-full rounded-full transition-all"
                     style={{
                       width: `${total ? (bytes / total) * 100 : 0}%`,
-                      background: metadata[id].color,
+                      background: color,
                     }}
                   />
                 </div>
-              </div>
+              </button>
             ))}
           </CardContent>
         </Card>

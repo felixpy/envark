@@ -4,6 +4,7 @@ import {
   Boxes,
   Database,
   FolderGit2,
+  GitFork,
   HardDrive,
   History,
   LayoutDashboard,
@@ -37,6 +38,7 @@ import { Progress } from './components/ui/progress'
 import { Button } from './components/ui/button'
 import { EcoDot, Spinner } from './components/shared'
 import { OperationDialog } from './components/OperationDialog'
+import { DesktopMenu } from './components/DesktopMenu'
 const Overview = lazy(() => import('./views/Overview'))
 const Catalog = lazy(() => import('./views/Catalog'))
 const Environments = lazy(() => import('./views/Environments'))
@@ -52,6 +54,7 @@ function Shell() {
     { id: 'overview', label: t('概览', 'Overview'), icon: LayoutDashboard },
     { id: 'env', label: t('环境与工具', 'Environments & tools'), icon: Boxes },
     { id: 'projects', label: t('项目空间', 'Project space'), icon: FolderGit2 },
+    { id: 'worktrees', label: 'Worktrees', icon: GitFork },
     { id: 'caches', label: t('全局缓存', 'Global caches'), icon: Database },
     { id: 'activity', label: t('操作记录', 'Activity'), icon: History },
   ] as const
@@ -114,11 +117,20 @@ function Shell() {
                               isActive={s.view === 'env' && s.provider === id}
                               onClick={() => s.go('env', id)}
                             >
-                              <EcoDot id={id} />
+                              <EcoDot
+                                id={id}
+                                className={!provider?.detected ? 'grayscale opacity-50' : ''}
+                              />
                               {metadata[id].short}
                             </SidebarMenuButton>
-                            <SidebarMenuBadge className="max-w-24 truncate font-mono text-[11px] font-normal text-muted-foreground">
-                              {active?.version.split(' ')[0] ?? (provider?.assets.length || '')}
+                            <SidebarMenuBadge
+                              className={`max-w-24 truncate text-[10px] font-normal ${!provider?.detected ? 'rounded border border-muted-foreground/30 bg-muted px-1 text-muted-foreground' : 'font-mono text-muted-foreground'}`}
+                            >
+                              {!provider?.detected
+                                ? data.inventory.scannedAt
+                                  ? t('未检测到', 'Not detected')
+                                  : t('待扫描', 'Not scanned')
+                                : (active?.version.split(' ')[0] ?? (provider.assets.length || ''))}
                             </SidebarMenuBadge>
                           </SidebarMenuItem>
                         )
@@ -164,7 +176,7 @@ function Shell() {
             </div>
           </SidebarFooter>
         </Sidebar>
-        <SidebarInset>
+        <SidebarInset className="min-w-0">
           <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
             <Separator
@@ -229,7 +241,7 @@ function Shell() {
               {s.error}
             </div>
           )}
-          <main className="mx-auto w-full max-w-6xl flex-1 p-6 lg:p-8">
+          <div className="mx-auto w-full max-w-6xl flex-1 p-6 lg:p-8">
             {!s.loaded ? (
               <div className="flex gap-2 text-sm">
                 <Spinner />
@@ -237,13 +249,14 @@ function Shell() {
               </div>
             ) : (
               <Suspense fallback={<Spinner />}>
-                <Page view={s.view} />
+                <Page key={s.navigationKey} view={s.view} />
               </Suspense>
             )}
-          </main>
+          </div>
         </SidebarInset>
       </SidebarProvider>
       <OperationDialog />
+      <DesktopMenu />
       <Toaster position="bottom-right" />
     </TooltipProvider>
   )
@@ -258,6 +271,8 @@ function Page({ view }: { view: View }) {
       return s.provider ? <Environments key={s.provider} id={s.provider} /> : <Catalog />
     case 'projects':
       return <Projects />
+    case 'worktrees':
+      return <Projects worktrees />
     case 'caches':
       return <Caches />
     case 'activity':

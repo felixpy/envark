@@ -1,11 +1,10 @@
-import { useState } from 'react'
 import { Database, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes, metadata } from '@/domain'
 import { EcoDot, Empty, PageHeader } from '@/components/shared'
-import { Button } from '@/components/ui/button'
+import { ActionButton, SelectionCheckbox } from '@/components/action-controls'
+import { useSelection } from '@/hooks/use-selection'
 import { Card, CardContent } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import {
   Table,
@@ -19,9 +18,12 @@ import {
 export default function Caches() {
   const s = useStore()
   const { t } = s
-  const [selected, setSelected] = useState<Set<string>>(new Set())
   const caches = s.data.inventory.caches
-  const chosen = caches.filter((c) => selected.has(c.id) && c.canClean)
+  const selection = useSelection(caches.filter((c) => c.canClean).map((c) => c.id))
+  const chosen = caches.filter((c) => selection.chosen.includes(c.id))
+  const busyReason = s.busy
+    ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
+    : null
   return (
     <div className="space-y-6">
       <PageHeader
@@ -42,22 +44,49 @@ export default function Caches() {
             {t('个已识别缓存目录 · 逻辑大小', 'known cache directories · logical size')}
           </p>
         </div>
-        <Button
+        <ActionButton
           className="ml-auto"
-          disabled={!chosen.length || s.busy}
+          reason={
+            busyReason ||
+            (!chosen.length ? t('请先选择可清理的缓存。', 'Select an eligible cache first.') : null)
+          }
           onClick={() => void s.prepare({ kind: 'cleanCaches', ids: chosen.map((c) => c.id) })}
         >
           <Trash2 />
           {t('审阅清理', 'Review cleanup')}
           {chosen.length > 0 && ` (${chosen.length})`}
-        </Button>
+        </ActionButton>
       </div>
+      <p role="status" className="text-xs text-muted-foreground">
+        {selection.eligibleCount}{' '}
+        {t(
+          '项缓存可选；不支持清理的缓存会显示原因。',
+          'caches selectable. Unavailable caches explain why below.',
+        )}
+      </p>
       <Card className="overflow-hidden py-0 shadow-none">
         <CardContent className="px-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10" />
+                <TableHead className="w-10 pl-4">
+                  <SelectionCheckbox
+                    aria-label={t('选择全部可清理缓存', 'Select all eligible caches')}
+                    reason={
+                      busyReason ||
+                      (!selection.eligibleCount
+                        ? t(
+                            '当前没有可清理缓存，原因见各行说明。',
+                            'No eligible caches. See the reasons in each row.',
+                          )
+                        : null)
+                    }
+                    checked={
+                      selection.checked ? true : selection.chosen.length ? 'indeterminate' : false
+                    }
+                    onCheckedChange={(on) => selection.toggleAll(on === true)}
+                  />
+                </TableHead>
                 <TableHead>{t('缓存', 'Cache')}</TableHead>
                 <TableHead>{t('生态', 'Ecosystem')}</TableHead>
                 <TableHead>{t('清理方式', 'Cleanup strategy')}</TableHead>
@@ -68,18 +97,20 @@ export default function Caches() {
               {caches.map((cache) => (
                 <TableRow key={cache.id}>
                   <TableCell className="pl-4">
-                    <Checkbox
-                      checked={selected.has(cache.id)}
-                      disabled={!cache.canClean}
-                      aria-label={`${t('选择', 'Select')} ${cache.name}`}
-                      onCheckedChange={(checked) =>
-                        setSelected((previous) => {
-                          const next = new Set(previous)
-                          if (checked) next.add(cache.id)
-                          else next.delete(cache.id)
-                          return next
-                        })
+                    <SelectionCheckbox
+                      checked={cache.canClean && selection.selected.has(cache.id)}
+                      reason={
+                        busyReason ||
+                        (!cache.canClean
+                          ? cache.warning ||
+                            t(
+                              '尚不支持此缓存的原生清理，请使用原工具管理。',
+                              'Native cleanup is unavailable. Use the owning tool to manage this cache.',
+                            )
+                          : null)
                       }
+                      aria-label={`${t('选择', 'Select')} ${cache.name}`}
+                      onCheckedChange={(checked) => selection.toggle([cache.id], checked === true)}
                     />
                   </TableCell>
                   <TableCell>
@@ -107,6 +138,15 @@ export default function Caches() {
                         {t('由原工具管理', 'Owner-managed')}
                       </Badge>
                     )}
+                    <p className="mt-2 max-w-80 whitespace-normal text-xs text-muted-foreground">
+                      {cache.warning ||
+                        (!cache.canClean
+                          ? t(
+                              '尚不支持此缓存的原生清理，请使用原工具管理。',
+                              'Native cleanup is unavailable. Use the owning tool to manage this cache.',
+                            )
+                          : cache.strategy)}
+                    </p>
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
                     {!cache.size.complete && '≥ '}

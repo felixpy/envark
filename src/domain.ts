@@ -1,5 +1,10 @@
 export type ProviderId = 'js' | 'py' | 'jvm' | 'rust' | 'go' | 'ollama' | 'puppeteer' | 'playwright'
-export type View = 'overview' | 'env' | 'projects' | 'caches' | 'activity' | 'settings'
+export type View =
+  'overview' | 'env' | 'projects' | 'worktrees' | 'caches' | 'activity' | 'settings'
+export interface NavigationFocus {
+  filter?: 'idle' | 'updates' | 'runtimes' | 'downloads'
+  tab?: 'runtime' | 'pm' | 'global' | 'assets' | 'config'
+}
 export interface Settings {
   language: 'zh-CN' | 'zh-TW' | 'en'
   theme: 'light' | 'dark' | 'system'
@@ -109,6 +114,21 @@ export interface Project {
   pins: Record<string, string>
   protected: boolean
   artifacts: Artifact[]
+  repository?: Repository | null
+  isWorktree?: boolean
+}
+export interface Repository {
+  id: string
+  name: string
+  path: string
+}
+export interface Worktree {
+  id: string
+  repository: Repository
+  path: string
+  branch: string | null
+  locked: boolean
+  issue: string | null
 }
 export interface Cache {
   id: string
@@ -129,6 +149,7 @@ export interface Disk {
 export interface Inventory {
   providers: Provider[]
   projects: Project[]
+  worktrees: Worktree[]
   caches: Cache[]
   disks: Disk[]
   scannedAt: number | null
@@ -206,7 +227,15 @@ export const defaultSettings: Settings = {
 }
 export const emptySnapshot: Snapshot = {
   settings: defaultSettings,
-  inventory: { providers: [], projects: [], caches: [], disks: [], scannedAt: null, issues: [] },
+  inventory: {
+    providers: [],
+    projects: [],
+    worktrees: [],
+    caches: [],
+    disks: [],
+    scannedAt: null,
+    issues: [],
+  },
   activity: [],
   dataDir: '',
   platform: '',
