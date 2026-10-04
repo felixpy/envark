@@ -117,6 +117,7 @@ enum Step {
     },
     Tool {
         tool: crate::model::Tool,
+        remove: bool,
         command: CommandSpec,
     },
 }
@@ -414,6 +415,7 @@ fn prepare_steps(
             ));
             steps.push(Step::Tool {
                 tool: tool.clone(),
+                remove,
                 command,
             });
             if !remove {
@@ -656,8 +658,12 @@ async fn run_runtime(
 async fn run_tool(
     ctx: &Context,
     tool: crate::model::Tool,
+    remove: bool,
     command: CommandSpec,
 ) -> Result<(u64, String)> {
+    if !remove {
+        providers::updates::verify_installed(ctx, &tool).await?;
+    }
     if tool.source == "pnpm" {
         let path = tool.path.as_ref().ok_or_else(|| {
             Error::Conflict("The tool no longer has an installation path.".into())
@@ -741,7 +747,11 @@ pub async fn execute(
                     .map(|output| (0, output.stdout.trim().chars().take(4000).collect())),
                 Err(error) => Err(error),
             },
-            Step::Tool { tool, command } => run_tool(&ctx, tool, command).await,
+            Step::Tool {
+                tool,
+                remove,
+                command,
+            } => run_tool(&ctx, tool, remove, command).await,
             Step::Command(command) => ctx.runner.run(&command, &ctx.cancel).await.map(|output| {
                 (
                     0,

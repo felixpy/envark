@@ -42,6 +42,7 @@ export interface Tool {
   name: string
   version: string
   latest: string | null
+  updateStatus: 'unknown' | 'latest' | 'ahead' | 'major' | 'minor'
   source: string
   runtime: string | null
   path: string | null
@@ -335,11 +336,9 @@ export function idle(project: Project, days: number, time = Date.now()) {
 export function projectBytes(project: Project) {
   return project.artifacts.reduce((sum, artifact) => sum + artifact.size.bytes, 0)
 }
-export function updateKind(tool: Tool): 'unknown' | 'latest' | 'major' | 'minor' {
-  if (!tool.latest) return 'unknown'
-  if (tool.latest === tool.version) return 'latest'
-  return Number(tool.latest.replace(/^v/, '').split('.')[0]) >
-    Number(tool.version.replace(/^v/, '').split('.')[0])
-    ? 'major'
-    : 'minor'
+export function updateKind(tool: Tool): Tool['updateStatus'] {
+  return tool.updateStatus ?? 'unknown'
+}
+export function canUpdateTool(tool: Tool) {
+  return tool.canUpdate && ['major', 'minor'].includes(updateKind(tool))
 }

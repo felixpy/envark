@@ -95,6 +95,7 @@ js.tools = ['typescript', 'eslint', '@example/linked-tool'].map((name, index) =>
   name,
   version: '1.0.0',
   latest: index === 2 ? null : '2.0.0',
+  updateStatus: index === 2 ? 'unknown' : 'major',
   source: 'npm',
   runtime: '24.0.0',
   path: `/example/global/node_modules/${name}`,

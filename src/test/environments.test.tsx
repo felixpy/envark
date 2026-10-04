@@ -29,16 +29,17 @@ function fixture(provider: Provider) {
 
 it('bulk tool updates include only tools with a verified update capability', async () => {
   const provider = emptyProvider('js')
-  provider.tools = ['owned', 'external'].map((id): Tool => ({
+  provider.tools = ['owned', 'external', 'ahead', 'unknown'].map((id): Tool => ({
     id,
     name: id,
     version: '1.0.0',
     latest: '2.0.0',
+    updateStatus: id === 'ahead' ? 'ahead' : id === 'unknown' ? 'unknown' : 'major',
     source: 'npm',
     runtime: null,
     path: null,
     size: null,
-    canUpdate: id === 'owned',
+    canUpdate: id !== 'external',
     canRemove: false,
     note: null,
   }))

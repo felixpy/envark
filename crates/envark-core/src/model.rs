@@ -130,6 +130,8 @@ pub struct Tool {
     pub name: String,
     pub version: String,
     pub latest: Option<String>,
+    #[serde(default)]
+    pub update_status: UpdateStatus,
     pub source: String,
     pub runtime: Option<String>,
     pub path: Option<PathBuf>,
@@ -137,6 +139,23 @@ pub struct Tool {
     pub can_update: bool,
     pub can_remove: bool,
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateStatus {
+    #[default]
+    Unknown,
+    Latest,
+    Ahead,
+    Major,
+    Minor,
+}
+
+impl UpdateStatus {
+    pub fn is_upgrade(self) -> bool {
+        matches!(self, Self::Major | Self::Minor)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

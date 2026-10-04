@@ -255,6 +255,7 @@ pub(super) fn basic_tool(name: &str, version: String, source: &str, path: Option
         name: name.into(),
         version,
         latest: None,
+        update_status: Default::default(),
         source: source.into(),
         runtime: None,
         path,
