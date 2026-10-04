@@ -24,6 +24,8 @@ Use a body to explain motivation, constraints, and non-obvious tradeoffs when th
 
 ## Local checks
 
+Use Node.js 24.15.0 or later in the Node 24 series. The test environment requires this minimum version; CI and Node type declarations also target Node 24.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm prepare
