@@ -5,6 +5,55 @@ import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { checkVersions } from './check-versions.mjs'
 import { collectAssets, targets } from './publish-release.mjs'
+import { findReleaseByTag, getReleaseById } from './release-github.mjs'
+
+test('draft releases resolve without the published-only tag endpoint', () => {
+  const draft = { id: 42, tag_name: 'v0.1.0', draft: true }
+  const request = (path) => {
+    if (path === 'releases?per_page=100&page=1') return [draft]
+    if (path === 'releases/42') return draft
+    throw new Error(`Not Found: ${path}`)
+  }
+  const found = findReleaseByTag('v0.1.0', request)
+  assert.deepEqual(getReleaseById(found.id, 'v0.1.0', request), draft)
+  assert.equal(findReleaseByTag('v0.2.0', request), undefined)
+})
+
+test('draft recovery searches beyond the first page of releases', () => {
+  const draft = { id: 42, tag_name: 'v0.1.0', draft: true }
+  const firstPage = Array.from({ length: 100 }, (_, i) => ({
+    id: i + 100,
+    tag_name: `v1.0.${i}`,
+    draft: false,
+  }))
+  const request = (path) => {
+    if (path === 'releases?per_page=100&page=1') return firstPage
+    if (path === 'releases?per_page=100&page=2') return [draft]
+    throw new Error(`Unexpected request: ${path}`)
+  }
+  assert.deepEqual(findReleaseByTag('v0.1.0', request), draft)
+  assert.equal(findReleaseByTag('v0.2.0', request), undefined)
+})
+
+test('release validation rejects a changed identity or tag before publication', () => {
+  const draft = { id: 42, tag_name: 'v0.1.0', draft: true }
+  assert.throws(
+    () => getReleaseById('42', 'v0.1.0', () => ({ ...draft, id: 43 })),
+    /Release identity changed/,
+  )
+  assert.throws(
+    () => getReleaseById('42', 'v0.1.0', () => ({ ...draft, tag_name: 'v0.2.0' })),
+    /Release tag changed/,
+  )
+  for (const id of [undefined, '', '0', '-1', 'tags/v0.1.0']) {
+    assert.throws(
+      () => getReleaseById(id, 'v0.1.0', () => assert.fail('Invalid IDs must not reach the API')),
+      /Expected a release ID/,
+    )
+  }
+  const published = { ...draft, draft: false }
+  assert.equal(getReleaseById('42', 'v0.1.0', () => published).draft, false)
+})
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'envark-release-'))

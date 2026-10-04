@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { api, gh, tagCommit, validateTag } from './release-github.mjs'
+import { api, getReleaseById, gh, tagCommit, validateTag } from './release-github.mjs'
 
 export const targets = {
   'x86_64-pc-windows-msvc': ['.exe'],
@@ -53,8 +53,7 @@ export function collectAssets(root, version) {
 function publish() {
   const tag = validateTag(process.env.RELEASE_TAG)
   assert.equal(tagCommit(tag), process.env.RELEASE_SHA, 'The tag changed after the build')
-  const release = api(`releases/tags/${tag}`)
-  assert.equal(String(release.id), process.env.RELEASE_ID, 'Draft release identity changed')
+  const release = getReleaseById(process.env.RELEASE_ID, tag)
   if (!release.draft) {
     console.log(`${tag} is already published; leaving it unchanged.`)
     return
