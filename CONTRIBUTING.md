@@ -45,6 +45,8 @@ Do not bypass a failed message check. Correct the message and commit again.
 
 CI checks every commit introduced by a push to `main`, every commit in a pull request, and the PR title used for squash merging. A manual workflow run checks the selected tip. Dependency update messages use the same convention through Dependabot's `build` prefix and dependency scope.
 
+Dependabot generates version tables that exceed the body line limit. On its PRs, this one rule reports warnings; all other rules and the separate PR title check remain strict. Squash commit messages on `main` follow the normal rules.
+
 Published history follows this policy. Routine checks validate incoming commits; a branch rewrite validates the replacement history in full. Rewriting public history requires explicit authorization, a recoverable backup, and coordination with existing pull requests. Use an explicit `--force-with-lease` expectation to avoid overwriting concurrent changes.
 
 ## Releases
