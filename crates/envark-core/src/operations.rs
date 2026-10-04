@@ -133,7 +133,7 @@ pub struct ItemResult {
     pub title: String,
     pub status: String,
     pub message: String,
-    pub freed_bytes: u64,
+    pub removed_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,7 +141,8 @@ pub struct ItemResult {
 pub struct OperationResult {
     pub items: Vec<ItemResult>,
     pub cancelled: bool,
-    pub freed_bytes: u64,
+    pub removed_bytes: u64,
+    pub reclaimed_bytes: Option<u64>,
 }
 
 fn eligible_project(project: &Project, settings: &Settings) -> Result<()> {
@@ -540,11 +541,11 @@ fn remove_directory(
     }
     if use_trash {
         trash::delete(path).map_err(|e| Error::Unavailable(e.to_string()))?;
-        Ok(0)
     } else {
         std::fs::remove_dir_all(path)?;
-        Ok(current.bytes)
     }
+    // Logical bytes removed from this location; hard links and Trash can retain disk blocks.
+    Ok(current.bytes)
 }
 
 async fn clean_project(
@@ -713,7 +714,8 @@ pub async fn execute(
     let mut result = OperationResult {
         items: vec![],
         cancelled: false,
-        freed_bytes: 0,
+        removed_bytes: 0,
+        reclaimed_bytes: None,
     };
     for (index, step) in plan.steps.into_iter().enumerate() {
         if ctx.cancel.is_cancelled() {
@@ -792,12 +794,12 @@ pub async fn execute(
         };
         match outcome {
             Ok((bytes, message)) => {
-                result.freed_bytes += bytes;
+                result.removed_bytes += bytes;
                 result.items.push(ItemResult {
                     title,
                     status: "success".into(),
                     message,
-                    freed_bytes: bytes,
+                    removed_bytes: bytes,
                 });
             }
             Err(Error::Cancelled) => {
@@ -807,7 +809,7 @@ pub async fn execute(
                     status: "cancelled".into(),
                     message: "Cancellation requested; inspect the inventory for partial changes."
                         .into(),
-                    freed_bytes: 0,
+                    removed_bytes: 0,
                 });
                 break;
             }
@@ -815,7 +817,7 @@ pub async fn execute(
                 title,
                 status: "failed".into(),
                 message: e.to_string(),
-                freed_bytes: 0,
+                removed_bytes: 0,
             }),
         }
     }
@@ -826,6 +828,59 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::{model::silent_progress, scanner};
+
+    #[tokio::test]
+    async fn hard_link_cleanup_reports_logical_bytes_without_claiming_disk_reclamation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("artifact");
+        std::fs::create_dir(&path).unwrap();
+        let shared = root.path().join("shared-store");
+        std::fs::write(&shared, vec![1_u8; 2 * 1024 * 1024]).unwrap();
+        std::fs::hard_link(&shared, path.join("package")).unwrap();
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let size = measure(&path, &ctx.cancel).unwrap();
+        let plan = Plan {
+            view: PlanView {
+                id: "test".into(),
+                kind: "clean".into(),
+                created_at: now(),
+                items: vec![PlanItem {
+                    title: "fixture".into(),
+                    path: Some(path.clone()),
+                    command: None,
+                    bytes: size.bytes,
+                    restore: None,
+                }],
+                warnings: vec![],
+                use_trash: false,
+            },
+            steps: vec![Step::Asset {
+                root: root.path().into(),
+                modified: modified(&path),
+                path,
+                size,
+            }],
+        };
+        let result = execute(
+            plan,
+            Settings {
+                use_trash: false,
+                ..Default::default()
+            },
+            ctx,
+            silent_progress(),
+            "test".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.items[0].status, "success");
+        assert_eq!(result.removed_bytes, 2 * 1024 * 1024);
+        assert_eq!(result.reclaimed_bytes, None);
+        assert_eq!(
+            std::fs::metadata(shared).unwrap().len(),
+            result.removed_bytes
+        );
+    }
 
     #[tokio::test]
     async fn cleanup_preserves_custom_build_sources_and_git_tracked_dependencies() {

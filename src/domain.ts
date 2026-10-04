@@ -141,7 +141,8 @@ export interface Activity {
   title: string
   status: string
   detail: string
-  freedBytes: number
+  removedBytes: number
+  reclaimedBytes: number | null
 }
 export interface Snapshot {
   settings: Settings
@@ -185,9 +186,10 @@ export interface Plan {
   useTrash: boolean
 }
 export interface OperationResult {
-  items: { title: string; status: string; message: string; freedBytes: number }[]
+  items: { title: string; status: string; message: string; removedBytes: number }[]
   cancelled: boolean
-  freedBytes: number
+  removedBytes: number
+  reclaimedBytes: number | null
 }
 
 export const defaultSettings: Settings = {

@@ -82,7 +82,7 @@ impl Engine {
         title: String,
         status: &str,
         detail: String,
-        freed_bytes: u64,
+        removed_bytes: u64,
     ) {
         let mut state = self.state.write().await;
         state.activity.insert(
@@ -94,7 +94,8 @@ impl Engine {
                 title,
                 status: status.into(),
                 detail,
-                freed_bytes,
+                removed_bytes,
+                reclaimed_bytes: None,
             },
         );
         state.activity.truncate(1000);
@@ -326,7 +327,7 @@ impl Engine {
                         .map(|r| format!("{}: {} {}", r.title, r.status, r.message))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                    result.freed_bytes,
+                    result.removed_bytes,
                 )
                 .await;
             }
@@ -360,7 +361,7 @@ mod tests {
             .await;
         let snapshot = engine.snapshot().await;
         assert_eq!(snapshot.activity[0].status, "success");
-        assert_eq!(snapshot.activity[0].freed_bytes, 12);
+        assert_eq!(snapshot.activity[0].removed_bytes, 12);
         assert!(snapshot.inventory.issues[0].contains("could not be saved"));
     }
 }

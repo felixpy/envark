@@ -295,7 +295,10 @@ pub struct Activity {
     pub title: String,
     pub status: String,
     pub detail: String,
-    pub freed_bytes: u64,
+    #[serde(default, alias = "freedBytes")]
+    pub removed_bytes: u64,
+    #[serde(default)]
+    pub reclaimed_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
