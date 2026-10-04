@@ -6,6 +6,7 @@ import {
   formatBytes,
   metadata,
   updateKind,
+  canUpdateTool,
   type ConfigContent,
   type ProviderId,
   type Tool,
@@ -229,6 +230,9 @@ export default function Environments({ id }: { id: ProviderId }) {
                       <div className="flex items-center gap-2 font-mono">
                         {runtime.version}
                         {runtime.active && <Badge>{t('当前环境', 'Current environment')}</Badge>}
+                        {!runtime.activeKnown && (
+                          <Badge variant="outline">{t('活动状态未知', 'Activity unknown')}</Badge>
+                        )}
                         {!runtime.managed && (
                           <Badge variant="outline">{t('只读', 'Read-only')}</Badge>
                         )}
@@ -265,7 +269,9 @@ export default function Environments({ id }: { id: ProviderId }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={runtime.active || !runtime.managed || s.busy}
+                          disabled={
+                            runtime.active || !runtime.activeKnown || !runtime.managed || s.busy
+                          }
                           onClick={() => operation('removeRuntime', runtime.id)}
                         >
                           <Trash2 />
@@ -612,7 +618,7 @@ function Tools({
           ? ['major', 'minor'].includes(updateKind(item))
           : updateKind(item) === status)),
   )
-  const selection = useSelection(visible.filter((item) => item.canUpdate).map((item) => item.id))
+  const selection = useSelection(visible.filter(canUpdateTool).map((item) => item.id))
   return (
     <Card className="shadow-none">
       <CardHeader>
@@ -659,6 +665,7 @@ function Tools({
                   ['outdated', t('可更新', 'Updatable')],
                   ['major', t('大版本更新', 'Major update')],
                   ['latest', t('已最新', 'Up to date')],
+                  ['ahead', t('高于已发布版本', 'Ahead of published version')],
                   ['unknown', t('未检查', 'Not checked')],
                 ].map(([value, label]) => (
                   <SelectItem key={value} value={value}>
@@ -719,7 +726,7 @@ function Tools({
                 <TableCell>
                   <Checkbox
                     aria-label={`${t('选择', 'Select')} ${item.name}`}
-                    disabled={!item.canUpdate || busy}
+                    disabled={!canUpdateTool(item) || busy}
                     checked={selection.selected.has(item.id)}
                     onCheckedChange={(on) => selection.toggle([item.id], on === true)}
                   />
@@ -735,8 +742,18 @@ function Tools({
                 </TableCell>
                 <TableCell className="font-mono text-xs">
                   {item.version}
-                  {item.latest && item.latest !== item.version && (
+                  {['major', 'minor'].includes(updateKind(item)) && (
                     <span className="block text-emerald-600">→ {item.latest}</span>
+                  )}
+                  {updateKind(item) === 'ahead' && (
+                    <span className="block text-muted-foreground">
+                      {t('高于已发布版本', 'Ahead of published version')}
+                    </span>
+                  )}
+                  {updateKind(item) === 'unknown' && (
+                    <span className="block text-muted-foreground">
+                      {t('需检查更新', 'Update check required')}
+                    </span>
                   )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
@@ -750,7 +767,7 @@ function Tools({
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!item.canUpdate || busy}
+                      disabled={!canUpdateTool(item) || busy}
                       onClick={() => onUpdate(item)}
                     >
                       <ArrowUp />

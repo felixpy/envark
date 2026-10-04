@@ -1,8 +1,16 @@
 # Envark
 
-A desktop home for developer environments, installed tools, and disk space.
+Manage development environments, global tools, and disk usage from one desktop application.
 
-Envark uses a React interface based on the supplied Figma Make design and a standalone Rust core inside Tauri 2. The application targets Windows, macOS, and Ubuntu. This repository is under active development.
+Envark targets Windows, macOS, and Ubuntu and is under active development.
+
+## Features
+
+- Inspect runtimes, global tools, and caches across Node.js, Python, Java, Rust, and Go.
+- Run supported installation, update, and removal operations through existing tool managers.
+- Scan projects for generated dependencies and build artifacts, then review cleanup targets.
+- Inspect Ollama models and browser downloads, including their reported disk usage.
+- Edit tool configuration with backups and track operation results locally.
 
 ## Development
 
@@ -10,12 +18,11 @@ Use an existing Rust toolchain (1.99 or newer), Node.js 24, and pnpm 11.19.0. In
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm prepare
 pnpm desktop
 ```
 
-`pnpm dev` opens the interface in a browser. Browser mode clearly identifies itself and does not read or modify the host filesystem. Native operations require the desktop application.
-
-For populated-screen development checks, open `/preview.html` on the development server. It uses clearly labeled synthetic fixtures, rejects host operations, and is excluded from production builds.
+Use `pnpm dev` for frontend development in a browser. Environment and filesystem operations require the desktop application.
 
 ```sh
 pnpm check
@@ -26,9 +33,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 pnpm desktop:build
 ```
 
-Run `pnpm locales` after adding interface strings. Traditional Chinese is generated at development time, keeping conversion dictionaries out of the application bundle. Source identifiers, comments, and contributor documentation use English.
+Run `pnpm locales` after adding interface strings to update Traditional Chinese translations.
 
-Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). After installing dependencies, run `pnpm prepare` to enable the local `commit-msg` check; CI validates new commits and pull request titles. See [CONTRIBUTING.md](CONTRIBUTING.md) for examples and commit scope guidance.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions and local checks.
 
 ## Structure
 
@@ -44,15 +51,11 @@ Provider adapters discover installation owners and supported capabilities. Unkno
 
 ## Operations and storage
 
-- Project scanning prunes dependency and build trees before discovering nested projects. Directory measurement uses at most four workers. Child process concurrency is bounded independently.
-- Scans support cancellation and report inaccessible paths. Unknown activity is never classified as inactivity.
-- Native file notifications allow reuse of unchanged roots for up to 60 seconds. Cleanup always remeasures its targets.
-- Cleanup plans are stored in the native process, expire after ten minutes, and can be executed only once. The renderer sends identifiers, never arbitrary executable commands.
-- Project cleanup requires current project markers, an approved scan root, an allowlisted generated directory, and unchanged contents. Symbolic links and Windows junctions cannot be cleanup roots.
-- Project artifacts and browser downloads go to the system Trash by default. Moving to Trash is not reported as reclaimed disk space.
-- Shared caches use their owning tool's cleanup commands. Their displayed size is an estimate of the maximum available content, not a guarantee of reclaimed space.
+- Review cleanup targets and recovery guidance before execution. Protect projects in the project view to keep them out of cleanup.
+- Project artifacts and browser downloads go to the system Trash by default and can be restored from there.
+- Shared caches use their owning tool's cleanup commands. Actual reclaimed space can be smaller than the displayed cache size.
 - Settings, inventory, and activity are stored locally in the operating system's application data directory. Configuration edits create a backup and reject concurrent external changes.
-- Public package registry checks are opt-in. Model usage and browser usage remain unknown when no reliable source exists.
+- Public package registry checks are opt-in. Activity and resource usage are shown as unknown when no reliable source exists.
 
 Space figures are logical sizes. Hard links, shared model layers, sparse files, and filesystem compression can change physical disk usage.
 
@@ -60,8 +63,4 @@ Space figures are logical sizes. Hard links, shared model layers, sparse files, 
 
 GitHub Actions validates the code and produces Windows NSIS installers, macOS DMGs for Apple Silicon and Intel, and Ubuntu DEB/AppImage packages. Every successful branch build uploads artifacts. A `v*` tag publishes the corresponding release after all platform jobs pass.
 
-Signing certificates are not configured. Generated packages are unsigned; macOS notarization and Windows signing are release infrastructure work, not implied by a successful build.
-
-## Reference
-
-The interface follows the user-provided [Figma Make prototype](https://www.figma.com/make/KWKVJuPEKMrlT1dOhfEoOE/DevShelf-Desktop-App-Prototype), renamed to Envark. Prototype-only sample data and simulated successful operations are not included in the native backend.
+Build artifacts are currently unsigned.

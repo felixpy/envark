@@ -85,6 +85,9 @@ fn npm_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> 
 
 pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> {
     valid_identifier(&tool.name)?;
+    if !remove {
+        super::updates::require_upgrade(tool)?;
+    }
     let mut spec = match tool.source.as_str() {
         "npm" => npm_command(ctx, tool, remove)?,
         "pnpm" => {
@@ -143,6 +146,12 @@ pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandS
         }
     };
     spec.cwd = Some(ctx.home.clone());
+    if tool.source == "cargo" && !remove {
+        spec.args.extend([
+            "--version".into(),
+            tool.latest.clone().expect("verified upgrade"),
+        ]);
+    }
     spec.timeout = std::time::Duration::from_secs(1800);
     Ok(spec)
 }

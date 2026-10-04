@@ -72,6 +72,8 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             });
             let version = name.trim_start_matches('v').to_owned();
             provider.runtimes.push(Runtime {
+                selector: None,
+                active_known: true,
                 id: id_for("runtime", &installation),
                 version: version.clone(),
                 manager: manager.into(),
@@ -93,7 +95,7 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         && !provider.runtimes.iter().any(|r| r.active)
     {
         let root = path.parent().unwrap_or(&path).to_path_buf();
-        provider.runtimes.push(Runtime { id: id_for("runtime", &path), version, manager: "PATH".into(), path: root, active: true, managed: false, size: None, note: Some("The installation owner is unknown; manage this runtime with its original installer.".into()) });
+        provider.runtimes.push(Runtime { selector: None, active_known: true, id: id_for("runtime", &path), version, manager: "PATH".into(), path: root, active: true, managed: false, size: None, note: Some("The installation owner is unknown; manage this runtime with its original installer.".into()) });
     }
     for manager in ["npm", "pnpm", "yarn", "bun", "corepack"] {
         if let Ok(version) = ctx.read(manager, &["--version"]).await {

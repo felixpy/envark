@@ -18,8 +18,8 @@ export default function Activity() {
       <PageHeader
         title={t('操作记录', 'Activity')}
         description={t(
-          '查看执行结果、失败原因与已确认释放的空间。记录仅保存在本机。',
-          'Review results, failures, and verified reclaimed space. Activity stays on this computer.',
+          '查看执行结果、失败原因与移除的逻辑大小。实际磁盘释放量未测量，记录仅保存在本机。',
+          'Review results, failures, and logical size removed. Physical disk reclamation is unmeasured. Activity stays on this computer.',
         )}
         actions={
           <SearchInput
@@ -57,9 +57,9 @@ export default function Activity() {
                     {new Date(item.time * 1000).toLocaleString()}
                   </p>
                 </div>
-                {item.freedBytes > 0 && (
+                {item.removedBytes > 0 && (
                   <span className="font-mono text-xs text-emerald-600">
-                    −{formatBytes(item.freedBytes)}
+                    {t('移除', 'Removed')} {formatBytes(item.removedBytes)}
                   </span>
                 )}
                 <Badge variant="outline">{item.status}</Badge>

@@ -1,5 +1,7 @@
 mod javascript;
 mod languages;
+pub mod ollama;
+pub mod python;
 mod resources;
 mod shell_managers;
 mod tool_commands;
@@ -109,16 +111,21 @@ impl Context {
 
     pub async fn read(&self, name: &str, args: &[&str]) -> Result<String> {
         let mut spec = self.command(name, args)?;
-        spec.cwd = Some(self.home.clone());
-        spec.env
-            .insert("UV_PYTHON_DOWNLOADS".into(), "never".into());
-        spec.env.insert("GOTOOLCHAIN".into(), "local".into());
+        self.apply_read_policy(&mut spec);
         let output = self.runner.run(&spec, &self.cancel).await?;
         Ok(if output.stdout.trim().is_empty() {
             output.stderr
         } else {
             output.stdout
         })
+    }
+
+    fn apply_read_policy(&self, spec: &mut CommandSpec) {
+        spec.cwd = Some(self.home.clone());
+        spec.env
+            .insert("UV_PYTHON_DOWNLOADS".into(), "never".into());
+        spec.env.insert("GOTOOLCHAIN".into(), "local".into());
+        spec.env.insert("RUSTUP_AUTO_INSTALL".into(), "0".into());
     }
 
     pub async fn manager(&self, name: &str, install: bool, default: bool) -> Option<Manager> {
@@ -248,6 +255,7 @@ pub(super) fn basic_tool(name: &str, version: String, source: &str, path: Option
         name: name.into(),
         version,
         latest: None,
+        update_status: Default::default(),
         source: source.into(),
         runtime: None,
         path,
@@ -433,4 +441,33 @@ pub fn cache_probe(cache: &Cache, command: &CommandSpec) -> Option<CommandSpec> 
     *probe.args.iter_mut().find(|a| *a == action)? = replacement.into();
     probe.timeout = std::time::Duration::from_secs(20);
     Some(probe)
+}
+
+#[cfg(test)]
+mod read_policy_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "subprocess fixture launched by read_policy_reaches_child_processes"]
+    fn toolchain_probe_fixture() {
+        assert_eq!(std::env::var("RUSTUP_AUTO_INSTALL").unwrap(), "0");
+        assert_eq!(std::env::var("UV_PYTHON_DOWNLOADS").unwrap(), "never");
+        assert_eq!(std::env::var("GOTOOLCHAIN").unwrap(), "local");
+    }
+
+    #[tokio::test]
+    async fn read_policy_reaches_child_processes() {
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let mut command = CommandSpec::new(
+            std::env::current_exe().unwrap(),
+            [
+                "--ignored",
+                "--exact",
+                "providers::read_policy_tests::toolchain_probe_fixture",
+            ],
+        );
+        command.env.insert("RUSTUP_AUTO_INSTALL".into(), "1".into());
+        ctx.apply_read_policy(&mut command);
+        ctx.runner.run(&command, &ctx.cancel).await.unwrap();
+    }
 }

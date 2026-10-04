@@ -1,5 +1,6 @@
 use crate::{
     Error, Result,
+    artifact_policy::protect_tracked_files,
     filesystem::{contained_directory, measure, modified, reject_links},
     model::{
         Artifact, Cache, Inventory, Measurement, Progress, ProgressSink, Project, ProviderId,
@@ -7,7 +8,7 @@ use crate::{
     },
     process::CommandSpec,
     providers::{self, Context},
-    scanner::{is_project_artifact, project_in_scope},
+    scanner::{artifact_in_scope, is_project_artifact, project_in_scope},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -103,8 +104,20 @@ enum Step {
         command: CommandSpec,
     },
     Command(CommandSpec),
+    Runtime {
+        runtime: crate::model::Runtime,
+        remove: bool,
+        command: CommandSpec,
+    },
+    Ollama {
+        endpoint: String,
+        name: String,
+        digest: String,
+        command: CommandSpec,
+    },
     Tool {
         tool: crate::model::Tool,
+        remove: bool,
         command: CommandSpec,
     },
 }
@@ -120,7 +133,7 @@ pub struct ItemResult {
     pub title: String,
     pub status: String,
     pub message: String,
-    pub freed_bytes: u64,
+    pub removed_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,7 +141,8 @@ pub struct ItemResult {
 pub struct OperationResult {
     pub items: Vec<ItemResult>,
     pub cancelled: bool,
-    pub freed_bytes: u64,
+    pub removed_bytes: u64,
+    pub reclaimed_bytes: Option<u64>,
 }
 
 fn eligible_project(project: &Project, settings: &Settings) -> Result<()> {
@@ -167,7 +181,46 @@ fn command_item(title: String, command: CommandSpec, view: &mut PlanView, steps:
     steps.push(Step::Command(command));
 }
 
-pub fn prepare(
+pub async fn prepare(
+    request: ActionRequest,
+    inventory: &Inventory,
+    settings: &Settings,
+    ctx: &Context,
+) -> Result<Plan> {
+    let (inventory, settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
+    let plan =
+        tokio::task::spawn_blocking(move || prepare_steps(request, &inventory, &settings, &worker))
+            .await
+            .map_err(|e| Error::Unavailable(e.to_string()))??;
+    for step in &plan.steps {
+        if let Step::Runtime {
+            runtime,
+            remove: true,
+            ..
+        } = step
+        {
+            providers::python::verify_removal(ctx, runtime).await?;
+        }
+        if let Step::Project {
+            project, artifact, ..
+        } = step
+        {
+            protect_tracked_files(ctx, project, artifact).await?;
+        }
+        if let Step::Ollama {
+            endpoint,
+            name,
+            digest,
+            ..
+        } = step
+        {
+            providers::ollama::verify(ctx, endpoint, name, digest).await?;
+        }
+    }
+    Ok(plan)
+}
+
+fn prepare_steps(
     request: ActionRequest,
     inventory: &Inventory,
     settings: &Settings,
@@ -191,7 +244,7 @@ pub fn prepare(
                 return Err(Error::InvalidInput("Select at most 500 tools.".into()));
             }
             for id in ids.into_iter().collect::<HashSet<_>>() {
-                let child = prepare(
+                let child = prepare_steps(
                     ActionRequest::UpdateTool { provider, id },
                     inventory,
                     settings,
@@ -211,7 +264,11 @@ pub fn prepare(
                         continue;
                     }
                     eligible_project(project, settings)?;
-                    if !is_project_artifact(project, artifact) || !artifact.size.complete {
+                    artifact_in_scope(&artifact.path, settings, &ctx.cancel)?;
+                    if !artifact.can_clean
+                        || !is_project_artifact(project, artifact)
+                        || !artifact.size.complete
+                    {
                         return Err(Error::Conflict("An artifact changed or its size scan was incomplete. Scan again before cleaning.".into()));
                     }
                     contained_directory(&project.path, &artifact.path)?;
@@ -298,9 +355,9 @@ pub fn prepare(
                 .find(|p| p.id == provider)
                 .and_then(|p| p.runtimes.iter().find(|r| r.id == id))
                 .ok_or_else(|| Error::Conflict("Runtime no longer exists.".into()))?;
-            if !runtime.managed || (remove && runtime.active) {
+            if !runtime.managed || (remove && (runtime.active || !runtime.active_known)) {
                 return Err(Error::Unavailable(
-                    "Active or externally managed runtimes cannot be removed.".into(),
+                    "Active, unverified, or externally managed runtimes cannot be removed.".into(),
                 ));
             }
             if remove {
@@ -312,21 +369,27 @@ pub fn prepare(
             } else {
                 view.warnings.push("This changes the manager's default. Already-open terminals and Envark may keep their inherited environment until restarted.".into());
             }
-            command_item(
+            let verb = if remove { "remove" } else { "default" };
+            let command = if ["uv", "pyenv"].contains(&runtime.manager.as_str()) {
+                providers::python::command(ctx, runtime, verb)?
+            } else {
+                providers::runtime_command(ctx, &runtime.manager, verb, &runtime.version)?
+            };
+            let mut item = command_description(
                 format!(
                     "{} {}",
                     if remove { "Remove" } else { "Set default" },
                     runtime.version
                 ),
-                providers::runtime_command(
-                    ctx,
-                    &runtime.manager,
-                    if remove { "remove" } else { "default" },
-                    &runtime.version,
-                )?,
-                &mut view,
-                &mut steps,
+                &command,
             );
+            item.path = Some(runtime.path.clone());
+            view.items.push(item);
+            steps.push(Step::Runtime {
+                runtime: runtime.clone(),
+                remove,
+                command,
+            });
         }
         ActionRequest::UpdateTool { provider, id } | ActionRequest::RemoveTool { provider, id } => {
             let remove = is_remove_tool;
@@ -353,6 +416,7 @@ pub fn prepare(
             ));
             steps.push(Step::Tool {
                 tool: tool.clone(),
+                remove,
                 command,
             });
             if !remove {
@@ -377,13 +441,27 @@ pub fn prepare(
                     ));
                 }
                 if provider == ProviderId::Ollama {
-                    providers::valid_identifier(&asset.name)?;
-                    command_item(
-                        format!("Remove {}", asset.name),
-                        ctx.command("ollama", &["rm", &asset.name])?,
-                        &mut view,
-                        &mut steps,
-                    );
+                    let endpoint = owner
+                        .service
+                        .as_ref()
+                        .filter(|service| service.running)
+                        .map(|service| service.endpoint.clone())
+                        .ok_or_else(|| {
+                            Error::Unavailable(
+                                "Refresh the local Ollama service before removing models.".into(),
+                            )
+                        })?;
+                    let command = providers::ollama::command(ctx, &endpoint, "rm", &asset.name)?;
+                    view.items.push(command_description(
+                        format!("Remove {} at {endpoint}", asset.name),
+                        &command,
+                    ));
+                    steps.push(Step::Ollama {
+                        endpoint,
+                        name: asset.name.clone(),
+                        digest: asset.version.clone(),
+                        command,
+                    });
                 } else {
                     let root = asset
                         .path
@@ -406,10 +484,14 @@ pub fn prepare(
             provider: ProviderId::Ollama,
             name,
         } => {
-            providers::valid_identifier(&name)?;
-            let mut command = ctx.command("ollama", &["pull", &name])?;
-            command.timeout = std::time::Duration::from_secs(7200);
-            command_item(format!("Download {name}"), command, &mut view, &mut steps);
+            let endpoint = providers::ollama::ENDPOINT;
+            let command = providers::ollama::command(ctx, endpoint, "pull", &name)?;
+            command_item(
+                format!("Download {name} at {endpoint}"),
+                command,
+                &mut view,
+                &mut steps,
+            );
         }
         ActionRequest::DownloadAsset { .. } => {
             return Err(Error::Unavailable(
@@ -459,11 +541,51 @@ fn remove_directory(
     }
     if use_trash {
         trash::delete(path).map_err(|e| Error::Unavailable(e.to_string()))?;
-        Ok(0)
     } else {
         std::fs::remove_dir_all(path)?;
-        Ok(current.bytes)
     }
+    // Logical bytes removed from this location; hard links and Trash can retain disk blocks.
+    Ok(current.bytes)
+}
+
+async fn clean_project(
+    ctx: &Context,
+    project: Project,
+    artifact: Artifact,
+    timestamp: Option<u64>,
+    settings: Settings,
+) -> Result<(u64, String)> {
+    protect_tracked_files(ctx, &project, &artifact).await?;
+    let token = ctx.cancel.clone();
+    let use_trash = settings.use_trash;
+    let bytes = tokio::task::spawn_blocking(move || {
+        eligible_project(&project, &settings)?;
+        artifact_in_scope(&artifact.path, &settings, &token)?;
+        if !is_project_artifact(&project, &artifact) {
+            return Err(Error::Conflict(
+                "Project markers or artifact ownership changed.".into(),
+            ));
+        }
+        remove_directory(
+            &project.path,
+            &artifact.path,
+            &artifact.size,
+            timestamp,
+            use_trash,
+            &token,
+        )
+    })
+    .await
+    .map_err(|e| Error::Unavailable(e.to_string()))??;
+    Ok((
+        bytes,
+        if use_trash {
+            "Moved to Trash."
+        } else {
+            "Removed."
+        }
+        .into(),
+    ))
 }
 
 async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<u64> {
@@ -509,11 +631,40 @@ async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Resul
     ))
 }
 
+async fn run_runtime(
+    ctx: &Context,
+    runtime: crate::model::Runtime,
+    remove: bool,
+    command: CommandSpec,
+) -> Result<(u64, String)> {
+    if remove {
+        providers::python::verify_removal(ctx, &runtime).await?;
+    }
+    if ["uv", "pyenv"].contains(&runtime.manager.as_str()) {
+        let current =
+            providers::python::command(ctx, &runtime, if remove { "remove" } else { "default" })?;
+        if current.program != command.program
+            || current.args != command.args
+            || current.env != command.env
+        {
+            return Err(Error::Conflict(
+                "The runtime manager changed after review. Create a new plan.".into(),
+            ));
+        }
+    }
+    let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    Ok((0, output.stdout.trim().chars().take(4000).collect()))
+}
+
 async fn run_tool(
     ctx: &Context,
     tool: crate::model::Tool,
+    remove: bool,
     command: CommandSpec,
 ) -> Result<(u64, String)> {
+    if !remove {
+        providers::updates::verify_installed(ctx, &tool).await?;
+    }
     if tool.source == "pnpm" {
         let path = tool.path.as_ref().ok_or_else(|| {
             Error::Conflict("The tool no longer has an installation path.".into())
@@ -563,7 +714,8 @@ pub async fn execute(
     let mut result = OperationResult {
         items: vec![],
         cancelled: false,
-        freed_bytes: 0,
+        removed_bytes: 0,
+        reclaimed_bytes: None,
     };
     for (index, step) in plan.steps.into_iter().enumerate() {
         if ctx.cancel.is_cancelled() {
@@ -579,7 +731,29 @@ pub async fn execute(
             message: title.clone(),
         });
         let outcome = match step {
-            Step::Tool { tool, command } => run_tool(&ctx, tool, command).await,
+            Step::Runtime {
+                runtime,
+                remove,
+                command,
+            } => run_runtime(&ctx, runtime, remove, command).await,
+            Step::Ollama {
+                endpoint,
+                name,
+                digest,
+                command,
+            } => match providers::ollama::verify(&ctx, &endpoint, &name, &digest).await {
+                Ok(()) => ctx
+                    .runner
+                    .run(&command, &ctx.cancel)
+                    .await
+                    .map(|output| (0, output.stdout.trim().chars().take(4000).collect())),
+                Err(error) => Err(error),
+            },
+            Step::Tool {
+                tool,
+                remove,
+                command,
+            } => run_tool(&ctx, tool, remove, command).await,
             Step::Command(command) => ctx.runner.run(&command, &ctx.cancel).await.map(|output| {
                 (
                     0,
@@ -591,40 +765,7 @@ pub async fn execute(
                 project,
                 artifact,
                 modified,
-            } => {
-                let token = ctx.cancel.clone();
-                let settings = settings.clone();
-                let use_trash = settings.use_trash;
-                tokio::task::spawn_blocking(move || {
-                    eligible_project(&project, &settings)?;
-                    if !is_project_artifact(&project, &artifact) {
-                        return Err(Error::Conflict(
-                            "Project markers or artifact ownership changed.".into(),
-                        ));
-                    }
-                    remove_directory(
-                        &project.path,
-                        &artifact.path,
-                        &artifact.size,
-                        modified,
-                        settings.use_trash,
-                        &token,
-                    )
-                })
-                .await
-                .map_err(|e| Error::Unavailable(e.to_string()))?
-                .map(|bytes| {
-                    (
-                        bytes,
-                        if use_trash {
-                            "Moved to Trash."
-                        } else {
-                            "Removed."
-                        }
-                        .into(),
-                    )
-                })
-            }
+            } => clean_project(&ctx, project, artifact, modified, settings.clone()).await,
             Step::Asset {
                 root,
                 path,
@@ -653,12 +794,12 @@ pub async fn execute(
         };
         match outcome {
             Ok((bytes, message)) => {
-                result.freed_bytes += bytes;
+                result.removed_bytes += bytes;
                 result.items.push(ItemResult {
                     title,
                     status: "success".into(),
                     message,
-                    freed_bytes: bytes,
+                    removed_bytes: bytes,
                 });
             }
             Err(Error::Cancelled) => {
@@ -668,7 +809,7 @@ pub async fn execute(
                     status: "cancelled".into(),
                     message: "Cancellation requested; inspect the inventory for partial changes."
                         .into(),
-                    freed_bytes: 0,
+                    removed_bytes: 0,
                 });
                 break;
             }
@@ -676,7 +817,7 @@ pub async fn execute(
                 title,
                 status: "failed".into(),
                 message: e.to_string(),
-                freed_bytes: 0,
+                removed_bytes: 0,
             }),
         }
     }
@@ -689,12 +830,147 @@ mod tests {
     use crate::{model::silent_progress, scanner};
 
     #[tokio::test]
+    async fn hard_link_cleanup_reports_logical_bytes_without_claiming_disk_reclamation() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = std::fs::canonicalize(root.path()).unwrap();
+        let path = root_path.join("artifact");
+        std::fs::create_dir(&path).unwrap();
+        let shared = root_path.join("shared-store");
+        std::fs::write(&shared, vec![1_u8; 2 * 1024 * 1024]).unwrap();
+        std::fs::hard_link(&shared, path.join("package")).unwrap();
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let size = measure(&path, &ctx.cancel).unwrap();
+        let plan = Plan {
+            view: PlanView {
+                id: "test".into(),
+                kind: "clean".into(),
+                created_at: now(),
+                items: vec![PlanItem {
+                    title: "fixture".into(),
+                    path: Some(path.clone()),
+                    command: None,
+                    bytes: size.bytes,
+                    restore: None,
+                }],
+                warnings: vec![],
+                use_trash: false,
+            },
+            steps: vec![Step::Asset {
+                root: root_path,
+                modified: modified(&path),
+                path,
+                size,
+            }],
+        };
+        let result = execute(
+            plan,
+            Settings {
+                use_trash: false,
+                ..Default::default()
+            },
+            ctx,
+            silent_progress(),
+            "test".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.items[0].status, "success");
+        assert_eq!(result.removed_bytes, 2 * 1024 * 1024);
+        assert_eq!(result.reclaimed_bytes, None);
+        assert_eq!(
+            std::fs::metadata(shared).unwrap().len(),
+            result.removed_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_preserves_custom_build_sources_and_git_tracked_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let project = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(project.join("build/src")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            project.join("build.gradle"),
+            "layout.buildDirectory = file('out')",
+        )
+        .unwrap();
+        std::fs::write(project.join("build/src/Main.java"), "class Main {}").unwrap();
+        std::fs::write(project.join("package.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/pkg/code.js"), "tracked source").unwrap();
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        for args in [vec!["init", "--quiet"], vec!["add", "--", "node_modules"]] {
+            let mut command = ctx.command("git", &args).unwrap();
+            command.cwd = Some(project.clone());
+            ctx.runner.run(&command, &ctx.cancel).await.unwrap();
+        }
+        let settings = Settings {
+            roots: vec![project.clone()],
+            use_trash: false,
+            ..Default::default()
+        };
+        let scan = scanner::scan(&settings, &ctx.cancel, silent_progress(), "test").unwrap();
+        let inventory = Inventory {
+            projects: scan.projects,
+            ..Default::default()
+        };
+        for artifact in &inventory.projects[0].artifacts {
+            assert!(
+                prepare(
+                    ActionRequest::CleanProjects {
+                        artifact_ids: vec![artifact.id.clone()]
+                    },
+                    &inventory,
+                    &settings,
+                    &ctx
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(project.join("build/src/Main.java")).unwrap(),
+            "class Main {}"
+        );
+
+        let mut reset = ctx
+            .command("git", &["rm", "--cached", "-r", "--", "node_modules"])
+            .unwrap();
+        reset.cwd = Some(project.clone());
+        ctx.runner.run(&reset, &ctx.cancel).await.unwrap();
+        let artifact = inventory.projects[0]
+            .artifacts
+            .iter()
+            .find(|a| a.name == "node_modules")
+            .unwrap();
+        let plan = prepare(
+            ActionRequest::CleanProjects {
+                artifact_ids: vec![artifact.id.clone()],
+            },
+            &inventory,
+            &settings,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let mut add = ctx.command("git", &["add", "--", "node_modules"]).unwrap();
+        add.cwd = Some(project.clone());
+        ctx.runner.run(&add, &ctx.cancel).await.unwrap();
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "failed");
+        assert!(project.join("node_modules/pkg/code.js").exists());
+    }
+
+    #[tokio::test]
     async fn cleanup_rechecks_protection_exclusions_and_scan_roots() {
         let root = tempfile::tempdir().unwrap();
         let root_path = std::fs::canonicalize(root.path()).unwrap();
         let project = root_path.join("archived/project");
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
         std::fs::write(project.join("package.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(project.join("node_modules/pkg/code.js"), "generated").unwrap();
         let settings = Settings {
             roots: vec![root_path],
@@ -714,12 +990,28 @@ mod tests {
         protected.protected_projects.push(project.clone());
         let mut removed_root = settings.clone();
         removed_root.roots.clear();
-        for changed in [excluded, protected, removed_root] {
+        let mut excluded_artifact = settings.clone();
+        excluded_artifact.excludes.push("node_modules".into());
+        let mut excluded_child = settings.clone();
+        excluded_child
+            .excludes
+            .push("archived/project/node_modules/pkg/**".into());
+        for changed in [
+            excluded,
+            protected,
+            removed_root,
+            excluded_artifact,
+            excluded_child,
+        ] {
             let request = ActionRequest::CleanProjects {
                 artifact_ids: vec![id.clone()],
             };
-            assert!(prepare(request.clone(), &inventory, &changed, &ctx).is_err());
-            let plan = prepare(request, &inventory, &settings, &ctx).unwrap();
+            assert!(
+                prepare(request.clone(), &inventory, &changed, &ctx)
+                    .await
+                    .is_err()
+            );
+            let plan = prepare(request, &inventory, &settings, &ctx).await.unwrap();
             let result = execute(plan, changed, ctx.clone(), silent_progress(), "test".into())
                 .await
                 .unwrap();
@@ -735,6 +1027,7 @@ mod tests {
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
         std::fs::write(project.join("package.json"), "{}").unwrap();
         std::fs::write(project.join("index.ts"), "source").unwrap();
+        std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(project.join("node_modules/pkg/index.js"), "generated").unwrap();
         let settings = Settings {
             roots: vec![std::fs::canonicalize(root.path()).unwrap()],
@@ -756,6 +1049,7 @@ mod tests {
             &settings,
             &ctx,
         )
+        .await
         .unwrap();
         std::fs::write(
             project.join("node_modules/pkg/index.js"),
@@ -786,6 +1080,7 @@ mod tests {
             &settings,
             &ctx,
         )
+        .await
         .unwrap();
         let result = execute(plan, settings, ctx, silent_progress(), "test".into())
             .await

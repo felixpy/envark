@@ -45,6 +45,8 @@ let data: Snapshot = {
           kind: 'dependencies',
           size: size([2.4, 0.6, 1.2][index] * gib),
           restore: 'pnpm install',
+          canClean: true,
+          cleanupIssue: null,
         },
       ],
     })),
@@ -78,6 +80,8 @@ js.managers = [
 ]
 js.runtimes = ['24.0.0', '22.0.0'].map((version, index) => ({
   id: version,
+  selector: null,
+  activeKnown: true,
   version,
   manager: 'fnm',
   path: `/example/fnm/${version}`,
@@ -91,6 +95,7 @@ js.tools = ['typescript', 'eslint', '@example/linked-tool'].map((name, index) =>
   name,
   version: '1.0.0',
   latest: index === 2 ? null : '2.0.0',
+  updateStatus: index === 2 ? 'unknown' : 'major',
   source: 'npm',
   runtime: '24.0.0',
   path: `/example/global/node_modules/${name}`,
