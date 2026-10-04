@@ -46,7 +46,7 @@ export default function Settings() {
               onValueChange={(language) => patch({ language: language as Preferences['language'] })}
               disabled={s.busy}
             >
-              <SelectTrigger className="w-44">
+              <SelectTrigger className="w-44" aria-label={t('语言', 'Language')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -62,7 +62,7 @@ export default function Settings() {
               onValueChange={(theme) => patch({ theme: theme as Preferences['theme'] })}
               disabled={s.busy}
             >
-              <SelectTrigger className="w-44">
+              <SelectTrigger className="w-44" aria-label={t('外观', 'Appearance')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -248,7 +248,10 @@ export default function Settings() {
                   }
                   disabled={s.busy}
                 >
-                  <SelectTrigger className="w-44">
+                  <SelectTrigger
+                    className="w-44"
+                    aria-label={`${t('优先管理器', 'Preferred manager')} ${p.id}`}
+                  >
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>

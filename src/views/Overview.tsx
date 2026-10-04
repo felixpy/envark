@@ -260,9 +260,9 @@ export default function Overview() {
             {activity.slice(0, 5).map((item) => (
               <div key={item.id} className="flex items-center gap-3 py-2.5 text-sm">
                 <span className="flex-1 truncate">{item.title}</span>
-                {item.freedBytes > 0 && (
+                {item.removedBytes > 0 && (
                   <span className="font-mono text-xs text-emerald-600">
-                    −{formatBytes(item.freedBytes)}
+                    {t('移除（逻辑）', 'Removed (logical)')} {formatBytes(item.removedBytes)}
                   </span>
                 )}
                 <span className="text-xs text-muted-foreground">

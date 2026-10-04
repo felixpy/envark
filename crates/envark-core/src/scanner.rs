@@ -1,5 +1,6 @@
 use crate::{
     Error, Result,
+    artifact_policy::ownership_issue,
     filesystem::{id_for, is_link, measure, modified, read_small, reject_links},
     model::{Artifact, Progress, ProgressSink, Project, ProviderId, Settings},
 };
@@ -14,12 +15,13 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ScanResult {
     pub projects: Vec<Project>,
     pub issues: Vec<String>,
     pub visited: u64,
     pub elapsed_ms: u128,
+    pub cached_roots: u64,
 }
 
 pub fn validate_settings(settings: &Settings) -> Result<()> {
@@ -57,6 +59,86 @@ fn exclusions(settings: &Settings) -> Result<GlobSet> {
     builder
         .build()
         .map_err(|e| Error::InvalidInput(e.to_string()))
+}
+
+pub(crate) fn canonical_roots(settings: &Settings) -> Result<Vec<PathBuf>> {
+    let mut roots = settings
+        .roots
+        .iter()
+        .map(fs::canonicalize)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    roots.sort();
+    roots.dedup();
+    let all = roots.clone();
+    roots.retain(|root| {
+        !all.iter()
+            .any(|other| root != other && root.starts_with(other))
+    });
+    Ok(roots)
+}
+
+pub(crate) fn project_in_scope(path: &Path, settings: &Settings) -> Result<bool> {
+    let ignored = exclusions(settings)?;
+    for root in canonical_roots(settings)? {
+        if path.starts_with(&root) {
+            return Ok(!path.ancestors().take_while(|p| *p != root).any(|p| {
+                p.file_name().is_some_and(|name| ignored.is_match(name))
+                    || ignored.is_match(p.strip_prefix(&root).unwrap_or(p))
+            }));
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn artifact_in_scope(
+    path: &Path,
+    settings: &Settings,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    reject_links(path)?;
+    let canonical = fs::canonicalize(path)?;
+    if !project_in_scope(&canonical, settings)? {
+        return Err(Error::unsafe_path(
+            path,
+            "artifact is outside the scan scope or excluded",
+        ));
+    }
+    for protected in &settings.protected_projects {
+        let protected = fs::canonicalize(protected)?;
+        if canonical.starts_with(&protected) || protected.starts_with(&canonical) {
+            return Err(Error::unsafe_path(
+                path,
+                "artifact overlaps a protected path",
+            ));
+        }
+    }
+    let root = canonical_roots(settings)?
+        .into_iter()
+        .find(|root| canonical.starts_with(root))
+        .ok_or_else(|| Error::unsafe_path(path, "artifact is outside the scan roots"))?;
+    let ignored = exclusions(settings)?;
+    let mut entries = WalkDir::new(&canonical)
+        .follow_links(false)
+        .max_open(16)
+        .into_iter();
+    while let Some(entry) = entries.next() {
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let entry = entry.map_err(|error| Error::UnsafePath(error.to_string()))?;
+        if ignored.is_match(entry.file_name())
+            || ignored.is_match(entry.path().strip_prefix(&root).unwrap_or(entry.path()))
+        {
+            return Err(Error::unsafe_path(
+                entry.path(),
+                "an excluded entry prevents cleaning its parent directory",
+            ));
+        }
+        if is_link(&fs::symlink_metadata(entry.path())?) && entry.file_type().is_dir() {
+            entries.skip_current_dir();
+        }
+    }
+    Ok(())
 }
 
 fn providers_at(path: &Path) -> Vec<ProviderId> {
@@ -139,10 +221,12 @@ fn artifacts_at(path: &Path, providers: &[ProviderId]) -> Vec<Artifact> {
             Some(Artifact {
                 id: id_for("artifact", &target),
                 name: name.into(),
-                path: target,
+                path: target.clone(),
                 kind: kind.into(),
                 size: Default::default(),
                 restore: restore.into(),
+                can_clean: ownership_issue(&target, name).is_none(),
+                cleanup_issue: ownership_issue(&target, name),
             })
         })
         .collect()
@@ -152,7 +236,7 @@ pub fn is_project_artifact(project: &Project, artifact: &Artifact) -> bool {
     let providers = providers_at(&project.path);
     artifacts_at(&project.path, &providers)
         .iter()
-        .any(|a| a.path == artifact.path && a.id == artifact.id)
+        .any(|a| a.path == artifact.path && a.id == artifact.id && a.can_clean)
 }
 
 fn pins_at(path: &Path) -> BTreeMap<String, String> {
@@ -194,19 +278,7 @@ pub fn scan(
     validate_settings(settings)?;
     let started = Instant::now();
     let ignored = exclusions(settings)?;
-    let mut roots = settings
-        .roots
-        .iter()
-        .map(fs::canonicalize)
-        .collect::<std::io::Result<Vec<_>>>()?;
-    roots.sort();
-    roots.dedup();
-    let all_roots = roots.clone();
-    roots.retain(|root| {
-        !all_roots
-            .iter()
-            .any(|other| other != root && root.starts_with(other))
-    });
+    let roots = canonical_roots(settings)?;
     let protected: Vec<_> = settings
         .protected_projects
         .iter()
@@ -279,7 +351,7 @@ pub fn scan(
                 let providers = providers_at(path);
                 if !providers.is_empty() {
                     let found = artifacts_at(path, &providers);
-                    artifacts.extend(found.iter().map(|a| a.path.clone()));
+                    artifacts.extend(found.iter().filter(|a| a.can_clean).map(|a| a.path.clone()));
                     index.insert(path.to_path_buf(), result.projects.len());
                     result.projects.push(Project {
                         id: id_for("project", path),
@@ -341,6 +413,10 @@ pub fn scan(
             .flat_map(|project| {
                 let mut errors = vec![];
                 for artifact in &mut project.artifacts {
+                    if let Err(error) = artifact_in_scope(&artifact.path, settings, cancel) {
+                        artifact.can_clean = false;
+                        artifact.cleanup_issue = Some(error.to_string());
+                    }
                     match measure(&artifact.path, cancel) {
                         Ok(size) => artifact.size = size,
                         Err(e) => errors.push(format!("{}: {e}", artifact.path.display())),

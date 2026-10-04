@@ -29,6 +29,7 @@ pub struct CommandSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    pub remove_env: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub timeout: Duration,
     pub successful_codes: Vec<i32>,
@@ -43,6 +44,7 @@ impl CommandSpec {
             program: program.into(),
             args: args.into_iter().map(Into::into).collect(),
             env: BTreeMap::from([("NO_COLOR".into(), "1".into()), ("CI".into(), "1".into())]),
+            remove_env: vec![],
             cwd: None,
             timeout: Duration::from_secs(20),
             successful_codes: vec![0],
@@ -107,6 +109,9 @@ impl Runner {
             _ = cancel.cancelled() => return Err(Error::Cancelled),
         };
         let mut command = Command::new(&spec.program);
+        for name in &spec.remove_env {
+            command.env_remove(name);
+        }
         command
             .args(&spec.args)
             .envs(&spec.env)

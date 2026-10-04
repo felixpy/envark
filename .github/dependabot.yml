@@ -2,13 +2,56 @@ version: 2
 updates:
   - package-ecosystem: npm
     directory: /
+    commit-message:
+      prefix: build
+      include: scope
     schedule:
       interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Hong_Kong
+    open-pull-requests-limit: 5
+    groups:
+      npm-runtime:
+        dependency-type: production
+        update-types: [minor, patch]
+        # Pre-1.0 updates can break compatibility without a major version change.
+        exclude-patterns: [cn]
+      npm-development:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # Keep declarations aligned with Node 24 in the build and release workflows.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
   - package-ecosystem: cargo
     directory: /
+    commit-message:
+      prefix: build
+      include: scope
     schedule:
       interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Hong_Kong
+    open-pull-requests-limit: 3
+    groups:
+      # Cargo 0.x minor releases can break compatibility, so only group patches.
+      cargo-patches:
+        patterns: ['*']
+        update-types: [patch]
   - package-ecosystem: github-actions
     directory: /
+    commit-message:
+      prefix: build
+      include: scope
     schedule:
       interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Hong_Kong
+    open-pull-requests-limit: 1
+    groups:
+      # Review workflow action upgrades together across build, lint, and release jobs.
+      github-actions:
+        patterns: ['*']

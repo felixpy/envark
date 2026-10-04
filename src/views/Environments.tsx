@@ -6,6 +6,7 @@ import {
   formatBytes,
   metadata,
   updateKind,
+  canUpdateTool,
   type ConfigContent,
   type ProviderId,
   type Tool,
@@ -49,6 +50,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { capabilities } from './Catalog'
+import { Checkbox } from '@/components/ui/checkbox'
+import { useSelection } from '@/hooks/use-selection'
 
 export default function Environments({ id }: { id: ProviderId }) {
   const s = useStore()
@@ -65,6 +68,11 @@ export default function Environments({ id }: { id: ProviderId }) {
   const [model, setModel] = useState('')
   const [config, setConfig] = useState<ConfigContent | null>(null)
   const [saving, setSaving] = useState(false)
+  const assets = useSelection(
+    provider.assets
+      .filter((asset) => asset.canRemove && asset.size.complete)
+      .map((asset) => asset.id),
+  )
   const operation = (
     kind: 'setDefault' | 'removeRuntime' | 'updateTool' | 'removeTool',
     itemId: string,
@@ -221,7 +229,10 @@ export default function Environments({ id }: { id: ProviderId }) {
                     <TableCell>
                       <div className="flex items-center gap-2 font-mono">
                         {runtime.version}
-                        {runtime.active && <Badge>{t('默认', 'Default')}</Badge>}
+                        {runtime.active && <Badge>{t('当前环境', 'Current environment')}</Badge>}
+                        {!runtime.activeKnown && (
+                          <Badge variant="outline">{t('活动状态未知', 'Activity unknown')}</Badge>
+                        )}
                         {!runtime.managed && (
                           <Badge variant="outline">{t('只读', 'Read-only')}</Badge>
                         )}
@@ -242,18 +253,25 @@ export default function Environments({ id }: { id: ProviderId }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={runtime.active || !runtime.managed || s.busy}
+                          disabled={
+                            !runtime.managed ||
+                            !provider.managers.some(
+                              (manager) =>
+                                manager.name === runtime.manager && manager.supportsDefault,
+                            ) ||
+                            s.busy
+                          }
                           onClick={() => operation('setDefault', runtime.id)}
                         >
-                          {runtime.active ? <Check /> : <Star />}
-                          {runtime.active
-                            ? t('当前默认', 'Current default')
-                            : t('设为默认', 'Set default')}
+                          <Star />
+                          {t('设为默认', 'Set default')}
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={runtime.active || !runtime.managed || s.busy}
+                          disabled={
+                            runtime.active || !runtime.activeKnown || !runtime.managed || s.busy
+                          }
                           onClick={() => operation('removeRuntime', runtime.id)}
                         >
                           <Trash2 />
@@ -282,6 +300,7 @@ export default function Environments({ id }: { id: ProviderId }) {
           items={tab === 'pm' ? provider.packageManagers : provider.tools}
           global={tab === 'global'}
           onUpdate={(item) => operation('updateTool', item.id)}
+          onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
           onRemove={(item) => operation('removeTool', item.id)}
         />
       )}
@@ -313,9 +332,36 @@ export default function Environments({ id }: { id: ProviderId }) {
             )}
           </CardHeader>
           <CardContent>
+            {assets.chosen.length > 0 && (
+              <div className="mb-3 flex items-center justify-between rounded-lg bg-muted/50 p-3 text-sm">
+                <span>
+                  {assets.chosen.length} {t('个资源已选择', 'resources selected')}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={s.busy}
+                  onClick={() =>
+                    void s.prepare({ kind: 'removeAssets', provider: id, ids: assets.chosen })
+                  }
+                >
+                  <Trash2 />
+                  {t('审阅移除', 'Review removal')}
+                </Button>
+              </div>
+            )}
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label={t('选择全部资源', 'Select all resources')}
+                      checked={
+                        assets.checked ? true : assets.chosen.length ? 'indeterminate' : false
+                      }
+                      onCheckedChange={(on) => assets.toggleAll(on === true)}
+                    />
+                  </TableHead>
                   <TableHead>{t('资源', 'Resource')}</TableHead>
                   <TableHead>{t('最后使用', 'Last used')}</TableHead>
                   <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
@@ -325,6 +371,14 @@ export default function Environments({ id }: { id: ProviderId }) {
               <TableBody>
                 {provider.assets.map((asset) => (
                   <TableRow key={asset.id}>
+                    <TableCell>
+                      <Checkbox
+                        aria-label={`${t('选择', 'Select')} ${asset.name}`}
+                        disabled={!asset.canRemove || !asset.size.complete || s.busy}
+                        checked={assets.selected.has(asset.id)}
+                        onCheckedChange={(on) => assets.toggle([asset.id], on === true)}
+                      />
+                    </TableCell>
                     <TableCell>
                       <div className="font-medium">
                         {asset.name}{' '}
@@ -353,7 +407,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={!asset.canRemove || s.busy}
+                        disabled={!asset.canRemove || !asset.size.complete || s.busy}
                         onClick={() =>
                           void s.prepare({ kind: 'removeAssets', provider: id, ids: [asset.id] })
                         }
@@ -422,15 +476,15 @@ export default function Environments({ id }: { id: ProviderId }) {
             </DialogTitle>
             <DialogDescription>
               {t(
-                '使用已有管理器安装指定版本，不会自动切换默认版本。',
-                'Install a version with an existing manager without changing the default.',
+                '使用已有管理器安装指定版本，执行前可审阅具体操作。',
+                'Install a version with an existing manager and review the operation before it runs.',
               )}
             </DialogDescription>
           </DialogHeader>
           <label className="space-y-2 text-sm">
             {t('版本管理器', 'Version manager')}
             <Select value={manager} onValueChange={setManager}>
-              <SelectTrigger>
+              <SelectTrigger aria-label={t('版本管理器', 'Version manager')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -540,11 +594,13 @@ function Tools({
   items,
   global,
   onUpdate,
+  onBatch,
   onRemove,
 }: {
   items: Tool[]
   global: boolean
   onUpdate(item: Tool): void
+  onBatch(ids: string[]): void
   onRemove(item: Tool): void
 }) {
   const { t, busy } = useStore()
@@ -562,6 +618,7 @@ function Tools({
           ? ['major', 'minor'].includes(updateKind(item))
           : updateKind(item) === status)),
   )
+  const selection = useSelection(visible.filter(canUpdateTool).map((item) => item.id))
   return (
     <Card className="shadow-none">
       <CardHeader>
@@ -581,6 +638,14 @@ function Tools({
                 'Dependency and build tooling, managed by its original installer.',
               )}
         </CardDescription>
+        {selection.chosen.length > 0 && (
+          <CardAction>
+            <Button size="sm" disabled={busy} onClick={() => onBatch(selection.chosen)}>
+              <ArrowUp />
+              {t('更新所选', 'Update selected')} ({selection.chosen.length})
+            </Button>
+          </CardAction>
+        )}
       </CardHeader>
       <CardContent className="space-y-3">
         {global && (
@@ -591,7 +656,7 @@ function Tools({
               placeholder={t('搜索工具', 'Search tools')}
             />
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger className="w-36">
+              <SelectTrigger className="w-36" aria-label={t('全部状态', 'All statuses')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -600,6 +665,7 @@ function Tools({
                   ['outdated', t('可更新', 'Updatable')],
                   ['major', t('大版本更新', 'Major update')],
                   ['latest', t('已最新', 'Up to date')],
+                  ['ahead', t('高于已发布版本', 'Ahead of published version')],
                   ['unknown', t('未检查', 'Not checked')],
                 ].map(([value, label]) => (
                   <SelectItem key={value} value={value}>
@@ -609,7 +675,7 @@ function Tools({
               </SelectContent>
             </Select>
             <Select value={runtime} onValueChange={setRuntime}>
-              <SelectTrigger className="ml-auto w-44">
+              <SelectTrigger className="ml-auto w-44" aria-label={t('全部运行时', 'All runtimes')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -622,7 +688,7 @@ function Tools({
               </SelectContent>
             </Select>
             <Select value={source} onValueChange={setSource}>
-              <SelectTrigger className="w-36">
+              <SelectTrigger className="w-36" aria-label={t('全部来源', 'All sources')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -639,6 +705,15 @@ function Tools({
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label={t('选择全部可更新工具', 'Select all updatable tools')}
+                  checked={
+                    selection.checked ? true : selection.chosen.length ? 'indeterminate' : false
+                  }
+                  onCheckedChange={(on) => selection.toggleAll(on === true)}
+                />
+              </TableHead>
               <TableHead>{t('名称', 'Name')}</TableHead>
               <TableHead>{t('版本', 'Version')}</TableHead>
               <TableHead>{t('来源 / 运行时', 'Source / runtime')}</TableHead>
@@ -648,6 +723,14 @@ function Tools({
           <TableBody>
             {visible.map((item) => (
               <TableRow key={item.id}>
+                <TableCell>
+                  <Checkbox
+                    aria-label={`${t('选择', 'Select')} ${item.name}`}
+                    disabled={!canUpdateTool(item) || busy}
+                    checked={selection.selected.has(item.id)}
+                    onCheckedChange={(on) => selection.toggle([item.id], on === true)}
+                  />
+                </TableCell>
                 <TableCell>
                   <div className="font-medium">{item.name}</div>
                   <p
@@ -659,8 +742,18 @@ function Tools({
                 </TableCell>
                 <TableCell className="font-mono text-xs">
                   {item.version}
-                  {item.latest && item.latest !== item.version && (
+                  {['major', 'minor'].includes(updateKind(item)) && (
                     <span className="block text-emerald-600">→ {item.latest}</span>
+                  )}
+                  {updateKind(item) === 'ahead' && (
+                    <span className="block text-muted-foreground">
+                      {t('高于已发布版本', 'Ahead of published version')}
+                    </span>
+                  )}
+                  {updateKind(item) === 'unknown' && (
+                    <span className="block text-muted-foreground">
+                      {t('需检查更新', 'Update check required')}
+                    </span>
                   )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
@@ -674,7 +767,7 @@ function Tools({
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!item.canUpdate || busy}
+                      disabled={!canUpdateTool(item) || busy}
                       onClick={() => onUpdate(item)}
                     >
                       <ArrowUp />
