@@ -10,11 +10,19 @@ export function checkVersions(root = process.cwd(), tag = '') {
   assert.match(version, /^\d+\.\d+\.\d+$/, 'Desktop releases require a stable semantic version')
   if (tag) assert.equal(tag, `v${version}`, 'Tag and application version differ')
   assert.equal(json('src-tauri/tauri.conf.json').version, version, 'Tauri version drift')
-  assert.equal(
-    json('.release-please-manifest.json')['.'],
-    version,
-    'Release manifest version drift',
-  )
+  const releaseManifest = json('.release-please-manifest.json')
+  if (releaseManifest['.'] === undefined) {
+    assert.deepEqual(releaseManifest, {}, 'Only an empty release manifest may bootstrap')
+    assert.ok(!tag, 'A tagged release must record its version in the release manifest')
+    const config = json('release-please-config.json')
+    assert.equal(
+      config.packages['.']['initial-version'] ?? config['initial-version'],
+      version,
+      'Initial release version drift',
+    )
+  } else {
+    assert.equal(releaseManifest['.'], version, 'Release manifest version drift')
+  }
   const workspace = read('Cargo.toml')
     .split(/(?=^\[)/m)
     .find((section) => section.startsWith('[workspace.package]'))

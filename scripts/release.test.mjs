@@ -16,7 +16,7 @@ function fixture(t) {
   return root
 }
 
-test('release validation rejects version drift in every package and lockfile', (t) => {
+function versionFixture(t) {
   const root = fixture(t)
   const files = [
     'package.json',
@@ -26,15 +26,31 @@ test('release validation rejects version drift in every package and lockfile', (
     '.release-please-manifest.json',
     'src-tauri/Cargo.toml',
     'crates/envark-core/Cargo.toml',
+    'release-please-config.json',
   ]
   for (const file of files) {
     mkdirSync(dirname(join(root, file)), { recursive: true })
     writeFileSync(join(root, file), readFileSync(new URL(`../${file}`, import.meta.url)))
   }
+  return root
+}
+
+test('release validation rejects version drift in every package and lockfile', (t) => {
+  const root = versionFixture(t)
+  const packageVersion = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+  writeFileSync(
+    join(root, '.release-please-manifest.json'),
+    JSON.stringify({ '.': packageVersion }),
+  )
   const version = checkVersions(root)
   assert.equal(checkVersions(root, `v${version}`), version)
   assert.throws(() => checkVersions(root, 'v999.0.0'))
-  for (const file of files.slice(0, 5).filter((file) => file !== 'Cargo.lock')) {
+  for (const file of [
+    'package.json',
+    'Cargo.toml',
+    'src-tauri/tauri.conf.json',
+    '.release-please-manifest.json',
+  ]) {
     const path = join(root, file)
     const original = readFileSync(path, 'utf8')
     writeFileSync(path, original.replace(`"${version}"`, '"999.0.0"'))
@@ -53,6 +69,26 @@ test('release validation rejects version drift in every package and lockfile', (
     assert.throws(() => checkVersions(root), new RegExp(`${name} lockfile version drift`))
     writeFileSync(lockPath, originalLock)
   }
+})
+
+test('an empty release manifest is valid only for an untagged initial version', (t) => {
+  const root = versionFixture(t)
+  const manifestPath = join(root, '.release-please-manifest.json')
+  const configPath = join(root, 'release-please-config.json')
+  const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version
+  const config = JSON.parse(readFileSync(configPath, 'utf8'))
+  config['initial-version'] = version
+  writeFileSync(configPath, JSON.stringify(config))
+  writeFileSync(manifestPath, '{}')
+  assert.equal(checkVersions(root), version)
+  assert.throws(() => checkVersions(root, `v${version}`), /tagged release must record its version/)
+
+  config['initial-version'] = '999.0.0'
+  writeFileSync(configPath, JSON.stringify(config))
+  assert.throws(() => checkVersions(root), /Initial release version drift/)
+
+  writeFileSync(manifestPath, JSON.stringify({ unexpected: version }))
+  assert.throws(() => checkVersions(root), /Only an empty release manifest may bootstrap/)
 })
 
 test('publishing requires all five correctly versioned platform installers', (t) => {
