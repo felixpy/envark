@@ -92,6 +92,8 @@ export interface Artifact {
   kind: string
   size: Measurement
   restore: string
+  canClean: boolean
+  cleanupIssue: string | null
 }
 export interface Project {
   id: string

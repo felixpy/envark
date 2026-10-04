@@ -11,3 +11,4 @@ pub mod scan_cache;
 pub mod scanner;
 
 pub use error::{Error, Result};
+pub mod artifact_policy;

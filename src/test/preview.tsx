@@ -45,6 +45,8 @@ let data: Snapshot = {
           kind: 'dependencies',
           size: size([2.4, 0.6, 1.2][index] * gib),
           restore: 'pnpm install',
+          canClean: true,
+          cleanupIssue: null,
         },
       ],
     })),

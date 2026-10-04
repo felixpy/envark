@@ -249,13 +249,14 @@ impl Engine {
             .work
             .try_lock()
             .map_err(|_| Error::Conflict("Wait for the current operation to finish.".into()))?;
-        let state = self.state.read().await;
+        let state = self.snapshot().await;
         let plan = operations::prepare(
             request,
             &state.inventory,
             &state.settings,
             &Context::new(CancellationToken::new())?,
-        )?;
+        )
+        .await?;
         let view = plan.view.clone();
         let mut plans = self.plans.lock().await;
         plans.retain(|_, plan| now().saturating_sub(plan.view.created_at) < 600);

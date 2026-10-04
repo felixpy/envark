@@ -1,5 +1,6 @@
 use crate::{
     Error, Result,
+    artifact_policy::protect_tracked_files,
     filesystem::{contained_directory, measure, modified, reject_links},
     model::{
         Artifact, Cache, Inventory, Measurement, Progress, ProgressSink, Project, ProviderId,
@@ -7,7 +8,7 @@ use crate::{
     },
     process::CommandSpec,
     providers::{self, Context},
-    scanner::{is_project_artifact, project_in_scope},
+    scanner::{artifact_in_scope, is_project_artifact, project_in_scope},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -167,7 +168,29 @@ fn command_item(title: String, command: CommandSpec, view: &mut PlanView, steps:
     steps.push(Step::Command(command));
 }
 
-pub fn prepare(
+pub async fn prepare(
+    request: ActionRequest,
+    inventory: &Inventory,
+    settings: &Settings,
+    ctx: &Context,
+) -> Result<Plan> {
+    let (inventory, settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
+    let plan =
+        tokio::task::spawn_blocking(move || prepare_steps(request, &inventory, &settings, &worker))
+            .await
+            .map_err(|e| Error::Unavailable(e.to_string()))??;
+    for step in &plan.steps {
+        if let Step::Project {
+            project, artifact, ..
+        } = step
+        {
+            protect_tracked_files(ctx, project, artifact).await?;
+        }
+    }
+    Ok(plan)
+}
+
+fn prepare_steps(
     request: ActionRequest,
     inventory: &Inventory,
     settings: &Settings,
@@ -191,7 +214,7 @@ pub fn prepare(
                 return Err(Error::InvalidInput("Select at most 500 tools.".into()));
             }
             for id in ids.into_iter().collect::<HashSet<_>>() {
-                let child = prepare(
+                let child = prepare_steps(
                     ActionRequest::UpdateTool { provider, id },
                     inventory,
                     settings,
@@ -211,7 +234,11 @@ pub fn prepare(
                         continue;
                     }
                     eligible_project(project, settings)?;
-                    if !is_project_artifact(project, artifact) || !artifact.size.complete {
+                    artifact_in_scope(&artifact.path, settings, &ctx.cancel)?;
+                    if !artifact.can_clean
+                        || !is_project_artifact(project, artifact)
+                        || !artifact.size.complete
+                    {
                         return Err(Error::Conflict("An artifact changed or its size scan was incomplete. Scan again before cleaning.".into()));
                     }
                     contained_directory(&project.path, &artifact.path)?;
@@ -466,6 +493,46 @@ fn remove_directory(
     }
 }
 
+async fn clean_project(
+    ctx: &Context,
+    project: Project,
+    artifact: Artifact,
+    timestamp: Option<u64>,
+    settings: Settings,
+) -> Result<(u64, String)> {
+    protect_tracked_files(ctx, &project, &artifact).await?;
+    let token = ctx.cancel.clone();
+    let use_trash = settings.use_trash;
+    let bytes = tokio::task::spawn_blocking(move || {
+        eligible_project(&project, &settings)?;
+        artifact_in_scope(&artifact.path, &settings, &token)?;
+        if !is_project_artifact(&project, &artifact) {
+            return Err(Error::Conflict(
+                "Project markers or artifact ownership changed.".into(),
+            ));
+        }
+        remove_directory(
+            &project.path,
+            &artifact.path,
+            &artifact.size,
+            timestamp,
+            use_trash,
+            &token,
+        )
+    })
+    .await
+    .map_err(|e| Error::Unavailable(e.to_string()))??;
+    Ok((
+        bytes,
+        if use_trash {
+            "Moved to Trash."
+        } else {
+            "Removed."
+        }
+        .into(),
+    ))
+}
+
 async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<u64> {
     tokio::task::spawn_blocking(move || {
         let size = measure(&path, &token)?;
@@ -591,40 +658,7 @@ pub async fn execute(
                 project,
                 artifact,
                 modified,
-            } => {
-                let token = ctx.cancel.clone();
-                let settings = settings.clone();
-                let use_trash = settings.use_trash;
-                tokio::task::spawn_blocking(move || {
-                    eligible_project(&project, &settings)?;
-                    if !is_project_artifact(&project, &artifact) {
-                        return Err(Error::Conflict(
-                            "Project markers or artifact ownership changed.".into(),
-                        ));
-                    }
-                    remove_directory(
-                        &project.path,
-                        &artifact.path,
-                        &artifact.size,
-                        modified,
-                        settings.use_trash,
-                        &token,
-                    )
-                })
-                .await
-                .map_err(|e| Error::Unavailable(e.to_string()))?
-                .map(|bytes| {
-                    (
-                        bytes,
-                        if use_trash {
-                            "Moved to Trash."
-                        } else {
-                            "Removed."
-                        }
-                        .into(),
-                    )
-                })
-            }
+            } => clean_project(&ctx, project, artifact, modified, settings.clone()).await,
             Step::Asset {
                 root,
                 path,
@@ -689,12 +723,93 @@ mod tests {
     use crate::{model::silent_progress, scanner};
 
     #[tokio::test]
+    async fn cleanup_preserves_custom_build_sources_and_git_tracked_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let project = std::fs::canonicalize(root.path()).unwrap();
+        std::fs::create_dir_all(project.join("build/src")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            project.join("build.gradle"),
+            "layout.buildDirectory = file('out')",
+        )
+        .unwrap();
+        std::fs::write(project.join("build/src/Main.java"), "class Main {}").unwrap();
+        std::fs::write(project.join("package.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/pkg/code.js"), "tracked source").unwrap();
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        for args in [vec!["init", "--quiet"], vec!["add", "--", "node_modules"]] {
+            let mut command = ctx.command("git", &args).unwrap();
+            command.cwd = Some(project.clone());
+            ctx.runner.run(&command, &ctx.cancel).await.unwrap();
+        }
+        let settings = Settings {
+            roots: vec![project.clone()],
+            use_trash: false,
+            ..Default::default()
+        };
+        let scan = scanner::scan(&settings, &ctx.cancel, silent_progress(), "test").unwrap();
+        let inventory = Inventory {
+            projects: scan.projects,
+            ..Default::default()
+        };
+        for artifact in &inventory.projects[0].artifacts {
+            assert!(
+                prepare(
+                    ActionRequest::CleanProjects {
+                        artifact_ids: vec![artifact.id.clone()]
+                    },
+                    &inventory,
+                    &settings,
+                    &ctx
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(project.join("build/src/Main.java")).unwrap(),
+            "class Main {}"
+        );
+
+        let mut reset = ctx
+            .command("git", &["rm", "--cached", "-r", "--", "node_modules"])
+            .unwrap();
+        reset.cwd = Some(project.clone());
+        ctx.runner.run(&reset, &ctx.cancel).await.unwrap();
+        let artifact = inventory.projects[0]
+            .artifacts
+            .iter()
+            .find(|a| a.name == "node_modules")
+            .unwrap();
+        let plan = prepare(
+            ActionRequest::CleanProjects {
+                artifact_ids: vec![artifact.id.clone()],
+            },
+            &inventory,
+            &settings,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let mut add = ctx.command("git", &["add", "--", "node_modules"]).unwrap();
+        add.cwd = Some(project.clone());
+        ctx.runner.run(&add, &ctx.cancel).await.unwrap();
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "failed");
+        assert!(project.join("node_modules/pkg/code.js").exists());
+    }
+
+    #[tokio::test]
     async fn cleanup_rechecks_protection_exclusions_and_scan_roots() {
         let root = tempfile::tempdir().unwrap();
         let root_path = std::fs::canonicalize(root.path()).unwrap();
         let project = root_path.join("archived/project");
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
         std::fs::write(project.join("package.json"), "{}").unwrap();
+        std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(project.join("node_modules/pkg/code.js"), "generated").unwrap();
         let settings = Settings {
             roots: vec![root_path],
@@ -714,12 +829,28 @@ mod tests {
         protected.protected_projects.push(project.clone());
         let mut removed_root = settings.clone();
         removed_root.roots.clear();
-        for changed in [excluded, protected, removed_root] {
+        let mut excluded_artifact = settings.clone();
+        excluded_artifact.excludes.push("node_modules".into());
+        let mut excluded_child = settings.clone();
+        excluded_child
+            .excludes
+            .push("archived/project/node_modules/pkg/**".into());
+        for changed in [
+            excluded,
+            protected,
+            removed_root,
+            excluded_artifact,
+            excluded_child,
+        ] {
             let request = ActionRequest::CleanProjects {
                 artifact_ids: vec![id.clone()],
             };
-            assert!(prepare(request.clone(), &inventory, &changed, &ctx).is_err());
-            let plan = prepare(request, &inventory, &settings, &ctx).unwrap();
+            assert!(
+                prepare(request.clone(), &inventory, &changed, &ctx)
+                    .await
+                    .is_err()
+            );
+            let plan = prepare(request, &inventory, &settings, &ctx).await.unwrap();
             let result = execute(plan, changed, ctx.clone(), silent_progress(), "test".into())
                 .await
                 .unwrap();
@@ -735,6 +866,7 @@ mod tests {
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
         std::fs::write(project.join("package.json"), "{}").unwrap();
         std::fs::write(project.join("index.ts"), "source").unwrap();
+        std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(project.join("node_modules/pkg/index.js"), "generated").unwrap();
         let settings = Settings {
             roots: vec![std::fs::canonicalize(root.path()).unwrap()],
@@ -756,6 +888,7 @@ mod tests {
             &settings,
             &ctx,
         )
+        .await
         .unwrap();
         std::fs::write(
             project.join("node_modules/pkg/index.js"),
@@ -786,6 +919,7 @@ mod tests {
             &settings,
             &ctx,
         )
+        .await
         .unwrap();
         let result = execute(plan, settings, ctx, silent_progress(), "test".into())
             .await

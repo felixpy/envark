@@ -209,6 +209,10 @@ pub struct Artifact {
     pub kind: String,
     pub size: Measurement,
     pub restore: String,
+    #[serde(default)]
+    pub can_clean: bool,
+    #[serde(default)]
+    pub cleanup_issue: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
