@@ -1111,7 +1111,7 @@ mod tests {
         std::fs::write(nested.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(nested.join("node_modules/pkg/index.js"), "generated").unwrap();
         let settings = Settings {
-            roots: vec![main],
+            roots: vec![std::fs::canonicalize(main).unwrap()],
             use_trash: false,
             ..Default::default()
         };

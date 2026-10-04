@@ -659,7 +659,7 @@ mod tests {
         }
         fs::write(root.path().join("package.json"), "{}").unwrap();
         let settings = Settings {
-            roots: vec![root.path().into()],
+            roots: vec![fs::canonicalize(root.path()).unwrap()],
             ..Default::default()
         };
         let scanned = scan(
@@ -726,7 +726,7 @@ mod tests {
             );
         }
         let mut settings = Settings {
-            roots: vec![repo],
+            roots: vec![fs::canonicalize(&repo).unwrap()],
             ..Default::default()
         };
         let scanned = scan(
@@ -752,7 +752,7 @@ mod tests {
         let mut removed_scope = settings.clone();
         removed_scope.roots.clear();
         assert!(!project_in_scope(&fs::canonicalize(&linked).unwrap(), &removed_scope).unwrap());
-        settings.roots.push(linked);
+        settings.roots.push(fs::canonicalize(linked).unwrap());
         let scanned = scan(
             &settings,
             &CancellationToken::new(),
@@ -776,7 +776,7 @@ mod tests {
         git::add_worktree(&repo, &linked);
         fs::create_dir(repo.join(".git/worktrees/broken")).unwrap();
         let mut settings = Settings {
-            roots: vec![repo],
+            roots: vec![fs::canonicalize(&repo).unwrap()],
             ..Default::default()
         };
         let run = |settings: &Settings| {
@@ -808,7 +808,7 @@ mod tests {
         fs::write(root.path().join("package.json"), "{}").unwrap();
         let scanned = scan(
             &Settings {
-                roots: vec![root.path().into()],
+                roots: vec![fs::canonicalize(root.path()).unwrap()],
                 ..Default::default()
             },
             &CancellationToken::new(),

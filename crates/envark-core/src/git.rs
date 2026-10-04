@@ -5,7 +5,7 @@ use crate::{
 };
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -23,9 +23,48 @@ fn text(path: &Path) -> Result<String> {
 }
 
 fn resolve(base: &Path, value: &str) -> Result<PathBuf> {
-    let path = base.join(value.trim());
-    reject_links(&path)?;
-    Ok(fs::canonicalize(path)?)
+    let path = Path::new(value.trim());
+    if path.as_os_str().is_empty()
+        || (!path.is_absolute()
+            && (path.has_root() || path.components().any(|c| matches!(c, Component::Prefix(_)))))
+    {
+        return Err(Error::unsafe_path(path, "invalid Git path"));
+    }
+    let mut resolved = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        reject_links(base)?;
+        base.to_path_buf()
+    };
+    // Git normally writes commondir as ../... Check every traversed prefix
+    // before resolving a parent, so normalization cannot hide a symlink.
+    // Do not join the full value first: Windows verbatim paths normalize '..'
+    // during PathBuf::push, before the filesystem checks can inspect it.
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                reject_links(&resolved)?;
+                if !fs::metadata(&resolved)?.is_dir() {
+                    return Err(Error::unsafe_path(
+                        path,
+                        "Git parent path is not a directory",
+                    ));
+                }
+                if !resolved.pop() {
+                    return Err(Error::unsafe_path(path, "invalid Git relative path"));
+                }
+            }
+            Component::CurDir => {}
+            component => {
+                resolved.push(component);
+                if matches!(component, Component::Normal(_)) {
+                    reject_links(&resolved)?;
+                }
+            }
+        }
+    }
+    reject_links(&resolved)?;
+    Ok(fs::canonicalize(resolved)?)
 }
 
 fn branch(git_dir: &Path) -> Result<Option<String>> {
@@ -220,5 +259,31 @@ pub(crate) fn add_worktree(repo: &Path, linked: &Path) {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_relative_git_metadata_and_checks_traversed_components() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let entry = root.join(".git/worktrees/feature");
+        fs::create_dir_all(&entry).unwrap();
+        assert_eq!(resolve(&entry, "../..").unwrap(), root.join(".git"));
+        assert!(resolve(&entry, "missing/../..").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cannot_hide_symlinks_in_relative_git_metadata() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir(root.join("real")).unwrap();
+        symlink(root.join("real"), root.join("link")).unwrap();
+        assert!(resolve(&root, "link/../real").is_err());
     }
 }
