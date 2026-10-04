@@ -1,6 +1,7 @@
+import type { ShortcutId } from './shortcuts'
+
 export type ProviderId = 'js' | 'py' | 'jvm' | 'rust' | 'go' | 'ollama' | 'puppeteer' | 'playwright'
-export type View =
-  'overview' | 'env' | 'projects' | 'worktrees' | 'caches' | 'activity' | 'settings'
+export type View = 'overview' | 'env' | 'projects' | 'caches' | 'activity' | 'settings'
 export interface NavigationFocus {
   filter?: 'idle' | 'updates' | 'runtimes' | 'downloads'
   tab?: 'runtime' | 'pm' | 'global' | 'assets' | 'config'
@@ -16,6 +17,7 @@ export interface Settings {
   useTrash: boolean
   preferred: Partial<Record<ProviderId, string>>
   protectedProjects: string[]
+  disabledShortcuts: ShortcutId[]
 }
 export interface Measurement {
   bytes: number
@@ -224,6 +226,7 @@ export const defaultSettings: Settings = {
   useTrash: true,
   preferred: { js: 'fnm', py: 'uv' },
   protectedProjects: [],
+  disabledShortcuts: [],
 }
 export const emptySnapshot: Snapshot = {
   settings: defaultSettings,

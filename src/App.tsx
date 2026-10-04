@@ -4,7 +4,6 @@ import {
   Boxes,
   Database,
   FolderGit2,
-  GitFork,
   HardDrive,
   History,
   LayoutDashboard,
@@ -39,6 +38,7 @@ import { Button } from './components/ui/button'
 import { EcoDot, Spinner } from './components/shared'
 import { OperationDialog } from './components/OperationDialog'
 import { DesktopMenu } from './components/DesktopMenu'
+import { AppUpdateProvider } from './components/AppUpdates'
 const Overview = lazy(() => import('./views/Overview'))
 const Catalog = lazy(() => import('./views/Catalog'))
 const Environments = lazy(() => import('./views/Environments'))
@@ -54,7 +54,6 @@ function Shell() {
     { id: 'overview', label: t('概览', 'Overview'), icon: LayoutDashboard },
     { id: 'env', label: t('环境与工具', 'Environments & tools'), icon: Boxes },
     { id: 'projects', label: t('项目空间', 'Project space'), icon: FolderGit2 },
-    { id: 'worktrees', label: 'Worktrees', icon: GitFork },
     { id: 'caches', label: t('全局缓存', 'Global caches'), icon: Database },
     { id: 'activity', label: t('操作记录', 'Activity'), icon: History },
   ] as const
@@ -63,7 +62,7 @@ function Shell() {
     data.inventory.disks.find((d) => data.dataDir.startsWith(d.mount)) ?? data.inventory.disks[0]
   return (
     <TooltipProvider>
-      <SidebarProvider>
+      <SidebarProvider keyboardShortcutEnabled={false}>
         <Sidebar variant="inset">
           <SidebarHeader>
             <SidebarMenu>
@@ -254,9 +253,9 @@ function Shell() {
             )}
           </div>
         </SidebarInset>
+        <DesktopMenu />
       </SidebarProvider>
       <OperationDialog />
-      <DesktopMenu />
       <Toaster position="bottom-right" />
     </TooltipProvider>
   )
@@ -271,8 +270,6 @@ function Page({ view }: { view: View }) {
       return s.provider ? <Environments key={s.provider} id={s.provider} /> : <Catalog />
     case 'projects':
       return <Projects />
-    case 'worktrees':
-      return <Projects worktrees />
     case 'caches':
       return <Caches />
     case 'activity':
@@ -285,7 +282,9 @@ function Page({ view }: { view: View }) {
 export default function App({ api }: { api?: Backend }) {
   return (
     <StoreProvider api={api}>
-      <Shell />
+      <AppUpdateProvider>
+        <Shell />
+      </AppUpdateProvider>
     </StoreProvider>
   )
 }

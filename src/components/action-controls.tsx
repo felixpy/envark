@@ -1,17 +1,32 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { useState, type ComponentProps, type ReactElement, type SyntheticEvent } from 'react'
+import { cn } from 'cn'
 import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
-function Availability({ reason, children }: { reason?: string | null; children: ReactNode }) {
+function Availability({ reason, children }: { reason?: string | null; children: ReactElement }) {
+  const [open, setOpen] = useState(false)
+  if (!reason) return children
+  const explain = (event: SyntheticEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setOpen(true)
+  }
   return (
-    <span
-      className="inline-flex"
-      title={reason || undefined}
-      tabIndex={reason ? 0 : undefined}
-      aria-label={reason || undefined}
-    >
-      {children}
-    </span>
+    <Tooltip open={open} onOpenChange={setOpen} delayDuration={350}>
+      <TooltipTrigger
+        asChild
+        onClickCapture={explain}
+        onKeyDownCapture={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') explain(event)
+        }}
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent sideOffset={6} className="max-w-72 text-left leading-relaxed">
+        {reason}
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -23,8 +38,12 @@ export function ActionButton({
     <Availability reason={reason}>
       <Button
         {...props}
-        disabled={Boolean(reason) || props.disabled}
+        disabled={reason ? false : props.disabled}
+        onClick={reason ? undefined : props.onClick}
+        title={reason ? undefined : props.title}
+        aria-disabled={reason ? true : undefined}
         aria-description={reason || undefined}
+        className={cn('aria-disabled:cursor-not-allowed aria-disabled:opacity-50', props.className)}
       />
     </Availability>
   )
@@ -38,8 +57,12 @@ export function SelectionCheckbox({
     <Availability reason={reason}>
       <Checkbox
         {...props}
-        disabled={Boolean(reason) || props.disabled}
+        disabled={reason ? false : props.disabled}
+        onCheckedChange={reason ? undefined : props.onCheckedChange}
+        title={reason ? undefined : props.title}
+        aria-disabled={reason ? true : undefined}
         aria-description={reason || undefined}
+        className={cn('aria-disabled:cursor-not-allowed aria-disabled:opacity-50', props.className)}
       />
     </Availability>
   )

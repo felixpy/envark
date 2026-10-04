@@ -39,7 +39,7 @@ export default function Overview() {
       hint: t('闲置项目产物与已识别缓存', 'Inactive project artifacts and known caches'),
       action: () =>
         inactive.length
-          ? s.go(inactive.some((p) => !p.isWorktree) ? 'projects' : 'worktrees', null, {
+          ? s.go('projects', null, {
               filter: 'idle',
             })
           : s.go('caches'),
@@ -67,20 +67,17 @@ export default function Overview() {
     },
   ]
   const tasks = [
-    ...(['projects', 'worktrees'] as const).flatMap((view) => {
-      const projects = inactive.filter((p) => Boolean(p.isWorktree) === (view === 'worktrees'))
-      return projects.length
-        ? [
-            {
-              icon: Archive,
-              title: `${projects.length} ${view === 'worktrees' ? t('个工作树长期未活动', 'inactive worktrees') : t('个项目长期未活动', 'inactive projects')}`,
-              description: `${t('可重建产物占用', 'Regenerable artifacts use')} ${formatBytes(projects.reduce((sum, p) => sum + projectBytes(p), 0))}`,
-              cta: t('审阅清理', 'Review cleanup'),
-              action: () => s.go(view, null, { filter: 'idle' }),
-            },
-          ]
-        : []
-    }),
+    ...(inactive.length
+      ? [
+          {
+            icon: Archive,
+            title: `${inactive.length} ${t('个工作区长期未活动', 'inactive workspaces')}`,
+            description: `${t('可重建产物占用', 'Regenerable artifacts use')} ${formatBytes(idleSize)}`,
+            cta: t('审阅清理', 'Review cleanup'),
+            action: () => s.go('projects', null, { filter: 'idle' }),
+          },
+        ]
+      : []),
     ...(cacheSize
       ? [
           {
@@ -152,7 +149,7 @@ export default function Overview() {
       bytes: inventory.projects
         .filter((p) => p.isWorktree)
         .reduce((sum, p) => sum + projectBytes(p), 0),
-      action: () => s.go('worktrees'),
+      action: () => s.go('projects'),
     },
     {
       label: t('全局缓存', 'Global caches'),

@@ -176,14 +176,9 @@ export default function Environments({ id }: { id: ProviderId }) {
             <CardTitle>
               {meta.runtime} {t('运行时', 'runtimes')}
             </CardTitle>
-            <CardDescription>
-              {provider.managers.length
-                ? `${t('优先使用', 'Preferred manager')}: ${preferred}`
-                : t(
-                    '没有检测到可管理版本的工具。系统安装的运行时保持只读。',
-                    'No supported version manager detected. System runtimes are read-only.',
-                  )}
-            </CardDescription>
+            {provider.managers.length > 0 && (
+              <CardDescription>{`${t('优先使用', 'Preferred manager')}: ${preferred}`}</CardDescription>
+            )}
             <CardAction>
               <Button
                 size="sm"
@@ -285,11 +280,6 @@ export default function Environments({ id }: { id: ProviderId }) {
                       >
                         {runtime.path}
                       </div>
-                      {(runtime.note || runtimeRemovalReason(runtime, t)) && (
-                        <p className="mt-2 max-w-80 whitespace-normal text-xs text-muted-foreground">
-                          {runtime.note || runtimeRemovalReason(runtime, t)}
-                        </p>
-                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">{runtime.manager}</TableCell>
                     <TableCell className="text-right font-mono text-xs">
@@ -405,10 +395,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                       reason={
                         busyReason ||
                         (!assets.eligibleCount
-                          ? t(
-                              '没有可移除的资源，原因见各行说明。',
-                              'No removable resources. See the reasons in each row.',
-                            )
+                          ? t('当前没有可移除的资源。', 'No removable resources.')
                           : null)
                       }
                       checked={
@@ -447,11 +434,6 @@ export default function Environments({ id }: { id: ProviderId }) {
                       >
                         {asset.path}
                       </div>
-                      {(assetRemovalReason(asset, t) || asset.note) && (
-                        <p className="mt-2 max-w-96 whitespace-normal text-xs text-muted-foreground">
-                          {assetRemovalReason(asset, t) || asset.note}
-                        </p>
-                      )}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {asset.lastUsed
@@ -724,24 +706,13 @@ function Tools({
                 'Dependency and build tooling, managed by its original installer.',
               )}
         </CardDescription>
-        {selection.chosen.length > 0 && (
-          <CardAction>
+        <CardAction className="flex items-center gap-2">
+          {selection.chosen.length > 0 && (
             <Button size="sm" reason={busyReason} onClick={() => onBatch(selection.chosen)}>
               <ArrowUp />
               {t('更新所选', 'Update selected')} ({selection.chosen.length})
             </Button>
-          </CardAction>
-        )}
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
-          <span>
-            {selection.eligibleCount}{' '}
-            {t(
-              '个工具可批量更新；全选仅包含已确认可更新的工具。',
-              'tools can be updated. Select all includes only confirmed, supported updates.',
-            )}
-          </span>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -752,7 +723,9 @@ function Tools({
               ? t('重新检查更新', 'Check updates again')
               : t('开启更新检查', 'Enable update checks')}
           </Button>
-        </div>
+        </CardAction>
+      </CardHeader>
+      <CardContent className="space-y-3">
         {global && (
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput
@@ -816,10 +789,7 @@ function Tools({
                   reason={
                     busyReason ||
                     (!selection.eligibleCount
-                      ? t(
-                          '没有可批量更新的工具，请查看更新状态和来源说明。',
-                          'No updatable tools. Check update status and installation ownership.',
-                        )
+                      ? t('当前没有可批量更新的工具。', 'No updatable tools.')
                       : null)
                   }
                   checked={
@@ -847,9 +817,6 @@ function Tools({
                 </TableCell>
                 <TableCell>
                   <div className="font-medium">{item.name}</div>
-                  <p className="mt-1 max-w-72 whitespace-normal text-xs text-muted-foreground">
-                    {toolUpdateReason(item, s.data.settings.checkUpdates, t) || item.note}
-                  </p>
                 </TableCell>
                 <TableCell className="font-mono text-xs">
                   {item.version}

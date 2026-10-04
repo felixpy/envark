@@ -30,6 +30,8 @@ interface Store {
   cancel(): Promise<void>
   refresh(): Promise<void>
   saveSettings(settings: Settings): Promise<boolean>
+  setTheme(theme: Settings['theme']): Promise<void>
+  setDisabledShortcuts(disabled: Settings['disabledShortcuts']): Promise<void>
   addRoot(path?: string): Promise<void>
   plan: Plan | null
   result: OperationResult | null
@@ -163,6 +165,26 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     },
     refresh,
     saveSettings,
+    setTheme: async (theme) => {
+      try {
+        const snapshot = api.setTheme
+          ? await api.setTheme(theme)
+          : await api.saveSettings({ ...data.settings, theme })
+        setData(snapshot)
+      } catch (cause) {
+        fail(cause)
+      }
+    },
+    setDisabledShortcuts: async (disabledShortcuts) => {
+      try {
+        const snapshot = api.setDisabledShortcuts
+          ? await api.setDisabledShortcuts(disabledShortcuts)
+          : await api.saveSettings({ ...data.settings, disabledShortcuts })
+        setData(snapshot)
+      } catch (cause) {
+        fail(cause)
+      }
+    },
     cancel: async () => {
       if (job) await api.cancel(job)
     },

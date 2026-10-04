@@ -6,6 +6,7 @@ import { ActionButton, SelectionCheckbox } from '@/components/action-controls'
 import { useSelection } from '@/hooks/use-selection'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   Table,
   TableBody,
@@ -57,13 +58,6 @@ export default function Caches() {
           {chosen.length > 0 && ` (${chosen.length})`}
         </ActionButton>
       </div>
-      <p role="status" className="text-xs text-muted-foreground">
-        {selection.eligibleCount}{' '}
-        {t(
-          '项缓存可选；不支持清理的缓存会显示原因。',
-          'caches selectable. Unavailable caches explain why below.',
-        )}
-      </p>
       <Card className="overflow-hidden py-0 shadow-none">
         <CardContent className="px-0">
           <Table>
@@ -75,10 +69,7 @@ export default function Caches() {
                     reason={
                       busyReason ||
                       (!selection.eligibleCount
-                        ? t(
-                            '当前没有可清理缓存，原因见各行说明。',
-                            'No eligible caches. See the reasons in each row.',
-                          )
+                        ? t('当前没有可清理缓存。', 'No eligible caches.')
                         : null)
                     }
                     checked={
@@ -129,24 +120,22 @@ export default function Caches() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    {cache.canClean ? (
-                      <Badge variant="secondary" className="font-normal">
-                        {t('工具原生清理', 'Native cleanup')}
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="font-normal">
-                        {t('由原工具管理', 'Owner-managed')}
-                      </Badge>
-                    )}
-                    <p className="mt-2 max-w-80 whitespace-normal text-xs text-muted-foreground">
-                      {cache.warning ||
-                        (!cache.canClean
-                          ? t(
-                              '尚不支持此缓存的原生清理，请使用原工具管理。',
-                              'Native cleanup is unavailable. Use the owning tool to manage this cache.',
-                            )
-                          : cache.strategy)}
-                    </p>
+                    <Tooltip delayDuration={350}>
+                      <TooltipTrigger asChild>
+                        <Badge
+                          variant={cache.canClean ? 'secondary' : 'outline'}
+                          className="font-normal"
+                          tabIndex={0}
+                        >
+                          {cache.canClean
+                            ? t('工具原生清理', 'Native cleanup')
+                            : t('由原工具管理', 'Owner-managed')}
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent sideOffset={6} className="max-w-72 text-left leading-relaxed">
+                        {cache.warning || cache.strategy}
+                      </TooltipContent>
+                    </Tooltip>
                   </TableCell>
                   <TableCell className="text-right font-mono text-xs">
                     {!cache.size.complete && '≥ '}

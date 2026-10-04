@@ -5,6 +5,7 @@ import { backend } from '@/bridge'
 import { emptySnapshot } from '@/domain'
 import { StoreProvider } from '@/store'
 import Caches from '@/views/Caches'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 it('selects every eligible cache, shows a mixed state, and explains read-only rows', async () => {
   const data = structuredClone(emptySnapshot)
@@ -32,6 +33,7 @@ it('selects every eligible cache, shows a mixed state, and explains read-only ro
     <StoreProvider api={{ ...backend, snapshot: async () => data, prepare }}>
       <Caches />
     </StoreProvider>,
+    { wrapper: TooltipProvider },
   )
   const user = userEvent.setup()
   await user.click(await screen.findByRole('checkbox', { name: 'Select npm' }))
@@ -42,9 +44,11 @@ it('selects every eligible cache, shows a mixed state, and explains read-only ro
   ).toBe('mixed')
   await user.click(screen.getByRole('checkbox', { name: 'Select all eligible caches' }))
   expect(
-    (screen.getByRole('checkbox', { name: 'Select external' }) as HTMLButtonElement).disabled,
-  ).toBe(true)
-  expect(screen.getByText('Cache owner is unavailable.')).toBeTruthy()
+    screen.getByRole('checkbox', { name: 'Select external' }).getAttribute('aria-disabled'),
+  ).toBe('true')
+  expect(screen.queryByText('Cache owner is unavailable.')).toBeNull()
+  await user.hover(screen.getByRole('checkbox', { name: 'Select external' }))
+  expect((await screen.findByRole('tooltip')).textContent).toBe('Cache owner is unavailable.')
   await user.click(screen.getByRole('button', { name: 'Review cleanup (2)' }))
   await waitFor(() =>
     expect(prepare).toHaveBeenCalledWith({ kind: 'cleanCaches', ids: ['npm', 'pnpm'] }),

@@ -11,6 +11,7 @@ import type {
   Snapshot,
 } from './domain'
 import { emptyProvider, emptySnapshot, providerIds } from './domain'
+import type { AppLinkTarget, AppRelease, ViewState } from './desktop'
 
 export interface Backend {
   native: boolean
@@ -25,10 +26,20 @@ export interface Backend {
   saveConfig(id: string, content: string, revision: string): Promise<ConfigContent>
   subscribe(callback: (progress: Progress) => void): Promise<() => void>
   subscribeMenu?(callback: (action: string) => void): Promise<() => void>
+  openAppLink?(target: AppLinkTarget): Promise<void>
+  checkAppUpdate?(): Promise<AppRelease>
+  syncViewState?(state: ViewState): Promise<void>
+  setTheme?(theme: Settings['theme']): Promise<Snapshot>
+  setDisabledShortcuts?(disabled: Settings['disabledShortcuts']): Promise<Snapshot>
 }
 
 const native: Backend = {
   native: true,
+  openAppLink: (target) => invoke('open_app_link', { target }),
+  checkAppUpdate: () => invoke('check_app_update'),
+  syncViewState: (state) => invoke('sync_view_state', { state }),
+  setTheme: (theme) => invoke('set_app_theme', { theme }),
+  setDisabledShortcuts: (disabled) => invoke('set_disabled_shortcuts', { disabled }),
   snapshot: () => invoke('snapshot'),
   refresh: (jobId) => invoke('refresh', { jobId }),
   saveSettings: (settings) => invoke('save_settings', { settings }),

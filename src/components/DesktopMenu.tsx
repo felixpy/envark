@@ -1,24 +1,69 @@
-import { useEffect, useEffectEvent, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { ExternalLink } from 'lucide-react'
 import { toast } from 'sonner'
 import { useStore } from '@/store'
 import type { View } from '@/domain'
+import { appLinks, nextZoom, type AppLinkTarget } from '@/desktop'
+import { shortcutForEvent } from '@/shortcuts'
+import { AppLink } from './AppLink'
+import { useAppUpdates } from './AppUpdates'
+import { ShortcutSettings } from './ShortcutSettings'
+import { useSidebar } from './ui/sidebar'
 import { Button } from './ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog'
 
-const views: View[] = ['overview', 'env', 'projects', 'worktrees', 'caches', 'activity', 'settings']
-const shortcuts: Record<string, string> = {
-  o: 'add-root',
-  r: 'refresh',
-  ',': 'settings',
-  ...Object.fromEntries(views.slice(0, 6).map((view, index) => [String(index + 1), view])),
-}
+const views: View[] = ['overview', 'env', 'projects', 'caches', 'activity', 'settings']
 
 export function DesktopMenu() {
   const s = useStore()
   const { t } = s
-  const [dialog, setDialog] = useState<'help' | 'about' | null>(null)
+  const sidebar = useSidebar()
+  const checkAppUpdate = useAppUpdates()
+  const [zoom, setZoom] = useState(1)
+  const viewSync = useRef(Promise.resolve())
+  const [dialog, setDialog] = useState<'shortcuts' | 'about' | null>(null)
+  const showSidebar = sidebar.isMobile ? sidebar.openMobile : sidebar.open
+  useEffect(() => {
+    if (!s.loaded || !s.api.syncViewState) return
+    const state = { sidebar: showSidebar, theme: s.data.settings.theme, zoom }
+    // Keep rapid menu changes ordered across the native bridge.
+    viewSync.current = viewSync.current
+      .then(() => s.api.syncViewState!(state))
+      .catch((error: unknown) => {
+        toast.error(String(error))
+      })
+  }, [s.loaded, s.api, s.data.settings.theme, showSidebar, zoom])
   const handle = useEffectEvent((action: string) => {
-    if (action === 'help' || action === 'about') {
+    if (action === 'toggle-sidebar') {
+      sidebar.toggleSidebar()
+      return
+    }
+    if (['zoom-in', 'zoom-out', 'zoom-reset'].includes(action)) {
+      setZoom((current) => nextZoom(current, action))
+      return
+    }
+    if (action.startsWith('theme-')) {
+      const theme = action.slice(6)
+      if (theme === 'light' || theme === 'dark' || theme === 'system') void s.setTheme(theme)
+      return
+    }
+    if (action === 'check-update') {
+      setDialog(null)
+      checkAppUpdate()
+      return
+    }
+    if (Object.hasOwn(appLinks, action)) {
+      const target = action as AppLinkTarget
+      if (s.api.native)
+        void s.api.openAppLink?.(target).catch((error: unknown) =>
+          toast.error(t('无法打开浏览器', 'Unable to open browser'), {
+            description: String(error),
+          }),
+        )
+      else window.open(appLinks[target], '_blank', 'noopener,noreferrer')
+      return
+    }
+    if (action === 'shortcuts' || action === 'about') {
       setDialog(action)
       return
     }
@@ -56,25 +101,23 @@ export function DesktopMenu() {
       stop?.()
     }
   }, [s.api])
+  const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (event.defaultPrevented || !s.loaded) return
+    const action = shortcutForEvent(event, s.data.platform)
+    if (!action) return
+    // Keep browser navigation intact in the development preview.
+    if (!s.api.native && action !== 'toggle-sidebar' && action !== 'shortcuts') return
+    // Suppress webview defaults even for disabled shortcuts (for example reload/zoom).
+    event.preventDefault()
+    if (!event.repeat && !s.data.settings.disabledShortcuts.includes(action)) handle(action)
+  })
   useEffect(() => {
-    if (!s.api.native || s.data.platform !== 'windows') return
     // WebView2 can consume accelerators before the native menu receives them.
     // Handle only keys delivered to the webview; native-handled keys never arrive here.
-    const keydown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || event.altKey || event.shiftKey) return
-      let action: string | undefined
-      if (event.key === 'F1' && !event.ctrlKey && !event.metaKey) action = 'help'
-      else if (event.ctrlKey && !event.metaKey) {
-        action = shortcuts[event.key.toLowerCase()]
-      }
-      if (!action) return
-      event.preventDefault()
-      if (!event.repeat) handle(action)
-    }
+    const keydown = (event: KeyboardEvent) => handleShortcut(event)
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [s.api.native, s.data.platform])
-  const modifier = s.data.platform === 'macos' ? '⌘' : 'Ctrl'
+  }, [])
   return (
     <Dialog
       open={dialog !== null}
@@ -82,21 +125,19 @@ export function DesktopMenu() {
         if (!open) setDialog(null)
       }}
     >
-      <DialogContent>
-        <DialogHeader>
+      <DialogContent
+        className={dialog === 'shortcuts' ? 'gap-0 p-0 sm:max-w-xl' : undefined}
+        aria-describedby={dialog === 'about' ? 'about-description' : undefined}
+      >
+        <DialogHeader className={dialog === 'shortcuts' ? 'p-6' : undefined}>
           <DialogTitle>
             {dialog === 'about'
               ? t('关于 Envark', 'About Envark')
-              : t('使用说明与快捷键', 'Getting started & shortcuts')}
+              : t('键盘快捷键', 'Keyboard shortcuts')}
           </DialogTitle>
-          <DialogDescription>
-            {dialog === 'about'
-              ? `Envark ${s.data.version}`
-              : t(
-                  '从扫描开始，执行前审阅每项变更。',
-                  'Start with a scan and review each change before executing it.',
-                )}
-          </DialogDescription>
+          {dialog === 'about' && (
+            <DialogDescription id="about-description">Envark {s.data.version}</DialogDescription>
+          )}
         </DialogHeader>
         {dialog === 'about' ? (
           <div className="space-y-3 text-sm">
@@ -106,54 +147,28 @@ export function DesktopMenu() {
                 'Inspect and manage developer environments, tools, project artifacts, and shared caches.',
               )}
             </p>
-            <p className="select-text break-all font-mono text-xs text-muted-foreground">
-              https://github.com/felixpy/envark
-            </p>
+            <div className="flex flex-wrap items-center gap-4">
+              <AppLink
+                target="github"
+                className="inline-flex items-center gap-2 underline underline-offset-4"
+              >
+                <ExternalLink className="size-4" />
+                GitHub
+              </AppLink>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setDialog(null)
+                  checkAppUpdate()
+                }}
+              >
+                {t('检查更新', 'Check for updates')}
+              </Button>
+            </div>
           </div>
         ) : (
-          <div className="space-y-4 text-sm">
-            <ol className="list-decimal space-y-2 pl-5">
-              <li>
-                {t(
-                  '添加存放 Git 仓库的目录。关联 Worktree 会自动纳入扫描。',
-                  'Add a folder containing Git repositories. Linked worktrees are included automatically.',
-                )}
-              </li>
-              <li>
-                {t(
-                  '在项目或缓存页选择可操作项，点击审阅清理，确认后执行。',
-                  'Select eligible items in Projects or Caches, review the cleanup, and confirm to execute.',
-                )}
-              </li>
-              <li>
-                {t(
-                  '不可用选项会显示原因；检查更新需要先在设置中开启联网检查。',
-                  'Unavailable actions explain why. Enable online update checks in Settings to check tool versions.',
-                )}
-              </li>
-            </ol>
-            <dl className="grid grid-cols-[1fr_auto] gap-2 rounded-lg bg-muted p-3 text-xs">
-              <dt>{t('添加目录', 'Add folder')}</dt>
-              <dd>{modifier}+O</dd>
-              <dt>{t('重新扫描', 'Rescan')}</dt>
-              <dd>{modifier}+R</dd>
-              <dt>{t('设置', 'Settings')}</dt>
-              <dd>{modifier}+,</dd>
-              <dt>{t('切换主要页面', 'Switch main pages')}</dt>
-              <dd>{modifier}+1–6</dd>
-              <dt>{t('帮助', 'Help')}</dt>
-              <dd>F1</dd>
-            </dl>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setDialog(null)
-                s.go('settings')
-              }}
-            >
-              {t('打开设置', 'Open settings')}
-            </Button>
-          </div>
+          <ShortcutSettings />
         )}
       </DialogContent>
     </Dialog>

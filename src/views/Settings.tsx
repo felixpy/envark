@@ -15,14 +15,18 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { AppLink } from '@/components/AppLink'
+import { useAppUpdates } from '@/components/AppUpdates'
 
 export default function Settings() {
   const s = useStore()
   const { t } = s
   const settings = s.data.settings
+  const checkAppUpdate = useAppUpdates()
   const [excludes, setExcludes] = useState(settings.excludes.join('\n'))
   const [days, setDays] = useState(String(settings.idleDays))
-  const patch = (value: Partial<Preferences>) => void s.saveSettings({ ...settings, ...value })
+  const patch = (value: Partial<Preferences>) =>
+    value.theme ? void s.setTheme(value.theme) : void s.saveSettings({ ...settings, ...value })
   return (
     <div className="space-y-6">
       <PageHeader
@@ -288,15 +292,25 @@ export default function Settings() {
               {s.data.dataDir || t('桌面应用中可查看', 'Available in the desktop app')}
             </p>
           </div>
-          <a
-            className="inline-flex items-center gap-2 text-sm underline underline-offset-4"
-            href="https://github.com/felixpy/envark"
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ExternalLink className="size-4" />
-            GitHub
-          </a>
+          <div className="flex flex-wrap items-center gap-4">
+            <Button variant="outline" size="sm" onClick={checkAppUpdate}>
+              {t('检查更新', 'Check for updates')}
+            </Button>
+            <AppLink
+              className="inline-flex items-center gap-2 text-sm underline underline-offset-4"
+              target="github"
+            >
+              <ExternalLink className="size-4" />
+              GitHub
+            </AppLink>
+            <AppLink
+              target="issues"
+              className="inline-flex items-center gap-2 underline underline-offset-4"
+            >
+              <ExternalLink className="size-4" />
+              {t('报告问题', 'Report an issue')}
+            </AppLink>
+          </div>
         </CardContent>
       </Card>
     </div>

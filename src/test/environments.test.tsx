@@ -5,6 +5,7 @@ import { backend } from '@/bridge'
 import { emptyProvider, emptySnapshot, type Provider, type Tool } from '@/domain'
 import { StoreProvider } from '@/store'
 import Environments from '@/views/Environments'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 function fixture(provider: Provider) {
   const data = structuredClone(emptySnapshot)
@@ -23,6 +24,7 @@ function fixture(provider: Provider) {
     <StoreProvider api={{ ...backend, native: false, snapshot: async () => data, prepare }}>
       <Environments id={provider.id} />
     </StoreProvider>,
+    { wrapper: TooltipProvider },
   )
   return prepare
 }
@@ -117,5 +119,5 @@ it('does not mistake an inherited active runtime for the manager default', async
       id: 'runtime',
     }),
   )
-  expect((screen.getByRole('button', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(screen.getByRole('button', { name: 'Remove' }).getAttribute('aria-disabled')).toBe('true')
 })

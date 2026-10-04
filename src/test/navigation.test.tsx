@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import App from '@/App'
 import { backend, type Backend } from '@/bridge'
-import { emptySnapshot, emptyProvider, type Project } from '@/domain'
+import { emptySnapshot, emptyProvider, type Project, type Settings } from '@/domain'
 
 function fixture(native = false) {
   const data = structuredClone(emptySnapshot)
@@ -23,7 +23,8 @@ function fixture(native = false) {
     branch: id,
     pins: {},
     protected: false,
-    repository,
+    repository:
+      isWorktree || id === 'main-repo' ? repository : { id, name: id, path: `/repos/${id}` },
     isWorktree,
     artifacts: [
       {
@@ -58,11 +59,26 @@ function fixture(native = false) {
   data.inventory.providers = [js, emptyProvider('py')]
   let menu: ((action: string) => void) | undefined
   const refresh = vi.fn(async () => data)
+  const syncViewState = vi.fn(async () => {})
+  const openAppLink = vi.fn(async () => {})
+  const checkAppUpdate = vi.fn(async () => ({ version: '0.2.0', available: true }))
+  const setDisabledShortcuts = vi.fn(async (disabledShortcuts: Settings['disabledShortcuts']) => {
+    data.settings = { ...data.settings, disabledShortcuts }
+    return { ...data }
+  })
   const api: Backend = {
     ...backend,
     native,
     snapshot: async () => data,
     refresh,
+    syncViewState,
+    openAppLink,
+    checkAppUpdate,
+    setDisabledShortcuts,
+    saveSettings: async (settings) => {
+      data.settings = settings
+      return { ...data }
+    },
     subscribeMenu: async (handler) => {
       menu = handler
       return () => {
@@ -70,8 +86,19 @@ function fixture(native = false) {
       }
     },
   }
-  render(<App api={api} />)
-  return { refresh, menu: (action: string) => act(() => menu?.(action)) }
+  let app = render(<App api={api} />)
+  return {
+    refresh,
+    syncViewState,
+    openAppLink,
+    checkAppUpdate,
+    setDisabledShortcuts,
+    remount: () => {
+      app.unmount()
+      app = render(<App api={api} />)
+    },
+    menu: (action: string) => act(() => menu?.(action)),
+  }
 }
 
 it('overview cards and suggested rows open the correct destinations with idle filters', async () => {
@@ -80,17 +107,57 @@ it('overview cards and suggested rows open the correct destinations with idle fi
   await user.click(await screen.findByRole('button', { name: 'Available updates' }))
   await screen.findByRole('heading', { name: 'Settings' })
   await user.click(screen.getByRole('button', { name: 'Overview' }))
-  await user.click(await screen.findByRole('button', { name: /1 inactive projects/ }))
+  expect(screen.queryByRole('button', { name: 'Worktrees' })).toBeNull()
+  await user.click(await screen.findByRole('button', { name: /2 inactive workspaces/ }))
   await screen.findByRole('heading', { name: 'Project space' })
   expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true')
   expect(screen.queryByText('recent-repo')).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Overview' }))
   await user.click(await screen.findByRole('button', { name: /Worktree artifacts/ }))
-  await screen.findByRole('heading', { name: 'Worktrees' })
+  await screen.findByRole('heading', { name: 'Project space' })
   const main = screen.getByRole('main')
-  expect(within(main).getByText('main-repo')).toBeTruthy()
+  expect(within(main).getByTitle('/repos/main-repo')).toBeTruthy()
   expect(within(main).getByTitle('/elsewhere/feature')).toBeTruthy()
-  expect(within(main).queryByText('recent-repo')).toBeNull()
+  expect(within(main).getByTitle('/repos/recent-repo')).toBeTruthy()
+})
+
+it('syncs native view commands with sidebar, theme, and bounded zoom', async () => {
+  const { menu, syncViewState } = fixture(true)
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('toggle-sidebar')
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({ sidebar: false, theme: 'system', zoom: 1 }),
+  )
+  menu('theme-dark')
+  await waitFor(() => expect(document.documentElement.classList.contains('dark')).toBe(true))
+  menu('zoom-in')
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({ sidebar: false, theme: 'dark', zoom: 1.1 }),
+  )
+  for (let i = 0; i < 10; i++) menu('zoom-in')
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({ sidebar: false, theme: 'dark', zoom: 1.5 }),
+  )
+  fireEvent.keyDown(window, { key: '0', ctrlKey: true })
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({ sidebar: false, theme: 'dark', zoom: 1 }),
+  )
+})
+
+it('opens GitHub and issue links through the native browser integration and checks releases', async () => {
+  const { menu, openAppLink, checkAppUpdate } = fixture(true)
+  const user = userEvent.setup()
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('about')
+  await user.click(await screen.findByRole('link', { name: 'GitHub' }))
+  expect(openAppLink).toHaveBeenCalledWith('github')
+  await user.click(screen.getByRole('button', { name: 'Check for updates' }))
+  await screen.findByText('New version available · 0.2.0')
+  expect(checkAppUpdate).toHaveBeenCalledOnce()
+  await user.click(screen.getByRole('link', { name: 'View release page' }))
+  expect(openAppLink).toHaveBeenCalledWith('latest')
+  menu('issues')
+  expect(openAppLink).toHaveBeenCalledWith('issues')
 })
 
 it('keeps missing ecosystems inspectable and removes capability labels from the catalog', async () => {
@@ -110,14 +177,16 @@ it('keeps missing ecosystems inspectable and removes capability labels from the 
   ).toMatch(/version manager/)
 })
 
-it('routes native menu events to navigation, help, and rescan', async () => {
+it('routes native menu events to navigation, shortcuts, and rescan', async () => {
   const { menu, refresh } = fixture()
   await screen.findByRole('heading', { name: 'Overview' })
-  menu('worktrees')
-  await screen.findByRole('heading', { name: 'Worktrees' })
-  menu('help')
+  menu('projects')
+  await screen.findByRole('heading', { name: 'Project space' })
+  menu('shortcuts')
   expect(await screen.findByRole('dialog')).toBeTruthy()
-  expect(screen.getByText('Getting started & shortcuts')).toBeTruthy()
+  expect(screen.getByRole('heading', { name: 'Keyboard shortcuts' })).toBeTruthy()
+  expect(screen.queryByText(/Getting started/)).toBeNull()
+  expect(screen.queryByRole('switch', { name: 'Worktrees' })).toBeNull()
   await userEvent.setup().click(screen.getByRole('button', { name: 'Close' }))
   menu('refresh')
   await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
@@ -129,7 +198,7 @@ it('handles Windows shortcuts delivered to the webview without repeating operati
   const { refresh } = fixture(true)
   await screen.findByRole('heading', { name: 'Overview' })
   fireEvent.keyDown(window, { key: '4', ctrlKey: true })
-  await screen.findByRole('heading', { name: 'Worktrees' })
+  await screen.findByRole('heading', { name: 'Global caches' })
   fireEvent.keyDown(window, { key: 'F1' })
   expect(await screen.findByRole('dialog')).toBeTruthy()
   await userEvent.setup().click(screen.getByRole('button', { name: 'Close' }))
@@ -137,4 +206,127 @@ it('handles Windows shortcuts delivered to the webview without repeating operati
   expect(refresh).not.toHaveBeenCalled()
   fireEvent.keyDown(window, { key: 'r', ctrlKey: true })
   await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+})
+
+it('disables shortcuts independently while leaving menu actions available', async () => {
+  const { menu, refresh, syncViewState, setDisabledShortcuts } = fixture(true)
+  const user = userEvent.setup()
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('shortcuts')
+  for (const name of [
+    'Rescan',
+    'Project space',
+    'Toggle sidebar',
+    'Zoom in',
+    'Keyboard shortcuts',
+  ]) {
+    const control = screen.getByRole('switch', { name })
+    await user.click(control)
+    await waitFor(() => expect(control.getAttribute('aria-checked')).toBe('false'))
+  }
+  expect(setDisabledShortcuts).toHaveBeenLastCalledWith([
+    'refresh',
+    'projects',
+    'toggle-sidebar',
+    'zoom-in',
+    'shortcuts',
+  ])
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+  syncViewState.mockClear()
+  for (const key of ['r', '3', 'b', '+']) {
+    expect(fireEvent.keyDown(window, { key, ctrlKey: true })).toBe(false)
+  }
+  fireEvent.keyDown(window, { key: 'F1' })
+  expect(refresh).not.toHaveBeenCalled()
+  expect(syncViewState).not.toHaveBeenCalled()
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(screen.getByRole('heading', { name: 'Overview' })).toBeTruthy()
+
+  // Disabling one navigation shortcut must not disable the remaining pages.
+  fireEvent.keyDown(window, { key: '4', ctrlKey: true })
+  await screen.findByRole('heading', { name: 'Global caches' })
+  menu('projects')
+  await screen.findByRole('heading', { name: 'Project space' })
+  menu('toggle-sidebar')
+  menu('zoom-in')
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({
+      sidebar: false,
+      theme: 'system',
+      zoom: 1.1,
+    }),
+  )
+  menu('refresh')
+  await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+  menu('shortcuts')
+  await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+})
+
+it('loads saved shortcut switches after reopening the app and restores their defaults', async () => {
+  const { menu, remount, setDisabledShortcuts, syncViewState } = fixture(true)
+  const user = userEvent.setup()
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('shortcuts')
+  await user.click(screen.getByRole('switch', { name: 'Toggle sidebar' }))
+  await waitFor(() => expect(setDisabledShortcuts).toHaveBeenCalledWith(['toggle-sidebar']))
+  remount()
+  await screen.findByRole('heading', { name: 'Overview' })
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({
+      sidebar: true,
+      theme: 'system',
+      zoom: 1,
+    }),
+  )
+  syncViewState.mockClear()
+  fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
+  expect(syncViewState).not.toHaveBeenCalled()
+  fireEvent.keyDown(window, { key: 'F1' })
+  await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
+  expect(screen.getByRole('switch', { name: 'Toggle sidebar' }).getAttribute('aria-checked')).toBe(
+    'false',
+  )
+  await user.click(screen.getByRole('button', { name: 'Restore default shortcuts' }))
+  await waitFor(() =>
+    expect(
+      screen.getByRole('switch', { name: 'Toggle sidebar' }).getAttribute('aria-checked'),
+    ).toBe('true'),
+  )
+  expect(setDisabledShortcuts).toHaveBeenLastCalledWith([])
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+  fireEvent.keyDown(window, { key: 'b', ctrlKey: true })
+  await waitFor(() =>
+    expect(syncViewState).toHaveBeenLastCalledWith({
+      sidebar: false,
+      theme: 'system',
+      zoom: 1,
+    }),
+  )
+})
+
+it('keeps the shortcut enabled and reports an unsuccessful save', async () => {
+  const { menu, setDisabledShortcuts, refresh } = fixture(true)
+  const user = userEvent.setup()
+  setDisabledShortcuts.mockRejectedValueOnce(new Error('Unable to save preferences'))
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('shortcuts')
+  await user.click(screen.getByRole('switch', { name: 'Rescan' }))
+  await waitFor(() => expect(setDisabledShortcuts).toHaveBeenCalledOnce())
+  expect(screen.getByRole('switch', { name: 'Rescan' }).getAttribute('aria-checked')).toBe('true')
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+  expect((await screen.findByRole('alert')).textContent).toContain('Unable to save preferences')
+  fireEvent.keyDown(window, { key: 'r', ctrlKey: true })
+  await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+})
+
+it('reports an update check failure and allows retrying without inventing a newer version', async () => {
+  const { menu, checkAppUpdate } = fixture(true)
+  checkAppUpdate.mockRejectedValueOnce(new Error('Network unavailable'))
+  checkAppUpdate.mockResolvedValueOnce({ version: '0.1.0', available: false })
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('check-update')
+  await screen.findByText('Unable to check for updates. Retry or visit the release page.')
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Retry' }))
+  await screen.findByText('You are up to date.')
+  expect(checkAppUpdate).toHaveBeenCalledTimes(2)
 })
