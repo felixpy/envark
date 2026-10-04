@@ -26,6 +26,7 @@ let data: Snapshot = {
     roots: ['/work'],
   },
   inventory: {
+    worktrees: [],
     providers: providerIds.map(emptyProvider),
     projects: ['archive-web', 'active-api', 'protected-service'].map((name, index) => ({
       id: name,
@@ -68,6 +69,36 @@ let data: Snapshot = {
   },
 }
 const js = data.inventory.providers.find((p) => p.id === 'js')!
+const repository = { id: 'archive-repository', name: 'archive-web', path: '/work/archive-web' }
+data.inventory.projects[0].repository = repository
+for (const [index, name] of ['feature-search', 'fix-layout'].entries()) {
+  const path = `/worktrees/${name}`
+  data.inventory.projects.push({
+    ...structuredClone(data.inventory.projects[0]),
+    id: name,
+    name,
+    path,
+    branch: name,
+    isWorktree: true,
+    repository,
+    artifacts: [
+      {
+        ...structuredClone(data.inventory.projects[0].artifacts[0]),
+        id: `${name}-modules`,
+        path: `${path}/node_modules`,
+        size: size((index + 1) * gib),
+      },
+    ],
+  })
+  data.inventory.worktrees.push({
+    id: name,
+    path,
+    branch: name,
+    repository,
+    locked: index === 1,
+    issue: null,
+  })
+}
 js.detected = true
 js.managers = [
   {

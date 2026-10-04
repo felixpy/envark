@@ -1,7 +1,9 @@
+pub mod app_release;
 pub mod config;
 pub mod engine;
 pub mod error;
 pub mod filesystem;
+pub(crate) mod git;
 pub mod model;
 pub mod operations;
 pub mod persistence;

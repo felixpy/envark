@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::IntoDeserializer};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -50,6 +50,24 @@ impl ProviderId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Shortcut {
+    AddRoot,
+    Refresh,
+    Settings,
+    Overview,
+    Env,
+    Projects,
+    Caches,
+    Activity,
+    ToggleSidebar,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    Shortcuts,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -63,6 +81,19 @@ pub struct Settings {
     pub use_trash: bool,
     pub preferred: BTreeMap<ProviderId, String>,
     pub protected_projects: Vec<PathBuf>,
+    #[serde(deserialize_with = "deserialize_disabled_shortcuts")]
+    pub disabled_shortcuts: BTreeSet<Shortcut>,
+}
+
+fn deserialize_disabled_shortcuts<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<BTreeSet<Shortcut>, D::Error> {
+    Vec::<String>::deserialize(deserializer)?
+        .into_iter()
+        // Retired navigation shortcuts must not invalidate existing preferences.
+        .filter(|id| id != "worktrees")
+        .map(|id| Shortcut::deserialize(id.into_deserializer()))
+        .collect()
 }
 
 impl Default for Settings {
@@ -77,6 +108,7 @@ impl Default for Settings {
             idle_days: 90,
             use_trash: true,
             protected_projects: vec![],
+            disabled_shortcuts: BTreeSet::new(),
             preferred: BTreeMap::from([
                 (ProviderId::Js, "fnm".into()),
                 (ProviderId::Py, "uv".into()),
@@ -251,6 +283,29 @@ pub struct Project {
     pub pins: BTreeMap<String, String>,
     pub protected: bool,
     pub artifacts: Vec<Artifact>,
+    #[serde(default)]
+    pub repository: Option<Repository>,
+    #[serde(default)]
+    pub is_worktree: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Repository {
+    pub id: String,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    pub id: String,
+    pub repository: Repository,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub locked: bool,
+    pub issue: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +335,8 @@ pub struct Disk {
 pub struct Inventory {
     pub providers: Vec<Provider>,
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub worktrees: Vec<Worktree>,
     pub caches: Vec<Cache>,
     pub disks: Vec<Disk>,
     pub scanned_at: Option<u64>,

@@ -9,7 +9,11 @@ use crate::{
     scanner,
 };
 use serde::Serialize;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+    sync::Arc,
+};
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -45,6 +49,21 @@ impl Engine {
             version: env!("CARGO_PKG_VERSION").into(),
         };
         state.inventory.issues.extend(storage.recovery_notices());
+        if state
+            .inventory
+            .projects
+            .iter()
+            .any(|project| project.repository.is_none())
+        {
+            // Legacy inventories describe manifest directories rather than Git roots.
+            state.inventory.projects.clear();
+            state.inventory.worktrees.clear();
+            state.inventory.scanned_at = None;
+            state.inventory.issues.push(
+                "Rescan project folders to group Git repositories and their linked worktrees."
+                    .into(),
+            );
+        }
         Ok(Self {
             storage,
             state: RwLock::new(state),
@@ -67,6 +86,30 @@ impl Engine {
         self.storage.save_settings(&settings)?;
         self.plans.lock().await.clear();
         let mut state = self.state.write().await;
+        state.settings = settings;
+        Ok(state.clone())
+    }
+
+    pub async fn set_theme(&self, theme: String) -> Result<Snapshot> {
+        if !matches!(theme.as_str(), "light" | "dark" | "system") {
+            return Err(Error::InvalidInput("Unsupported theme.".into()));
+        }
+        // Appearance changes must not invalidate reviewed cleanup plans or wait
+        // for a filesystem operation. Preserve all operation-related settings.
+        let mut state = self.state.write().await;
+        let mut settings = state.settings.clone();
+        settings.theme = theme;
+        self.storage.save_settings(&settings)?;
+        state.settings = settings;
+        Ok(state.clone())
+    }
+
+    pub async fn set_disabled_shortcuts(&self, disabled: BTreeSet<Shortcut>) -> Result<Snapshot> {
+        // Keyboard preferences are independent of running operations and cleanup plans.
+        let mut state = self.state.write().await;
+        let mut settings = state.settings.clone();
+        settings.disabled_shortcuts = disabled;
+        self.storage.save_settings(&settings)?;
         state.settings = settings;
         Ok(state.clone())
     }
@@ -230,6 +273,7 @@ impl Engine {
             providers: discovered.providers,
             caches: discovered.caches,
             projects: projects.projects,
+            worktrees: projects.worktrees,
             issues: projects.issues,
             disks,
             scanned_at: Some(now()),
@@ -384,6 +428,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_project_inventory_requires_rescanning_without_losing_preferences() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = Storage::new(root.path().into()).unwrap();
+        let settings = Settings {
+            roots: vec![root.path().join("projects")],
+            scan_on_launch: false,
+            ..Default::default()
+        };
+        storage.save_settings(&settings).unwrap();
+        let legacy = serde_json::json!({
+            "providers": [], "caches": [], "disks": [], "issues": [], "scannedAt": 42,
+            "projects": [{
+                "id": "legacy", "name": "web", "path": root.path().join("projects/apps/web"),
+                "providers": ["js"], "lastActive": null, "activityComplete": true,
+                "branch": null, "pins": {}, "protected": false, "artifacts": []
+            }]
+        });
+        std::fs::write(root.path().join("inventory.json"), legacy.to_string()).unwrap();
+        let snapshot = Engine::new(root.path().into()).unwrap().snapshot().await;
+        assert!(snapshot.inventory.projects.is_empty());
+        assert!(snapshot.inventory.worktrees.is_empty());
+        assert!(snapshot.inventory.scanned_at.is_none());
+        assert!(
+            snapshot
+                .inventory
+                .issues
+                .iter()
+                .any(|issue| issue.contains("Rescan"))
+        );
+        assert_eq!(snapshot.settings.roots, settings.roots);
+        assert!(!snapshot.settings.scan_on_launch);
+    }
+
+    #[tokio::test]
     async fn activity_write_failure_preserves_the_result_in_memory() {
         let root = tempfile::tempdir().unwrap();
         let engine = Engine::new(root.path().into()).unwrap();
@@ -395,5 +473,103 @@ mod tests {
         assert_eq!(snapshot.activity[0].status, "success");
         assert_eq!(snapshot.activity[0].removed_bytes, 12);
         assert!(snapshot.inventory.issues[0].contains("could not be saved"));
+    }
+
+    #[tokio::test]
+    async fn theme_changes_are_available_during_operations_without_changing_scan_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = Engine::new(temp.path().into()).unwrap();
+        let original = engine.snapshot().await.settings;
+        let _operation = engine.work.lock().await;
+        let snapshot = engine.set_theme("dark".into()).await.unwrap();
+        assert_eq!(snapshot.settings.theme, "dark");
+        assert_eq!(snapshot.settings.roots, original.roots);
+        assert_eq!(snapshot.settings.idle_days, original.idle_days);
+        assert_eq!(engine.storage.settings().unwrap().theme, "dark");
+        assert!(engine.set_theme("invalid".into()).await.is_err());
+        assert_eq!(engine.snapshot().await.settings.theme, "dark");
+    }
+
+    #[tokio::test]
+    async fn shortcut_preferences_migrate_persist_and_reset_during_operations() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("settings.json"),
+            r#"{"language":"en","scanOnLaunch":false,"idleDays":120}"#,
+        )
+        .unwrap();
+        let engine = Engine::new(temp.path().into()).unwrap();
+        assert!(
+            engine
+                .snapshot()
+                .await
+                .settings
+                .disabled_shortcuts
+                .is_empty()
+        );
+        let _operation = engine.work.lock().await;
+        let disabled = BTreeSet::from([Shortcut::Refresh, Shortcut::ToggleSidebar]);
+        let snapshot = engine
+            .set_disabled_shortcuts(disabled.clone())
+            .await
+            .unwrap();
+        assert_eq!(snapshot.settings.disabled_shortcuts, disabled);
+        let reopened = Engine::new(temp.path().into()).unwrap();
+        let settings = reopened.snapshot().await.settings;
+        assert_eq!(settings.disabled_shortcuts, disabled);
+        assert_eq!(settings.language, "en");
+        assert_eq!(settings.idle_days, 120);
+        assert!(!settings.scan_on_launch);
+        engine
+            .set_disabled_shortcuts(BTreeSet::new())
+            .await
+            .unwrap();
+        assert!(
+            engine
+                .storage
+                .settings()
+                .unwrap()
+                .disabled_shortcuts
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn retired_worktree_shortcut_does_not_discard_other_preferences() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("settings.json"),
+            r#"{"language":"en","idleDays":120,"disabledShortcuts":["worktrees","caches"]}"#,
+        )
+        .unwrap();
+        let snapshot = Engine::new(temp.path().into()).unwrap().snapshot().await;
+        assert_eq!(
+            snapshot.settings.disabled_shortcuts,
+            BTreeSet::from([Shortcut::Caches])
+        );
+        assert_eq!(snapshot.settings.language, "en");
+        assert_eq!(snapshot.settings.idle_days, 120);
+        assert!(snapshot.inventory.issues.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_shortcut_preference_save_preserves_the_active_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = Engine::new(temp.path().into()).unwrap();
+        std::fs::create_dir(temp.path().join("settings.json")).unwrap();
+        assert!(
+            engine
+                .set_disabled_shortcuts(BTreeSet::from([Shortcut::Refresh]))
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .snapshot()
+                .await
+                .settings
+                .disabled_shortcuts
+                .is_empty()
+        );
     }
 }

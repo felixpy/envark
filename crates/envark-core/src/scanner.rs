@@ -2,12 +2,13 @@ use crate::{
     Error, Result,
     artifact_policy::ownership_issue,
     filesystem::{id_for, is_link, measure, modified, read_small, reject_links},
-    model::{Artifact, Progress, ProgressSink, Project, ProviderId, Settings},
+    git,
+    model::{Artifact, Progress, ProgressSink, Project, ProviderId, Settings, Worktree},
 };
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
     time::{Instant, UNIX_EPOCH},
@@ -18,6 +19,7 @@ use walkdir::WalkDir;
 #[derive(Debug, Default, Clone)]
 pub struct ScanResult {
     pub projects: Vec<Project>,
+    pub worktrees: Vec<Worktree>,
     pub issues: Vec<String>,
     pub visited: u64,
     pub elapsed_ms: u128,
@@ -77,17 +79,54 @@ pub(crate) fn canonical_roots(settings: &Settings) -> Result<Vec<PathBuf>> {
     Ok(roots)
 }
 
-pub(crate) fn project_in_scope(path: &Path, settings: &Settings) -> Result<bool> {
+fn configured_scope(path: &Path, settings: &Settings) -> Result<Option<PathBuf>> {
     let ignored = exclusions(settings)?;
     for root in canonical_roots(settings)? {
         if path.starts_with(&root) {
-            return Ok(!path.ancestors().take_while(|p| *p != root).any(|p| {
+            let excluded = path.ancestors().take_while(|p| *p != root).any(|p| {
                 p.file_name().is_some_and(|name| ignored.is_match(name))
                     || ignored.is_match(p.strip_prefix(&root).unwrap_or(p))
-            }));
+            });
+            return Ok((!excluded).then_some(root));
         }
     }
-    Ok(false)
+    Ok(None)
+}
+
+fn scope_root(path: &Path, settings: &Settings) -> Result<Option<PathBuf>> {
+    // Explicit exclusions also apply to worktrees nested in a configured root.
+    if canonical_roots(settings)?
+        .iter()
+        .any(|root| path.starts_with(root))
+    {
+        return configured_scope(path, settings);
+    }
+    for ancestor in path.ancestors() {
+        if ancestor.join(".git").exists() {
+            let Some(checkout) = git::checkout(ancestor)? else {
+                return Ok(None);
+            };
+            if checkout.is_worktree
+                && configured_scope(&checkout.repository.path, settings)?.is_some()
+            {
+                let ignored = exclusions(settings)?;
+                let excluded = path
+                    .ancestors()
+                    .take_while(|p| p.starts_with(ancestor))
+                    .any(|p| {
+                        p.file_name().is_some_and(|name| ignored.is_match(name))
+                            || ignored.is_match(p.strip_prefix(ancestor).unwrap_or(p))
+                    });
+                return Ok((!excluded).then(|| ancestor.to_path_buf()));
+            }
+            break;
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn project_in_scope(path: &Path, settings: &Settings) -> Result<bool> {
+    Ok(scope_root(path, settings)?.is_some())
 }
 
 pub(crate) fn artifact_in_scope(
@@ -112,9 +151,7 @@ pub(crate) fn artifact_in_scope(
             ));
         }
     }
-    let root = canonical_roots(settings)?
-        .into_iter()
-        .find(|root| canonical.starts_with(root))
+    let root = scope_root(&canonical, settings)?
         .ok_or_else(|| Error::unsafe_path(path, "artifact is outside the scan roots"))?;
     let ignored = exclusions(settings)?;
     let mut entries = WalkDir::new(&canonical)
@@ -233,8 +270,21 @@ fn artifacts_at(path: &Path, providers: &[ProviderId]) -> Vec<Artifact> {
 }
 
 pub fn is_project_artifact(project: &Project, artifact: &Artifact) -> bool {
-    let providers = providers_at(&project.path);
-    artifacts_at(&project.path, &providers)
+    let Some(parent) = artifact.path.parent() else {
+        return false;
+    };
+    if !parent.starts_with(&project.path)
+        || reject_links(parent).is_err()
+        || !git::checkout(&project.path).is_ok_and(|checkout| checkout.is_some())
+        || parent
+            .ancestors()
+            .take_while(|p| *p != project.path)
+            .any(|p| p.join(".git").exists())
+    {
+        return false;
+    }
+    let providers = providers_at(parent);
+    artifacts_at(parent, &providers)
         .iter()
         .any(|a| a.path == artifact.path && a.id == artifact.id && a.can_clean)
 }
@@ -259,18 +309,24 @@ fn pins_at(path: &Path) -> BTreeMap<String, String> {
     pins
 }
 
-fn branch_at(path: &Path) -> Option<String> {
-    // Git worktree .git files are not followed outside the selected scan root.
-    read_small(&path.join(".git/HEAD"), 1024).ok().map(|s| {
-        s.trim()
-            .strip_prefix("ref: refs/heads/")
-            .unwrap_or(s.trim())
-            .to_owned()
-    })
-}
-
 pub fn scan(
     settings: &Settings,
+    cancel: &CancellationToken,
+    progress: ProgressSink,
+    job_id: &str,
+) -> Result<ScanResult> {
+    scan_roots(
+        settings,
+        canonical_roots(settings)?,
+        cancel,
+        progress,
+        job_id,
+    )
+}
+
+pub(crate) fn scan_roots(
+    settings: &Settings,
+    roots: Vec<PathBuf>,
     cancel: &CancellationToken,
     progress: ProgressSink,
     job_id: &str,
@@ -278,7 +334,7 @@ pub fn scan(
     validate_settings(settings)?;
     let started = Instant::now();
     let ignored = exclusions(settings)?;
-    let roots = canonical_roots(settings)?;
+    let mut roots: VecDeque<_> = roots.into();
     let protected: Vec<_> = settings
         .protected_projects
         .iter()
@@ -287,9 +343,13 @@ pub fn scan(
     let mut result = ScanResult::default();
     let mut index: HashMap<PathBuf, usize> = HashMap::new();
     let mut artifacts = std::collections::HashSet::new();
+    let mut repositories = std::collections::HashSet::new();
     let mut last_report = Instant::now();
 
-    for root in roots {
+    while let Some(root) = roots.pop_front() {
+        if index.contains_key(&root) {
+            continue;
+        }
         let mut iter = WalkDir::new(&root)
             .follow_links(false)
             .max_open(16)
@@ -339,6 +399,10 @@ pub fn scan(
                 continue;
             }
             if meta.is_dir() {
+                if index.contains_key(path) {
+                    iter.skip_current_dir();
+                    continue;
+                }
                 if artifacts.contains(path)
                     || matches!(
                         entry.file_name().to_str(),
@@ -348,10 +412,37 @@ pub fn scan(
                     iter.skip_current_dir();
                     continue;
                 }
-                let providers = providers_at(path);
-                if !providers.is_empty() {
-                    let found = artifacts_at(path, &providers);
-                    artifacts.extend(found.iter().filter(|a| a.can_clean).map(|a| a.path.clone()));
+                let checkout = match git::checkout(path) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if result.issues.len() < 100 {
+                            result.issues.push(format!("{}: {error}", path.display()));
+                        }
+                        iter.skip_current_dir();
+                        continue;
+                    }
+                };
+                if let Some(checkout) = checkout {
+                    if repositories.insert(checkout.repository.id.clone()) {
+                        match git::worktrees(&checkout, cancel) {
+                            Ok(worktrees) => {
+                                if configured_scope(&checkout.repository.path, settings)?.is_some()
+                                {
+                                    for worktree in &worktrees.entries {
+                                        if worktree.issue.is_none()
+                                            && project_in_scope(&worktree.path, settings)?
+                                        {
+                                            roots.push_back(worktree.path.clone());
+                                        }
+                                    }
+                                }
+                                result.worktrees.extend(worktrees.entries);
+                                result.issues.extend(worktrees.issues);
+                            }
+                            Err(Error::Cancelled) => return Err(Error::Cancelled),
+                            Err(error) => result.issues.push(error.to_string()),
+                        }
+                    }
                     index.insert(path.to_path_buf(), result.projects.len());
                     result.projects.push(Project {
                         id: id_for("project", path),
@@ -361,16 +452,31 @@ pub fn scan(
                             .to_string_lossy()
                             .into_owned(),
                         path: path.into(),
-                        providers,
-                        last_active: modified(&path.join(".git/logs/HEAD")),
+                        providers: vec![],
+                        last_active: modified(&checkout.git_dir.join("logs/HEAD")),
                         activity_complete: true,
-                        branch: branch_at(path),
+                        branch: checkout.branch,
                         pins: pins_at(path),
                         protected: protected.iter().any(|p| path.starts_with(p)),
-                        artifacts: found,
+                        artifacts: vec![],
+                        repository: Some(checkout.repository),
+                        is_worktree: checkout.is_worktree,
                     });
                 }
+                if let Some(owner) = path.ancestors().find_map(|p| index.get(p).copied()) {
+                    let providers = providers_at(path);
+                    let found = artifacts_at(path, &providers);
+                    artifacts.extend(found.iter().filter(|a| a.can_clean).map(|a| a.path.clone()));
+                    let project = &mut result.projects[owner];
+                    for provider in providers {
+                        if !project.providers.contains(&provider) {
+                            project.providers.push(provider);
+                        }
+                    }
+                    project.artifacts.extend(found);
+                }
             } else if meta.is_file()
+                && entry.file_name() != ".git"
                 && let Some(owner) = path.parent().and_then(|p| {
                     p.ancestors()
                         .find_map(|ancestor| index.get(ancestor).copied())
@@ -467,6 +573,9 @@ mod tests {
         ] {
             fs::write(root.path().join(name), content).unwrap();
         }
+        git::init(&root.path().join("frontend"));
+        git::init(&root.path().join("backend"));
+        git::init(&root.path().join("excluded"));
         root
     }
 
@@ -524,5 +633,190 @@ mod tests {
         fs::write(root.path().join("pyproject.toml"), "[project]").unwrap();
         fs::create_dir(root.path().join(".venv")).unwrap();
         assert!(artifacts_at(root.path(), &[ProviderId::Py]).is_empty());
+    }
+
+    #[test]
+    fn monorepos_aggregate_artifacts_but_nested_repositories_remain_independent() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("workspace");
+        for folder in [
+            "apps/web/node_modules",
+            "services/api",
+            "vendor/library",
+            "loose",
+        ] {
+            fs::create_dir_all(repo.join(folder)).unwrap();
+        }
+        git::init(&repo);
+        git::init(&repo.join("vendor/library"));
+        for (file, content) in [
+            ("apps/web/package.json", "{}"),
+            ("apps/web/node_modules/.package-lock.json", "{}"),
+            ("services/api/pyproject.toml", "[project]"),
+            ("vendor/library/go.mod", "module library"),
+        ] {
+            fs::write(repo.join(file), content).unwrap();
+        }
+        fs::write(root.path().join("package.json"), "{}").unwrap();
+        let settings = Settings {
+            roots: vec![fs::canonicalize(root.path()).unwrap()],
+            ..Default::default()
+        };
+        let scanned = scan(
+            &settings,
+            &CancellationToken::new(),
+            silent_progress(),
+            "test",
+        )
+        .unwrap();
+        assert_eq!(scanned.projects.len(), 2);
+        let workspace = scanned
+            .projects
+            .iter()
+            .find(|p| p.name == "workspace")
+            .unwrap();
+        assert!(workspace.providers.contains(&ProviderId::Js));
+        assert!(workspace.providers.contains(&ProviderId::Py));
+        assert!(!workspace.providers.contains(&ProviderId::Go));
+        assert_eq!(workspace.artifacts.len(), 1);
+        assert!(is_project_artifact(workspace, &workspace.artifacts[0]));
+        // A newly introduced repository boundary invalidates a previously planned artifact.
+        git::init(&repo.join("apps/web"));
+        assert!(!is_project_artifact(workspace, &workspace.artifacts[0]));
+    }
+
+    #[test]
+    fn a_main_repository_in_scope_includes_its_registered_worktrees() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("main repo");
+        let linked = root.path().join("feature checkout");
+        fs::create_dir(&repo).unwrap();
+        git::init(&repo);
+        for args in [
+            vec!["commit", "--quiet", "--allow-empty", "-m", "fixture"],
+            vec![
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "feature",
+                linked.to_str().unwrap(),
+            ],
+            vec!["worktree", "lock", linked.to_str().unwrap()],
+        ] {
+            let output = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args([
+                    "-c",
+                    "core.hooksPath=",
+                    "-c",
+                    "commit.gpgSign=false",
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let mut settings = Settings {
+            roots: vec![fs::canonicalize(&repo).unwrap()],
+            ..Default::default()
+        };
+        let scanned = scan(
+            &settings,
+            &CancellationToken::new(),
+            silent_progress(),
+            "test",
+        )
+        .unwrap();
+        assert_eq!(scanned.projects.len(), 2);
+        assert_eq!(scanned.worktrees.len(), 1);
+        let worktree = &scanned.worktrees[0];
+        assert_eq!(worktree.branch.as_deref(), Some("feature"));
+        assert!(worktree.locked);
+        assert!(worktree.issue.is_none());
+        assert!(
+            scanned
+                .projects
+                .iter()
+                .all(|p| p.repository.as_ref().unwrap().id == worktree.repository.id)
+        );
+        assert!(project_in_scope(&fs::canonicalize(&linked).unwrap(), &settings).unwrap());
+        let mut removed_scope = settings.clone();
+        removed_scope.roots.clear();
+        assert!(!project_in_scope(&fs::canonicalize(&linked).unwrap(), &removed_scope).unwrap());
+        settings.roots.push(fs::canonicalize(linked).unwrap());
+        let scanned = scan(
+            &settings,
+            &CancellationToken::new(),
+            silent_progress(),
+            "test",
+        )
+        .unwrap();
+        assert_eq!(scanned.projects.len(), 2);
+        let linked = scanned.projects.iter().find(|p| p.is_worktree).unwrap();
+        assert_eq!(linked.id, worktree.id);
+        assert_eq!(linked.branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn worktree_discovery_keeps_healthy_entries_and_honors_exclusions() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("main");
+        let linked = root.path().join("feature");
+        fs::create_dir(&repo).unwrap();
+        git::init(&repo);
+        git::add_worktree(&repo, &linked);
+        fs::create_dir(repo.join(".git/worktrees/broken")).unwrap();
+        let mut settings = Settings {
+            roots: vec![fs::canonicalize(&repo).unwrap()],
+            ..Default::default()
+        };
+        let run = |settings: &Settings| {
+            scan(
+                settings,
+                &CancellationToken::new(),
+                silent_progress(),
+                "test",
+            )
+            .unwrap()
+        };
+        let scanned = run(&settings);
+        assert_eq!(scanned.projects.len(), 2);
+        assert_eq!(scanned.worktrees.len(), 1);
+        assert!(!scanned.issues.is_empty());
+
+        settings.excludes.push("feature".into());
+        let scanned = run(&settings);
+        assert_eq!(scanned.projects.len(), 1);
+        assert!(!scanned.projects[0].is_worktree);
+        assert_eq!(scanned.worktrees.len(), 1);
+        assert!(!project_in_scope(&fs::canonicalize(linked).unwrap(), &settings).unwrap());
+    }
+
+    #[test]
+    fn invalid_gitfiles_are_reported_without_scanning_their_target() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(".git"), "gitdir: missing-metadata").unwrap();
+        fs::write(root.path().join("package.json"), "{}").unwrap();
+        let scanned = scan(
+            &Settings {
+                roots: vec![fs::canonicalize(root.path()).unwrap()],
+                ..Default::default()
+            },
+            &CancellationToken::new(),
+            silent_progress(),
+            "test",
+        )
+        .unwrap();
+        assert!(scanned.projects.is_empty());
+        assert!(!scanned.issues.is_empty());
     }
 }

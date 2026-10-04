@@ -5,6 +5,7 @@ import { StoreProvider } from '@/store'
 import Projects from '@/views/Projects'
 import { emptySnapshot, type Project, type Snapshot } from '@/domain'
 import type { Backend } from '@/bridge'
+import { TooltipProvider } from '@/components/ui/tooltip'
 
 function project(id: string, protectedProject: boolean, ageDays: number): Project {
   return {
@@ -32,7 +33,7 @@ function project(id: string, protectedProject: boolean, ageDays: number): Projec
   }
 }
 
-function fixture() {
+function fixture(configure?: (data: Snapshot) => void) {
   const data: Snapshot = structuredClone(emptySnapshot)
   data.settings.language = 'en'
   data.settings.scanOnLaunch = false
@@ -46,6 +47,7 @@ function fixture() {
   ]
   data.inventory.projects[3].artifacts[0].canClean = false
   data.inventory.projects[3].artifacts[0].cleanupIssue = 'Ownership is unverified.'
+  configure?.(data)
   const prepare = vi.fn(async () => ({
     id: 'plan',
     kind: 'clean',
@@ -71,6 +73,7 @@ function fixture() {
     <StoreProvider api={api}>
       <Projects />
     </StoreProvider>,
+    { wrapper: TooltipProvider },
   )
   return { prepare }
 }
@@ -85,16 +88,19 @@ describe('project cleanup selection', () => {
     await waitFor(() =>
       expect(prepare).toHaveBeenCalledWith({
         kind: 'cleanProjects',
-        artifactIds: ['older-modules', 'recent-modules'],
+        artifactIds: ['recent-modules', 'older-modules'],
       }),
     )
     expect(
-      (screen.getByRole('checkbox', { name: 'Select protected' }) as HTMLButtonElement).disabled,
-    ).toBe(true)
+      screen.getByRole('checkbox', { name: 'Select protected' }).getAttribute('aria-disabled'),
+    ).toBe('true')
     expect(
-      (screen.getByRole('checkbox', { name: 'Select unverified' }) as HTMLButtonElement).disabled,
-    ).toBe(true)
-    expect(screen.getByTitle('Ownership is unverified.')).toBeTruthy()
+      screen.getByRole('checkbox', { name: 'Select unverified' }).getAttribute('aria-disabled'),
+    ).toBe('true')
+    expect(screen.queryByText('Ownership is unverified.')).toBeNull()
+    expect(
+      screen.getByRole('checkbox', { name: 'Select unverified' }).getAttribute('aria-description'),
+    ).toBeTruthy()
   })
   it('uses the saved inactivity threshold, not the prototype’s fixed 90 days', async () => {
     fixture()
@@ -104,4 +110,131 @@ describe('project cleanup selection', () => {
     expect(screen.queryByText('recent')).toBeNull()
     expect(screen.getByText('older')).toBeTruthy()
   })
+})
+
+function withWorktrees(data: Snapshot) {
+  const root = project('repository', false, 2)
+  const repository = { id: 'repo', name: root.name, path: root.path }
+  root.repository = repository
+  const child = (id: string, days: number, protectedProject = false) => ({
+    ...project(id, protectedProject, days),
+    path: `/outside/${id}`,
+    repository,
+    isWorktree: true,
+  })
+  data.inventory.projects = [
+    root,
+    child('old-branch', 120),
+    child('active-branch', 1),
+    child('protected-branch', 140, true),
+  ]
+  data.inventory.worktrees = data.inventory.projects
+    .filter((p) => p.isWorktree)
+    .map((p) => ({
+      id: p.id,
+      repository,
+      path: p.path,
+      branch: p.name,
+      locked: p.protected,
+      issue: null,
+    }))
+}
+
+it('selects a repository family, keeps partial state, and retains collapsed selections', async () => {
+  const { prepare } = fixture(withWorktrees)
+  const user = userEvent.setup()
+  await screen.findByText('repository')
+  await user.click(screen.getByRole('checkbox', { name: 'Select old-branch' }))
+  expect(
+    screen.getByRole('checkbox', { name: 'Select repository' }).getAttribute('aria-checked'),
+  ).toBe('mixed')
+  await user.click(screen.getByRole('checkbox', { name: 'Select repository' }))
+  await user.click(screen.getByRole('button', { name: 'Collapse worktrees' }))
+  expect(screen.queryByText('old-branch')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
+  expect(prepare).toHaveBeenCalledWith({
+    kind: 'cleanProjects',
+    artifactIds: ['repository-modules', 'active-branch-modules', 'old-branch-modules'],
+  })
+})
+
+it('keeps the parent as context when filtering a worktree and never cleans active siblings', async () => {
+  const { prepare } = fixture(withWorktrees)
+  const user = userEvent.setup()
+  await screen.findByText('repository')
+  await user.click(screen.getByRole('switch'))
+  expect(screen.queryByText('active-branch')).toBeNull()
+  await user.type(
+    screen.getByPlaceholderText('Search repositories, branches, or paths'),
+    'old-branch',
+  )
+  expect(screen.getByText('repository')).toBeTruthy()
+  expect(screen.queryByText('protected-branch')).toBeNull()
+  await user.click(screen.getByRole('checkbox', { name: 'Select repository' }))
+  await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
+  expect(prepare).toHaveBeenCalledWith({
+    kind: 'cleanProjects',
+    artifactIds: ['old-branch-modules'],
+  })
+})
+
+it('keeps missing worktree reasons inside an on-demand hint and prevents cleanup', async () => {
+  fixture((data) => {
+    withWorktrees(data)
+    data.inventory.worktrees.push({
+      id: 'missing',
+      repository: data.inventory.worktrees[0].repository,
+      path: '/outside/missing',
+      branch: 'missing',
+      locked: false,
+      issue: 'Worktree needs repair.',
+    })
+  })
+  const control = await screen.findByRole('checkbox', { name: 'Select missing' })
+  expect(control.getAttribute('aria-disabled')).toBe('true')
+  expect(screen.queryByText('Worktree needs repair.')).toBeNull()
+  await userEvent.setup().hover(control)
+  expect((await screen.findByRole('tooltip')).textContent).toBe('Worktree needs repair.')
+})
+
+it('sorts by activity and total size while keeping worktrees with their repository', async () => {
+  fixture((data) => {
+    withWorktrees(data)
+    const other = project('other', false, 5)
+    other.artifacts[0].size.bytes = 2048
+    const unknown = project('unknown', false, 0)
+    unknown.lastActive = null
+    data.inventory.projects.push(other, unknown)
+  })
+  const user = userEvent.setup()
+  await screen.findByText('repository')
+  const order = () =>
+    screen
+      .getAllByRole('row')
+      .map((row) => row.getAttribute('data-workspace-id'))
+      .filter(Boolean)
+  expect(order()).toEqual([
+    'repository',
+    'active-branch',
+    'old-branch',
+    'protected-branch',
+    'other',
+    'unknown',
+  ])
+  await user.click(screen.getByRole('combobox', { name: 'Sort projects' }))
+  await user.click(screen.getByRole('option', { name: 'Activity: oldest first' }))
+  expect(order()).toEqual([
+    'other',
+    'repository',
+    'protected-branch',
+    'old-branch',
+    'active-branch',
+    'unknown',
+  ])
+  await user.click(screen.getByRole('combobox', { name: 'Sort projects' }))
+  await user.click(screen.getByRole('option', { name: 'Size: largest first' }))
+  expect(order()[0]).toBe('repository')
+  await user.click(screen.getByRole('combobox', { name: 'Sort projects' }))
+  await user.click(screen.getByRole('option', { name: 'Size: smallest first' }))
+  expect(order().slice(0, 3)).toEqual(['unknown', 'other', 'repository'])
 })

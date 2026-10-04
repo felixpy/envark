@@ -14,7 +14,13 @@ import {
 import { useStore } from '@/store'
 import { EcoDot, Empty, SearchInput } from '@/components/shared'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { ActionButton as Button, SelectionCheckbox as Checkbox } from '@/components/action-controls'
+import {
+  assetRemovalReason,
+  runtimeDefaultReason,
+  runtimeRemovalReason,
+  toolUpdateReason,
+} from '@/action-availability'
 import {
   Card,
   CardAction,
@@ -50,7 +56,6 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { capabilities } from './Catalog'
-import { Checkbox } from '@/components/ui/checkbox'
 import { useSelection } from '@/hooks/use-selection'
 
 export default function Environments({ id }: { id: ProviderId }) {
@@ -59,15 +64,23 @@ export default function Environments({ id }: { id: ProviderId }) {
   const meta = metadata[id]
   const provider = s.data.inventory.providers.find((p) => p.id === id) ?? emptyProvider(id)
   const caps = capabilities(id)
-  const [tab, setTab] = useState(caps[0].id)
+  const [tab, setTab] = useState(s.focus.tab ?? caps[0].id)
   const [install, setInstall] = useState(false)
-  const preferred = s.data.settings.preferred[id] ?? provider.managers[0]?.name ?? ''
+  const preferred =
+    provider.managers.find((m) => m.name === s.data.settings.preferred[id])?.name ??
+    provider.managers[0]?.name ??
+    ''
   const [manager, setManager] = useState(preferred)
   const [version, setVersion] = useState('')
   const [download, setDownload] = useState(false)
   const [model, setModel] = useState('')
   const [config, setConfig] = useState<ConfigContent | null>(null)
   const [saving, setSaving] = useState(false)
+  const busyReason = s.busy
+    ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
+    : null
+  const configFile = provider.configs.find((file) => file.id === config?.id)
+  const configReadOnly = !configFile?.editable
   const assets = useSelection(
     provider.assets
       .filter((asset) => asset.canRemove && asset.size.complete)
@@ -107,8 +120,19 @@ export default function Environments({ id }: { id: ProviderId }) {
           <div className="flex items-center gap-2">
             <EcoDot id={id} className="size-2.5" />
             <h1 className="text-2xl font-semibold tracking-tight">{meta.name}</h1>
-            <Badge variant="outline">
-              {provider.detected ? t('已检测到', 'Detected') : t('未检测到', 'Not detected')}
+            <Badge
+              variant={provider.detected ? 'secondary' : 'outline'}
+              className={
+                !provider.detected
+                  ? 'border-muted-foreground/40 bg-muted text-muted-foreground'
+                  : ''
+              }
+            >
+              {provider.detected
+                ? t('已检测到', 'Detected')
+                : s.data.inventory.scannedAt
+                  ? t('未检测到', 'Not detected')
+                  : t('待扫描', 'Not scanned')}
             </Badge>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
@@ -152,20 +176,28 @@ export default function Environments({ id }: { id: ProviderId }) {
             <CardTitle>
               {meta.runtime} {t('运行时', 'runtimes')}
             </CardTitle>
-            <CardDescription>
-              {provider.managers.length
-                ? `${t('优先使用', 'Preferred manager')}: ${preferred}`
-                : t(
-                    '没有检测到可管理版本的工具。系统安装的运行时保持只读。',
-                    'No supported version manager detected. System runtimes are read-only.',
-                  )}
-            </CardDescription>
+            {provider.managers.length > 0 && (
+              <CardDescription>{`${t('优先使用', 'Preferred manager')}: ${preferred}`}</CardDescription>
+            )}
             <CardAction>
               <Button
                 size="sm"
-                disabled={!provider.managers.some((m) => m.supportsInstall) || s.busy}
+                reason={
+                  busyReason ||
+                  (!provider.managers.some((m) => m.supportsInstall)
+                    ? t(
+                        '请先安装支持的版本管理器，再刷新环境。',
+                        'Install a supported version manager, then refresh environments.',
+                      )
+                    : null)
+                }
                 onClick={() => {
-                  setManager(preferred)
+                  setManager(
+                    provider.managers.find((m) => m.name === preferred && m.supportsInstall)
+                      ?.name ??
+                      provider.managers.find((m) => m.supportsInstall)?.name ??
+                      '',
+                  )
                   setInstall(true)
                 }}
               >
@@ -197,7 +229,12 @@ export default function Environments({ id }: { id: ProviderId }) {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={preferred === item.name || s.busy}
+                      reason={
+                        busyReason ||
+                        (preferred === item.name
+                          ? t('已设为优先管理器。', 'Already the preferred manager.')
+                          : null)
+                      }
                       onClick={() =>
                         void s.saveSettings({
                           ...s.data.settings,
@@ -253,14 +290,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={
-                            !runtime.managed ||
-                            !provider.managers.some(
-                              (manager) =>
-                                manager.name === runtime.manager && manager.supportsDefault,
-                            ) ||
-                            s.busy
-                          }
+                          reason={busyReason || runtimeDefaultReason(runtime, provider.managers, t)}
                           onClick={() => operation('setDefault', runtime.id)}
                         >
                           <Star />
@@ -269,9 +299,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={
-                            runtime.active || !runtime.activeKnown || !runtime.managed || s.busy
-                          }
+                          reason={busyReason || runtimeRemovalReason(runtime, t)}
                           onClick={() => operation('removeRuntime', runtime.id)}
                         >
                           <Trash2 />
@@ -322,7 +350,15 @@ export default function Environments({ id }: { id: ProviderId }) {
               <CardAction>
                 <Button
                   size="sm"
-                  disabled={!provider.service?.running || s.busy}
+                  reason={
+                    busyReason ||
+                    (!provider.service?.running
+                      ? t(
+                          '请先启动 Ollama 服务，然后刷新。',
+                          'Start the Ollama service, then refresh.',
+                        )
+                      : null)
+                  }
                   onClick={() => setDownload(true)}
                 >
                   <Download />
@@ -340,7 +376,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={s.busy}
+                  reason={busyReason}
                   onClick={() =>
                     void s.prepare({ kind: 'removeAssets', provider: id, ids: assets.chosen })
                   }
@@ -356,6 +392,12 @@ export default function Environments({ id }: { id: ProviderId }) {
                   <TableHead className="w-10">
                     <Checkbox
                       aria-label={t('选择全部资源', 'Select all resources')}
+                      reason={
+                        busyReason ||
+                        (!assets.eligibleCount
+                          ? t('当前没有可移除的资源。', 'No removable resources.')
+                          : null)
+                      }
                       checked={
                         assets.checked ? true : assets.chosen.length ? 'indeterminate' : false
                       }
@@ -374,8 +416,8 @@ export default function Environments({ id }: { id: ProviderId }) {
                     <TableCell>
                       <Checkbox
                         aria-label={`${t('选择', 'Select')} ${asset.name}`}
-                        disabled={!asset.canRemove || !asset.size.complete || s.busy}
-                        checked={assets.selected.has(asset.id)}
+                        reason={busyReason || assetRemovalReason(asset, t)}
+                        checked={!assetRemovalReason(asset, t) && assets.selected.has(asset.id)}
                         onCheckedChange={(on) => assets.toggle([asset.id], on === true)}
                       />
                     </TableCell>
@@ -407,7 +449,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={!asset.canRemove || !asset.size.complete || s.busy}
+                        reason={busyReason || assetRemovalReason(asset, t)}
                         onClick={() =>
                           void s.prepare({ kind: 'removeAssets', provider: id, ids: [asset.id] })
                         }
@@ -443,11 +485,13 @@ export default function Environments({ id }: { id: ProviderId }) {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={s.busy}
+                    reason={busyReason}
                     onClick={() => void editConfig(file.id)}
                   >
                     <FilePenLine />
-                    {t('查看与编辑', 'View & edit')}
+                    {file.editable
+                      ? t('查看与编辑', 'View & edit')
+                      : t('查看（只读）', 'View (read-only)')}
                   </Button>
                 </CardAction>
               </CardHeader>
@@ -508,7 +552,12 @@ export default function Environments({ id }: { id: ProviderId }) {
           </label>
           <DialogFooter>
             <Button
-              disabled={!version.trim() || !manager}
+              reason={
+                busyReason ||
+                (!version.trim() || !manager
+                  ? t('请选择管理器并填写版本。', 'Choose a manager and enter a version.')
+                  : null)
+              }
               onClick={() => {
                 setInstall(false)
                 void s.prepare({
@@ -543,7 +592,9 @@ export default function Environments({ id }: { id: ProviderId }) {
           />
           <DialogFooter>
             <Button
-              disabled={!model.trim()}
+              reason={
+                busyReason || (!model.trim() ? t('请填写模型名称。', 'Enter a model name.') : null)
+              }
               onClick={() => {
                 setDownload(false)
                 void s.prepare({ kind: 'downloadAsset', provider: id, name: model.trim() })
@@ -571,6 +622,7 @@ export default function Environments({ id }: { id: ProviderId }) {
             className="min-h-80 font-mono text-xs"
             aria-label={t('配置内容', 'Configuration content')}
             value={config?.content ?? ''}
+            readOnly={configReadOnly || saving}
             onChange={(e) => setConfig(config ? { ...config, content: e.target.value } : null)}
           />
           <p className="text-xs text-muted-foreground">
@@ -580,7 +632,19 @@ export default function Environments({ id }: { id: ProviderId }) {
             )}
           </p>
           <DialogFooter>
-            <Button disabled={saving || !config} onClick={() => void saveConfig()}>
+            <Button
+              reason={
+                saving
+                  ? t('正在保存配置。', 'Saving configuration.')
+                  : configReadOnly
+                    ? t(
+                        '此配置格式仅支持查看，请使用外部编辑器修改。',
+                        'This configuration is read-only. Use an external editor to change it.',
+                      )
+                    : null
+              }
+              onClick={() => void saveConfig()}
+            >
               {saving ? t('保存中', 'Saving') : t('备份并保存', 'Back up & save')}
             </Button>
           </DialogFooter>
@@ -603,9 +667,13 @@ function Tools({
   onBatch(ids: string[]): void
   onRemove(item: Tool): void
 }) {
-  const { t, busy } = useStore()
+  const s = useStore()
+  const { t, busy } = s
+  const busyReason = busy
+    ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
+    : null
   const [query, setQuery] = useState('')
-  const [status, setStatus] = useState('all')
+  const [status, setStatus] = useState(s.focus.filter === 'updates' ? 'outdated' : 'all')
   const [source, setSource] = useState('all')
   const [runtime, setRuntime] = useState('all')
   const visible = items.filter(
@@ -638,14 +706,24 @@ function Tools({
                 'Dependency and build tooling, managed by its original installer.',
               )}
         </CardDescription>
-        {selection.chosen.length > 0 && (
-          <CardAction>
-            <Button size="sm" disabled={busy} onClick={() => onBatch(selection.chosen)}>
+        <CardAction className="flex items-center gap-2">
+          {selection.chosen.length > 0 && (
+            <Button size="sm" reason={busyReason} onClick={() => onBatch(selection.chosen)}>
               <ArrowUp />
               {t('更新所选', 'Update selected')} ({selection.chosen.length})
             </Button>
-          </CardAction>
-        )}
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            reason={busyReason}
+            onClick={() => (s.data.settings.checkUpdates ? void s.refresh() : s.go('settings'))}
+          >
+            {s.data.settings.checkUpdates
+              ? t('重新检查更新', 'Check updates again')
+              : t('开启更新检查', 'Enable update checks')}
+          </Button>
+        </CardAction>
       </CardHeader>
       <CardContent className="space-y-3">
         {global && (
@@ -708,6 +786,12 @@ function Tools({
               <TableHead className="w-10">
                 <Checkbox
                   aria-label={t('选择全部可更新工具', 'Select all updatable tools')}
+                  reason={
+                    busyReason ||
+                    (!selection.eligibleCount
+                      ? t('当前没有可批量更新的工具。', 'No updatable tools.')
+                      : null)
+                  }
                   checked={
                     selection.checked ? true : selection.chosen.length ? 'indeterminate' : false
                   }
@@ -726,19 +810,13 @@ function Tools({
                 <TableCell>
                   <Checkbox
                     aria-label={`${t('选择', 'Select')} ${item.name}`}
-                    disabled={!canUpdateTool(item) || busy}
-                    checked={selection.selected.has(item.id)}
+                    reason={busyReason || toolUpdateReason(item, s.data.settings.checkUpdates, t)}
+                    checked={canUpdateTool(item) && selection.selected.has(item.id)}
                     onCheckedChange={(on) => selection.toggle([item.id], on === true)}
                   />
                 </TableCell>
                 <TableCell>
                   <div className="font-medium">{item.name}</div>
-                  <p
-                    className="mt-1 max-w-64 truncate text-xs text-muted-foreground"
-                    title={item.note ?? ''}
-                  >
-                    {item.note}
-                  </p>
                 </TableCell>
                 <TableCell className="font-mono text-xs">
                   {item.version}
@@ -767,7 +845,7 @@ function Tools({
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={!canUpdateTool(item) || busy}
+                      reason={busyReason || toolUpdateReason(item, s.data.settings.checkUpdates, t)}
                       onClick={() => onUpdate(item)}
                     >
                       <ArrowUp />
@@ -777,7 +855,16 @@ function Tools({
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={!item.canRemove || busy}
+                        reason={
+                          busyReason ||
+                          (!item.canRemove
+                            ? item.note ||
+                              t(
+                                '卸载归属无法确认，请使用原安装器。',
+                                'Removal ownership is unverified. Use the original installer.',
+                              )
+                            : null)
+                        }
                         onClick={() => onRemove(item)}
                       >
                         <Trash2 />

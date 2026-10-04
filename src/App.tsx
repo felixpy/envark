@@ -37,6 +37,8 @@ import { Progress } from './components/ui/progress'
 import { Button } from './components/ui/button'
 import { EcoDot, Spinner } from './components/shared'
 import { OperationDialog } from './components/OperationDialog'
+import { DesktopMenu } from './components/DesktopMenu'
+import { AppUpdateProvider } from './components/AppUpdates'
 const Overview = lazy(() => import('./views/Overview'))
 const Catalog = lazy(() => import('./views/Catalog'))
 const Environments = lazy(() => import('./views/Environments'))
@@ -60,7 +62,7 @@ function Shell() {
     data.inventory.disks.find((d) => data.dataDir.startsWith(d.mount)) ?? data.inventory.disks[0]
   return (
     <TooltipProvider>
-      <SidebarProvider>
+      <SidebarProvider keyboardShortcutEnabled={false}>
         <Sidebar variant="inset">
           <SidebarHeader>
             <SidebarMenu>
@@ -114,11 +116,20 @@ function Shell() {
                               isActive={s.view === 'env' && s.provider === id}
                               onClick={() => s.go('env', id)}
                             >
-                              <EcoDot id={id} />
+                              <EcoDot
+                                id={id}
+                                className={!provider?.detected ? 'grayscale opacity-50' : ''}
+                              />
                               {metadata[id].short}
                             </SidebarMenuButton>
-                            <SidebarMenuBadge className="max-w-24 truncate font-mono text-[11px] font-normal text-muted-foreground">
-                              {active?.version.split(' ')[0] ?? (provider?.assets.length || '')}
+                            <SidebarMenuBadge
+                              className={`max-w-24 truncate text-[10px] font-normal ${!provider?.detected ? 'rounded border border-muted-foreground/30 bg-muted px-1 text-muted-foreground' : 'font-mono text-muted-foreground'}`}
+                            >
+                              {!provider?.detected
+                                ? data.inventory.scannedAt
+                                  ? t('未检测到', 'Not detected')
+                                  : t('待扫描', 'Not scanned')
+                                : (active?.version.split(' ')[0] ?? (provider.assets.length || ''))}
                             </SidebarMenuBadge>
                           </SidebarMenuItem>
                         )
@@ -164,7 +175,7 @@ function Shell() {
             </div>
           </SidebarFooter>
         </Sidebar>
-        <SidebarInset>
+        <SidebarInset className="min-w-0">
           <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
             <Separator
@@ -229,7 +240,7 @@ function Shell() {
               {s.error}
             </div>
           )}
-          <main className="mx-auto w-full max-w-6xl flex-1 p-6 lg:p-8">
+          <div className="mx-auto w-full max-w-6xl flex-1 p-6 lg:p-8">
             {!s.loaded ? (
               <div className="flex gap-2 text-sm">
                 <Spinner />
@@ -237,11 +248,12 @@ function Shell() {
               </div>
             ) : (
               <Suspense fallback={<Spinner />}>
-                <Page view={s.view} />
+                <Page key={s.navigationKey} view={s.view} />
               </Suspense>
             )}
-          </main>
+          </div>
         </SidebarInset>
+        <DesktopMenu />
       </SidebarProvider>
       <OperationDialog />
       <Toaster position="bottom-right" />
@@ -270,7 +282,9 @@ function Page({ view }: { view: View }) {
 export default function App({ api }: { api?: Backend }) {
   return (
     <StoreProvider api={api}>
-      <Shell />
+      <AppUpdateProvider>
+        <Shell />
+      </AppUpdateProvider>
     </StoreProvider>
   )
 }

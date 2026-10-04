@@ -1,22 +1,36 @@
 import { useState } from 'react'
-import { FolderPlus, GitBranch, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
-import { formatBytes, idle, metadata, projectBytes, type ProviderId } from '@/domain'
+import {
+  ArrowDownWideNarrow,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  FolderPlus,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react'
+import { formatBytes, metadata } from '@/domain'
 import { useStore } from '@/store'
-import { EcoDot, Empty, PageHeader, SearchInput } from '@/components/shared'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { useSelection } from '@/hooks/use-selection'
+import {
+  eligibleArtifacts,
+  filterProjectGroups,
+  groupProjects,
+  groupWorkspaces,
+  type ProjectSort,
+} from '@/lib/project-tree'
+import { Empty, PageHeader, SearchInput } from '@/components/shared'
+import { ActionButton } from '@/components/action-controls'
+import { ProjectTable } from '@/components/ProjectTable'
 import { Badge } from '@/components/ui/badge'
-import { Checkbox } from '@/components/ui/checkbox'
+import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 
 export default function Projects() {
   const s = useStore()
@@ -24,57 +38,58 @@ export default function Projects() {
   const { inventory, settings } = s.data
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState('all')
-  const [idleOnly, setIdleOnly] = useState(false)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const list = inventory.projects.filter(
-    (p) =>
-      (provider === 'all' || p.providers.includes(provider as ProviderId)) &&
-      (!idleOnly || idle(p, settings.idleDays)) &&
-      `${p.name} ${p.path}`.toLowerCase().includes(query.trim().toLowerCase()),
+  const [idleOnly, setIdleOnly] = useState(s.focus.filter === 'idle')
+  const [sort, setSort] = useState<ProjectSort>('activity-desc')
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const busyReason =
+    s.busy || s.plan
+      ? t(
+          '请先完成当前操作或关闭审阅窗口。',
+          'Finish the current operation or close the review dialog first.',
+        )
+      : null
+  const groups = filterProjectGroups(groupProjects(inventory), {
+    query,
+    provider,
+    idleOnly,
+    idleDays: settings.idleDays,
+    sort,
+  })
+  const projects = groups.flatMap(groupWorkspaces)
+  const eligible = projects.flatMap(eligibleArtifacts)
+  const selection = useSelection(eligible.map((a) => a.id))
+  const chosen = eligible.filter((a) => selection.selected.has(a.id))
+  const selectedProjects = projects.filter((p) =>
+    eligibleArtifacts(p).some((a) => selection.selected.has(a.id)),
   )
-  const eligible = list.flatMap((p) =>
-    p.protected ? [] : p.artifacts.filter((a) => a.canClean && a.size.complete),
-  )
-  const checked = eligible.length > 0 && eligible.every((a) => selected.has(a.id))
-  const toggle = (ids: string[], on: boolean) =>
-    setSelected((current) => {
+  const selectedWorktrees = selectedProjects.filter((p) => p.isWorktree).length
+  const parents = groups.filter((g) => g.children.length)
+  const allExpanded = parents.length > 0 && parents.every((g) => !collapsed.has(g.repository.id))
+  const toggleExpanded = (id: string) =>
+    setCollapsed((current) => {
       const next = new Set(current)
-      for (const id of ids) {
-        if (on) next.add(id)
-        else next.delete(id)
-      }
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
-  const chosen = eligible.filter((a) => selected.has(a.id))
-  const protect = (path: string, on: boolean) =>
-    void s
-      .saveSettings({
-        ...settings,
-        protectedProjects: on
-          ? [...settings.protectedProjects, path]
-          : settings.protectedProjects.filter((p) => p !== path),
-      })
-      .then((saved) => {
-        if (saved) void s.refresh()
-      })
   return (
     <div className="space-y-6">
       <PageHeader
         title={t('项目空间', 'Project space')}
         description={t(
-          '清理可重建的依赖、虚拟环境与构建产物，保留源码和关键配置。',
-          'Review regenerable dependencies, environments, and build artifacts while preserving source and configuration.',
+          '按 Git 仓库汇总，自动包含关联 worktree。只清理可重建产物，保留源码、工作树与分支。',
+          'Grouped by Git repository with linked worktrees included automatically. Cleanup preserves source, worktrees, and branches.',
         )}
         actions={
           <>
-            <Button variant="outline" disabled={s.busy} onClick={() => void s.addRoot()}>
+            <ActionButton variant="outline" reason={busyReason} onClick={() => void s.addRoot()}>
               <FolderPlus />
               {t('添加目录', 'Add folder')}
-            </Button>
-            <Button variant="outline" disabled={s.busy} onClick={() => void s.refresh()}>
+            </ActionButton>
+            <ActionButton variant="outline" reason={busyReason} onClick={() => void s.refresh()}>
               <RefreshCw />
               {t('重新扫描', 'Rescan')}
-            </Button>
+            </ActionButton>
           </>
         }
       />
@@ -82,7 +97,7 @@ export default function Projects() {
         <SearchInput
           value={query}
           onChange={setQuery}
-          placeholder={t('搜索项目', 'Search projects')}
+          placeholder={t('搜索仓库、分支或路径', 'Search repositories, branches, or paths')}
         />
         <Tabs value={provider} onValueChange={setProvider}>
           <TabsList>
@@ -94,161 +109,100 @@ export default function Projects() {
             ))}
           </TabsList>
         </Tabs>
+        <Select value={sort} onValueChange={(value) => setSort(value as ProjectSort)}>
+          <SelectTrigger aria-label={t('项目排序', 'Sort projects')} className="w-auto min-w-40">
+            <ArrowDownWideNarrow className="size-4" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="activity-desc">
+              {t('活动：最近优先', 'Activity: newest first')}
+            </SelectItem>
+            <SelectItem value="activity-asc">
+              {t('活动：最早优先', 'Activity: oldest first')}
+            </SelectItem>
+            <SelectItem value="size-desc">{t('占用：从大到小', 'Size: largest first')}</SelectItem>
+            <SelectItem value="size-asc">{t('占用：从小到大', 'Size: smallest first')}</SelectItem>
+          </SelectContent>
+        </Select>
+        {parents.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              setCollapsed((current) => {
+                const next = new Set(current)
+                for (const group of parents) {
+                  if (allExpanded) next.add(group.repository.id)
+                  else next.delete(group.repository.id)
+                }
+                return next
+              })
+            }
+          >
+            {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
+            {allExpanded
+              ? t('收起 worktree', 'Collapse worktrees')
+              : t('展开 worktree', 'Expand worktrees')}
+          </Button>
+        )}
         <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
           <Switch checked={idleOnly} onCheckedChange={setIdleOnly} />
           {t('仅闲置', 'Idle only')} &gt; {settings.idleDays} {t('天', 'days')}
         </label>
       </div>
-      <Card className="overflow-hidden py-0 shadow-none">
-        <CardContent className="px-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10 pl-4">
-                  <Checkbox
-                    aria-label={t('选择所有可清理项目', 'Select all eligible artifacts')}
-                    checked={checked ? true : chosen.length ? 'indeterminate' : false}
-                    onCheckedChange={(on) =>
-                      toggle(
-                        eligible.map((a) => a.id),
-                        on === true,
-                      )
-                    }
-                  />
-                </TableHead>
-                <TableHead>{t('项目', 'Project')}</TableHead>
-                <TableHead>{t('最近活动', 'Last activity')}</TableHead>
-                <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>
-                <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
-                <TableHead />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {list.map((project) => (
-                <TableRow key={project.id}>
-                  <TableCell className="pl-4">
-                    <Checkbox
-                      aria-label={`${t('选择', 'Select')} ${project.name}`}
-                      disabled={
-                        project.protected ||
-                        !project.artifacts.some((a) => a.canClean && a.size.complete)
-                      }
-                      checked={
-                        project.artifacts.some((a) => a.canClean && a.size.complete) &&
-                        project.artifacts
-                          .filter((a) => a.canClean && a.size.complete)
-                          .every((a) => selected.has(a.id))
-                      }
-                      onCheckedChange={(on) =>
-                        toggle(
-                          project.artifacts
-                            .filter((a) => a.canClean && a.size.complete)
-                            .map((a) => a.id),
-                          on === true,
-                        )
-                      }
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2 font-medium">
-                      <EcoDot id={project.providers[0]} />
-                      {project.name}
-                      {project.protected && <ShieldCheck className="size-3.5 text-emerald-600" />}
-                    </div>
-                    <div
-                      className="mt-1 max-w-80 truncate font-mono text-xs text-muted-foreground"
-                      title={project.path}
-                    >
-                      {project.path}
-                    </div>
-                    {project.branch && (
-                      <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
-                        <GitBranch className="size-3" />
-                        {project.branch}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {project.lastActive
-                      ? new Date(project.lastActive * 1000).toLocaleDateString()
-                      : t('未知', 'Unknown')}
-                    {!project.activityComplete && <p>{t('扫描不完整', 'Partial scan')}</p>}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex max-w-64 flex-wrap gap-1">
-                      {project.artifacts.map((artifact) => (
-                        <label
-                          key={artifact.id}
-                          title={artifact.cleanupIssue ?? undefined}
-                          className="flex cursor-pointer items-center gap-1 rounded border px-1.5 py-1 text-xs"
-                        >
-                          <Checkbox
-                            className="size-3"
-                            checked={selected.has(artifact.id)}
-                            disabled={
-                              project.protected || !artifact.canClean || !artifact.size.complete
-                            }
-                            onCheckedChange={(on) => toggle([artifact.id], on === true)}
-                          />
-                          {artifact.name}
-                          {!artifact.canClean && (
-                            <span className="text-muted-foreground">{t('只读', 'Read-only')}</span>
-                          )}
-                        </label>
-                      ))}
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {formatBytes(projectBytes(project))}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={
-                        project.protected
-                          ? t('取消保护', 'Unprotect project')
-                          : t('保护项目', 'Protect project')
-                      }
-                      disabled={s.busy}
-                      onClick={() => protect(project.path, !project.protected)}
-                    >
-                      <ShieldCheck className={project.protected ? 'text-emerald-600' : ''} />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          {!list.length && (
-            <Empty>
-              {settings.roots.length
-                ? t(
-                    '没有符合条件的项目。点击重新扫描获取最新结果。',
-                    'No matching projects. Rescan to refresh the inventory.',
-                  )
-                : t('添加项目目录后开始扫描。', 'Add a project folder to get started.')}
-            </Empty>
-          )}
-        </CardContent>
-      </Card>
+      {groups.length ? (
+        <ProjectTable
+          groups={groups}
+          collapsed={collapsed}
+          toggleExpanded={toggleExpanded}
+          selected={selection.selected}
+          toggle={selection.toggle}
+        />
+      ) : (
+        <Empty>
+          {settings.roots.length
+            ? t(
+                '没有符合条件的 Git 仓库或 Worktree。请检查筛选条件和扫描范围，或重新扫描。',
+                'No matching Git repositories or worktrees. Check filters and scan roots, or rescan.',
+              )
+            : t(
+                '添加存放 Git 仓库的目录后开始扫描。',
+                'Add a folder containing Git repositories to start scanning.',
+              )}
+        </Empty>
+      )}
       {chosen.length > 0 && (
-        <div className="sticky bottom-4 flex items-center justify-between rounded-xl border bg-background p-4 shadow-lg">
+        <div className="sticky bottom-4 z-10 mx-auto flex w-fit max-w-full flex-wrap items-center gap-4 rounded-xl border bg-background px-4 py-3 shadow-lg">
           <span className="text-sm">
-            {chosen.length} {t('个目录', 'directories')} ·{' '}
+            {t('已选', 'Selected')} {selectedProjects.length} {t('个工作区', 'workspaces')}
+            {selectedWorktrees > 0 && (
+              <>
+                {' '}
+                ({t('含', 'including')} {selectedWorktrees} worktree)
+              </>
+            )}{' '}
+            · {chosen.length} {t('个目录', 'directories')} ·{' '}
             <span className="font-mono">
               {formatBytes(chosen.reduce((sum, a) => sum + a.size.bytes, 0))}
             </span>
           </span>
           <Button
-            disabled={s.busy}
+            variant="ghost"
+            size="sm"
+            onClick={() => selection.toggle([...selection.selected], false)}
+          >
+            {t('取消', 'Cancel')}
+          </Button>
+          <ActionButton
+            reason={busyReason}
             onClick={() =>
               void s.prepare({ kind: 'cleanProjects', artifactIds: chosen.map((a) => a.id) })
             }
           >
             <Trash2 />
             {t('审阅清理', 'Review cleanup')}
-          </Button>
+          </ActionButton>
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -258,12 +212,6 @@ export default function Projects() {
             {root}
           </Badge>
         ))}
-        <span>
-          {t(
-            '活动依据：源文件修改时间与 Git 活动；不代表项目可用性。',
-            'Activity uses source timestamps and Git activity; it is not a project health assessment.',
-          )}
-        </span>
       </div>
     </div>
   )

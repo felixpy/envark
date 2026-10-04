@@ -969,6 +969,7 @@ mod tests {
         let root_path = std::fs::canonicalize(root.path()).unwrap();
         let project = root_path.join("archived/project");
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+        crate::git::init(&project);
         std::fs::write(project.join("package.json"), "{}").unwrap();
         std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
         std::fs::write(project.join("node_modules/pkg/code.js"), "generated").unwrap();
@@ -1025,6 +1026,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let project = root.path().join("project");
         std::fs::create_dir_all(project.join("node_modules/pkg")).unwrap();
+        crate::git::init(&project);
         std::fs::write(project.join("package.json"), "{}").unwrap();
         std::fs::write(project.join("index.ts"), "source").unwrap();
         std::fs::write(project.join("node_modules/.package-lock.json"), "{}").unwrap();
@@ -1092,5 +1094,71 @@ mod tests {
             "source"
         );
         assert!(project.join("package.json").exists());
+    }
+
+    #[tokio::test]
+    async fn linked_worktree_cleanup_revalidates_main_repository_scope_and_preserves_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        let linked = root.path().join("linked elsewhere");
+        std::fs::create_dir(&main).unwrap();
+        crate::git::init(&main);
+        crate::git::add_worktree(&main, &linked);
+        let nested = linked.join("apps/web");
+        std::fs::create_dir_all(nested.join("node_modules/pkg")).unwrap();
+        std::fs::write(nested.join("package.json"), "{}").unwrap();
+        std::fs::write(nested.join("source.ts"), "source").unwrap();
+        std::fs::write(nested.join("node_modules/.package-lock.json"), "{}").unwrap();
+        std::fs::write(nested.join("node_modules/pkg/index.js"), "generated").unwrap();
+        let settings = Settings {
+            roots: vec![std::fs::canonicalize(main).unwrap()],
+            use_trash: false,
+            ..Default::default()
+        };
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let scanned = scanner::scan(&settings, &ctx.cancel, silent_progress(), "test").unwrap();
+        let project = scanned.projects.iter().find(|p| p.is_worktree).unwrap();
+        assert!(project.artifacts[0].can_clean);
+        let request = ActionRequest::CleanProjects {
+            artifact_ids: vec![project.artifacts[0].id.clone()],
+        };
+        let inventory = Inventory {
+            projects: scanned.projects,
+            ..Default::default()
+        };
+        let plan = prepare(request.clone(), &inventory, &settings, &ctx)
+            .await
+            .unwrap();
+        let mut changed = settings.clone();
+        changed.roots.clear();
+        let result = execute(plan, changed, ctx.clone(), silent_progress(), "test".into())
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "failed");
+        assert!(nested.join("node_modules").is_dir());
+        let plan = prepare(request.clone(), &inventory, &settings, &ctx)
+            .await
+            .unwrap();
+        let pointer = std::fs::read(linked.join(".git")).unwrap();
+        std::fs::write(linked.join(".git"), "gitdir: missing").unwrap();
+        let result = execute(
+            plan,
+            settings.clone(),
+            ctx.clone(),
+            silent_progress(),
+            "test".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.items[0].status, "failed");
+        std::fs::write(linked.join(".git"), pointer).unwrap();
+        let plan = prepare(request, &inventory, &settings, &ctx).await.unwrap();
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "success");
+        assert!(!nested.join("node_modules").exists());
+        assert!(nested.join("source.ts").is_file());
+        assert!(linked.join(".git").is_file());
     }
 }

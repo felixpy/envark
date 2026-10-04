@@ -12,6 +12,7 @@ import {
   type Settings,
   type Snapshot,
   type View,
+  type NavigationFocus,
 } from './domain'
 
 interface Store {
@@ -21,13 +22,17 @@ interface Store {
   api: Backend
   view: View
   provider: ProviderId | null
-  go(view: View, provider?: ProviderId | null): void
+  focus: NavigationFocus
+  navigationKey: number
+  go(view: View, provider?: ProviderId | null, focus?: NavigationFocus): void
   busy: boolean
   progress: Progress | null
   cancel(): Promise<void>
   refresh(): Promise<void>
   saveSettings(settings: Settings): Promise<boolean>
-  addRoot(): Promise<void>
+  setTheme(theme: Settings['theme']): Promise<void>
+  setDisabledShortcuts(disabled: Settings['disabledShortcuts']): Promise<void>
+  addRoot(path?: string): Promise<void>
   plan: Plan | null
   result: OperationResult | null
   prepare(request: ActionRequest): Promise<void>
@@ -51,11 +56,14 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>('overview')
   const [provider, setProvider] = useState<ProviderId | null>(null)
+  const [focus, setFocus] = useState<NavigationFocus>({})
+  const [navigationKey, setNavigationKey] = useState(0)
   const [job, setJob] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [result, setResult] = useState<OperationResult | null>(null)
   const launched = useRef(false)
+  const running = useRef(false)
   const t = (zh: string, en: string) =>
     data.settings.language === 'en' ? en : data.settings.language === 'zh-TW' ? traditional(zh) : zh
   const fail = (cause: unknown) => {
@@ -64,6 +72,8 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     toast.error(message)
   }
   const refresh = async () => {
+    if (running.current) return
+    running.current = true
     const id = crypto.randomUUID()
     setJob(id)
     setProgress(null)
@@ -73,6 +83,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     } catch (cause) {
       fail(cause)
     } finally {
+      running.current = false
       setJob(null)
       setProgress(null)
     }
@@ -139,30 +150,61 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     api,
     view,
     provider,
+    focus,
+    navigationKey,
     busy: job !== null,
     progress,
     plan,
     result,
     t,
-    go: (next, id) => {
+    go: (next, id, nextFocus = {}) => {
       setView(next)
-      if (id !== undefined) setProvider(id)
+      setProvider(id ?? null)
+      setFocus(nextFocus)
+      setNavigationKey((key) => key + 1)
     },
     refresh,
     saveSettings,
+    setTheme: async (theme) => {
+      try {
+        const snapshot = api.setTheme
+          ? await api.setTheme(theme)
+          : await api.saveSettings({ ...data.settings, theme })
+        setData(snapshot)
+      } catch (cause) {
+        fail(cause)
+      }
+    },
+    setDisabledShortcuts: async (disabledShortcuts) => {
+      try {
+        const snapshot = api.setDisabledShortcuts
+          ? await api.setDisabledShortcuts(disabledShortcuts)
+          : await api.saveSettings({ ...data.settings, disabledShortcuts })
+        setData(snapshot)
+      } catch (cause) {
+        fail(cause)
+      }
+    },
     cancel: async () => {
       if (job) await api.cancel(job)
     },
-    addRoot: async () => {
+    addRoot: async (path) => {
+      if (running.current) return
       try {
-        const root = await api.selectFolder()
-        if (root && !data.settings.roots.includes(root))
-          await saveSettings({ ...data.settings, roots: [...data.settings.roots, root] })
+        const root = path ?? (await api.selectFolder())
+        if (root && !data.settings.roots.includes(root)) {
+          const saved = await saveSettings({
+            ...data.settings,
+            roots: [...data.settings.roots, root],
+          })
+          if (saved) await refresh()
+        }
       } catch (cause) {
         fail(cause)
       }
     },
     prepare: async (request) => {
+      if (running.current) return
       try {
         setResult(null)
         setPlan(await api.prepare(request))
@@ -171,7 +213,8 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       }
     },
     execute: async () => {
-      if (!plan) return
+      if (!plan || running.current) return
+      running.current = true
       const id = crypto.randomUUID()
       setJob(id)
       setError(null)
@@ -181,6 +224,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       } catch (cause) {
         fail(cause)
       } finally {
+        running.current = false
         setJob(null)
         setProgress(null)
       }
