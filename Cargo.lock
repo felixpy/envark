@@ -839,6 +839,7 @@ version = "0.1.0"
 dependencies = [
  "directories",
  "globset",
+ "hex",
  "notify",
  "pep440_rs",
  "process-wrap",

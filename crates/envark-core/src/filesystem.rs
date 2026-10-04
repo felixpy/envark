@@ -12,7 +12,7 @@ pub fn id_for(kind: &str, path: &Path) -> String {
     let mut hash = Sha256::new();
     hash.update(kind.as_bytes());
     hash.update(path.to_string_lossy().as_bytes());
-    format!("{kind}-{:x}", hash.finalize())
+    format!("{kind}-{}", hex::encode(hash.finalize()))
 }
 
 pub fn modified(path: &Path) -> Option<u64> {
@@ -128,7 +128,7 @@ pub fn measure(path: &Path, cancel: &CancellationToken) -> Result<Measurement> {
             }
         }
     }
-    result.fingerprint = Some(format!("{:x}", fingerprint.finalize()));
+    result.fingerprint = Some(hex::encode(fingerprint.finalize()));
     Ok(result)
 }
 
@@ -149,6 +149,38 @@ pub fn read_small(path: &Path, max_bytes: u64) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifiers_preserve_the_existing_sha256_encoding() {
+        assert_eq!(
+            id_for("project", Path::new("workspace")),
+            "project-16d26c0c26631901e51ec942c98bfe3c1b53d23cbd1de846b674e6396ef204d8"
+        );
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn file_fingerprints_preserve_the_existing_sha256_encoding() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("fixture");
+        fs::write(&path, "abc").unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000)),
+            )
+            .unwrap();
+        let measured =
+            measure(&fs::canonicalize(&path).unwrap(), &CancellationToken::new()).unwrap();
+        assert!(measured.complete);
+        assert_eq!(
+            measured.fingerprint.as_deref(),
+            Some("7ef158265486268fef7daf55fe089dfab9678e9f2fa34e8de4a3e271634aba52")
+        );
+    }
 
     #[test]
     fn equal_size_changes_in_nested_files_change_the_fingerprint() {
