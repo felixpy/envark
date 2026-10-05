@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible problem in Envark.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Envark version
+      placeholder: e.g. 0.2.1
+    validations:
+      required: true
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Ubuntu
+        - Other Linux distribution
+    validations:
+      required: true
+  - type: input
+    id: system-details
+    attributes:
+      label: OS version and architecture
+      placeholder: e.g. Windows 11 x64 or macOS 15 Apple Silicon
+    validations:
+      required: true
+  - type: input
+    id: tools
+    attributes:
+      label: Affected ecosystem and tool manager
+      description: Include relevant versions, or write "not applicable".
+      placeholder: e.g. Rust 1.99.0 managed by rustup
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide a minimal example. Use disposable directories for cleanup problems.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Describe what should happen and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, or additional context
+      description: Remove credentials, private repository names, and personal paths before sharing.

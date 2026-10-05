@@ -1,5 +1,66 @@
 # Contributing to Envark
 
+Thank you for helping make development environments easier to understand and maintain. Bug reports, tool integrations, translations, and focused fixes are welcome. Keep discussions respectful and constructive.
+
+## Before you start
+
+Search [existing issues](https://github.com/felixpy/envark/issues) before opening a bug report or feature request. Include a minimal reproduction for bugs and explain the user problem for proposals. Discuss substantial features or new providers before implementing them so maintainers can confirm scope.
+
+GitHub Issues and pull requests are the public contribution channels. Maintainers may track work in Linear, but contributors do not need a Linear account. When an existing Linear issue is relevant, include its identifier or link; otherwise use the GitHub issue.
+
+Report vulnerabilities privately through [SECURITY.md](SECURITY.md), and follow [SUPPORT.md](SUPPORT.md) for usage questions.
+
+## Development setup
+
+Use an existing Rust toolchain 1.99 or newer, Node.js 24.15.0 or later in the Node 24 series, and pnpm 11.19.0. Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
+
+```sh
+pnpm install --frozen-lockfile
+pnpm prepare
+pnpm desktop
+```
+
+Use `pnpm dev` for frontend-only development. Native inspection and operations require the desktop app.
+
+| Directory            | Responsibility                                                   |
+| -------------------- | ---------------------------------------------------------------- |
+| `src/views`          | Overview, environments, projects, caches, activity, and settings |
+| `src/components/ui`  | Shared interface components                                      |
+| `src/bridge.ts`      | Typed native boundary and browser preview behavior               |
+| `src-tauri`          | Desktop integration, permissions, and native commands            |
+| `crates/envark-core` | Inventory, providers, scanning, operation plans, and persistence |
+
+Keep provider integrations independent from the interface. Declare supported capabilities and discover the installation owner before enabling mutations. Unknown ownership must remain read-only.
+
+Keep traversal and process execution in the Rust core. Bound concurrent work, support cancellation, and report partial failures. Use subprocess argument arrays rather than interpolated shell commands.
+
+Cleanup changes must plan targets before execution, revalidate canonical paths, reject symlink escapes, preserve source and configuration, and use the system trash for eligible project artifacts. Shared caches should use their owner's supported cleanup command.
+
+Never commit credentials, personal paths, local inventory snapshots, or downloaded toolchains. Use synthetic fixtures in tests and screenshots.
+
+## Pull requests
+
+Create a focused branch from `main`. Keep one logical change per PR and use an English Conventional Commit title. Explain the problem, resulting behavior, and how you verified it; include screenshots for interface changes.
+
+Add meaningful regression coverage for behavioral fixes and state any platforms you could not verify. For installation or cleanup changes, explain ownership, path validation, and recovery behavior. Run the checks relevant to your changes and resolve CI failures before requesting a review.
+
+Use `Fixes #123` when a PR resolves a GitHub issue. A reference such as `Fixes FEL-123` is appropriate only when it resolves that Linear issue and the integration is configured.
+
+## Validation
+
+```sh
+pnpm format:check
+pnpm check
+pnpm test
+pnpm build
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+pnpm desktop:build
+```
+
+Run `pnpm locales` after adding interface strings to update Traditional Chinese translations. GitHub Actions builds Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu x64; local checks cover your current platform.
+
 ## Commit messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) with an English imperative summary:
@@ -22,14 +83,7 @@ Each commit should express one logical change. Include the tests for that change
 
 Use a body to explain motivation, constraints, and non-obvious tradeoffs when they help a reviewer. Document breaking behavior with `!` or a `BREAKING CHANGE:` footer. Do not add a breaking-change marker for ordinary internal refactoring.
 
-## Local checks
-
-Use Node.js 24.15.0 or later in the Node 24 series. The test environment requires this minimum version; CI and Node type declarations also target Node 24.
-
-```sh
-pnpm install --frozen-lockfile
-pnpm prepare
-```
+## Commit hooks
 
 The `prepare` script installs Husky's repository-local hooks. Run it explicitly when first setting up an existing checkout or when installation skips lifecycle scripts. It is safe to run again.
 
@@ -57,7 +111,7 @@ Merge reviewed feature and fix PRs into `main` using Conventional Commits. The *
 
 The release PR synchronizes `package.json`, the Cargo workspace version, both workspace entries in `Cargo.lock`, the Tauri configuration, and the release manifest. `pnpm check` rejects version drift. The Cargo lockfile JSONPath deliberately uses `name.value`: the pinned release-please TOML updater wraps scalar values. Validate these updates when upgrading the action.
 
-The first release is `0.1.0`, set by `initial-version`. Until its release PR is merged, the release manifest stays empty because no version has been released. The first release PR records `0.1.0` in the manifest; subsequent versions follow Conventional Commits. Do not set `release-as` permanently, which would override future version increments. Tagged builds require a populated manifest matching the application version.
+The release manifest records the last released version. Do not set `release-as` permanently, which would override future version increments. Tagged builds require a populated manifest matching the application version.
 
 After the release PR is merged, release-please creates a tag and draft release. The same workflow builds Windows x64, macOS Apple Silicon, macOS Intel, and Linux x64 from the tagged commit, verifies all five installers, uploads `SHA256SUMS`, and publishes the draft only after every build succeeds. Ordinary pushes cannot cancel a release in progress. Release automation is the sole owner of tags and releases; do not create a separate tag to start a build.
 
