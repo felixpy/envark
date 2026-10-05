@@ -284,7 +284,7 @@ export const metadata = {
     short: 'Rust',
     color: '#f97316',
     category: 'lang',
-    runtime: 'Toolchain',
+    runtime: 'Rust',
     description: [
       '管理 rustup 工具链、Cargo 工具和构建产物。',
       'Manage rustup toolchains, Cargo tools, and build artifacts.',

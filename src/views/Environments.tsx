@@ -265,7 +265,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                   <TableRow key={runtime.id}>
                     <TableCell>
                       <div className="flex items-center gap-2 font-mono">
-                        {runtime.version}
+                        <span>{runtime.version}</span>
                         {runtime.active && <Badge>{t('当前环境', 'Current environment')}</Badge>}
                         {!runtime.activeKnown && (
                           <Badge variant="outline">{t('活动状态未知', 'Activity unknown')}</Badge>
@@ -274,6 +274,11 @@ export default function Environments({ id }: { id: ProviderId }) {
                           <Badge variant="outline">{t('只读', 'Read-only')}</Badge>
                         )}
                       </div>
+                      {runtime.selector && runtime.selector !== runtime.version && (
+                        <div className="mt-1 font-mono text-xs text-muted-foreground">
+                          {runtime.selector}
+                        </div>
+                      )}
                       <div
                         title={runtime.path}
                         className="mt-1 max-w-80 truncate font-mono text-xs text-muted-foreground"

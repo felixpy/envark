@@ -108,22 +108,35 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     match ctx.read("rustup", &["toolchain", "list"]).await {
         Ok(output) => {
             for line in output.lines().filter(|l| !l.contains("no installed")) {
-                let Some(version) = line.split_whitespace().next() else {
+                let Some(selector) = line.split_whitespace().next() else {
                     continue;
                 };
-                let path = rustup_root.join("toolchains").join(version);
+                let path = rustup_root.join("toolchains").join(selector);
                 if path.is_dir() {
+                    let (version, note) = match ctx
+                        .read("rustup", &["run", selector, "rustc", "--version"])
+                        .await
+                        .and_then(|output| rustc_version(&output))
+                    {
+                        Ok(version) => (version, None),
+                        Err(error) => {
+                            let issue =
+                                format!("Cannot inspect Rust toolchain {selector}: {error}");
+                            provider.issues.push(issue.clone());
+                            ("unknown".into(), Some(issue))
+                        }
+                    };
                     provider.runtimes.push(Runtime {
-                        selector: None,
+                        selector: Some(selector.into()),
                         active_known: true,
                         id: id_for("runtime", &path),
-                        version: version.into(),
+                        version,
                         manager: "rustup".into(),
                         path,
                         active: line.contains("default"),
                         managed: true,
                         size: None,
-                        note: None,
+                        note,
                     });
                 }
             }
@@ -188,6 +201,19 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+fn rustc_version(output: &str) -> Result<String> {
+    let mut fields = output.split_whitespace();
+    if fields.next() == Some("rustc")
+        && let Some(version) = fields.next()
+        && semver::Version::parse(version).is_ok()
+    {
+        return Ok(version.into());
+    }
+    Err(Error::Unavailable(
+        "The Rust compiler did not report a valid version.".into(),
+    ))
 }
 
 async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
@@ -432,4 +458,40 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+#[cfg(test)]
+mod rust_tests {
+    use super::rustc_version;
+
+    #[test]
+    fn extracts_compiler_versions_without_losing_release_channels() {
+        for (output, expected) in [
+            ("rustc 1.99.0 (b940084d7 2026-09-28)\r\n", "1.99.0"),
+            (
+                "rustc 1.100.0-nightly (abcdef123 2026-10-04)\n",
+                "1.100.0-nightly",
+            ),
+            (
+                "rustc 1.100.0-beta.2 (abcdef123 2026-10-04)",
+                "1.100.0-beta.2",
+            ),
+        ] {
+            assert_eq!(rustc_version(output).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_toolchain_names_and_failed_probes_as_compiler_versions() {
+        for output in [
+            "stable-x86_64-pc-windows-msvc (active, default)",
+            "nightly-aarch64-apple-darwin",
+            "rustc unknown",
+            "cargo 1.99.0 (abcdef123 2026-10-04)",
+            "error: toolchain is not installed",
+            "",
+        ] {
+            assert!(rustc_version(output).is_err(), "accepted {output:?}");
+        }
+    }
 }
