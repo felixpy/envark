@@ -123,6 +123,7 @@ function Shell() {
                               {metadata[id].short}
                             </SidebarMenuButton>
                             <SidebarMenuBadge
+                              title={active?.version}
                               className={`max-w-24 truncate text-[10px] font-normal ${!provider?.detected ? 'rounded border border-muted-foreground/30 bg-muted px-1 text-muted-foreground' : 'font-mono text-muted-foreground'}`}
                             >
                               {!provider?.detected

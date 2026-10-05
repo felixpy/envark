@@ -373,7 +373,12 @@ fn prepare_steps(
             let command = if ["uv", "pyenv"].contains(&runtime.manager.as_str()) {
                 providers::python::command(ctx, runtime, verb)?
             } else {
-                providers::runtime_command(ctx, &runtime.manager, verb, &runtime.version)?
+                providers::runtime_command(
+                    ctx,
+                    &runtime.manager,
+                    verb,
+                    runtime.selector.as_deref().unwrap_or(&runtime.version),
+                )?
             };
             let mut item = command_description(
                 format!(
@@ -828,6 +833,66 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::{model::silent_progress, scanner};
+
+    #[tokio::test]
+    async fn rust_runtime_actions_use_the_toolchain_selector_instead_of_the_compiler_version() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ctx = Context::new(CancellationToken::new()).unwrap();
+        ctx.home = root.path().into();
+        let bin = ctx.home.join(".cargo/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join(if cfg!(windows) {
+                "rustup.exe"
+            } else {
+                "rustup"
+            }),
+            "fixture",
+        )
+        .unwrap();
+        let selector = "nightly-aarch64-apple-darwin";
+        let mut provider = crate::model::Provider::empty(ProviderId::Rust);
+        provider.runtimes.push(crate::model::Runtime {
+            id: "nightly".into(),
+            version: "1.100.0-nightly".into(),
+            selector: Some(selector.into()),
+            manager: "rustup".into(),
+            path: root.path().join("toolchains").join(selector),
+            active: false,
+            active_known: true,
+            managed: true,
+            size: None,
+            note: None,
+        });
+        let inventory = Inventory {
+            providers: vec![provider],
+            ..Default::default()
+        };
+        for (request, args) in [
+            (
+                ActionRequest::SetDefault {
+                    provider: ProviderId::Rust,
+                    id: "nightly".into(),
+                },
+                vec!["default", selector],
+            ),
+            (
+                ActionRequest::RemoveRuntime {
+                    provider: ProviderId::Rust,
+                    id: "nightly".into(),
+                },
+                vec!["toolchain", "uninstall", selector],
+            ),
+        ] {
+            let plan = prepare(request, &inventory, &Settings::default(), &ctx)
+                .await
+                .unwrap();
+            let Step::Runtime { command, .. } = &plan.steps[0] else {
+                panic!("expected a runtime operation");
+            };
+            assert_eq!(command.args, args);
+        }
+    }
 
     #[tokio::test]
     async fn hard_link_cleanup_reports_logical_bytes_without_claiming_disk_reclamation() {
