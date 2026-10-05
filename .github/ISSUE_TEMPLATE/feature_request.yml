@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a tool integration or improvement to a workflow.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe your workflow and where Envark falls short.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the result you would like to achieve.
+    validations:
+      required: true
+  - type: input
+    id: integration
+    attributes:
+      label: Related tools or ecosystem
+      description: For integrations, include the tool manager and a link to its official documentation.
+      placeholder: e.g. a language version manager, package cache, or model store
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or additional context
+      description: How do you handle this today? Include sketches or examples if helpful.
