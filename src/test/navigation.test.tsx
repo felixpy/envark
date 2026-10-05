@@ -5,7 +5,7 @@ import App from '@/App'
 import { backend, type Backend } from '@/bridge'
 import { emptySnapshot, emptyProvider, type Project, type Settings } from '@/domain'
 
-function fixture(native = false) {
+async function fixture(native = false) {
   const data = structuredClone(emptySnapshot)
   data.platform = 'windows'
   data.settings.language = 'en'
@@ -86,23 +86,29 @@ function fixture(native = false) {
       }
     },
   }
-  let app = render(<App api={api} />)
+  const mount = async () => {
+    // Commit the snapshot first so the lazy page import starts before we await it.
+    const app = await act(async () => render(<App api={api} />))
+    await act(() => vi.dynamicImportSettled())
+    return app
+  }
+  let app = await mount()
   return {
     refresh,
     syncViewState,
     openAppLink,
     checkAppUpdate,
     setDisabledShortcuts,
-    remount: () => {
+    remount: async () => {
       app.unmount()
-      app = render(<App api={api} />)
+      app = await mount()
     },
     menu: (action: string) => act(() => menu?.(action)),
   }
 }
 
 it('overview cards and suggested rows open the correct destinations with idle filters', async () => {
-  fixture()
+  await fixture()
   const user = userEvent.setup()
   await user.click(await screen.findByRole('button', { name: 'Available updates' }))
   await screen.findByRole('heading', { name: 'Settings' })
@@ -122,7 +128,7 @@ it('overview cards and suggested rows open the correct destinations with idle fi
 })
 
 it('syncs native view commands with sidebar, theme, and bounded zoom', async () => {
-  const { menu, syncViewState } = fixture(true)
+  const { menu, syncViewState } = await fixture(true)
   await screen.findByRole('heading', { name: 'Overview' })
   menu('toggle-sidebar')
   await waitFor(() =>
@@ -145,7 +151,7 @@ it('syncs native view commands with sidebar, theme, and bounded zoom', async () 
 })
 
 it('opens GitHub and issue links through the native browser integration and checks releases', async () => {
-  const { menu, openAppLink, checkAppUpdate } = fixture(true)
+  const { menu, openAppLink, checkAppUpdate } = await fixture(true)
   const user = userEvent.setup()
   await screen.findByRole('heading', { name: 'Overview' })
   menu('about')
@@ -161,7 +167,7 @@ it('opens GitHub and issue links through the native browser integration and chec
 })
 
 it('keeps missing ecosystems inspectable and removes capability labels from the catalog', async () => {
-  fixture()
+  await fixture()
   const user = userEvent.setup()
   await screen.findByRole('heading', { name: 'Overview' })
   await user.click(screen.getByRole('button', { name: 'Environments & tools' }))
@@ -178,7 +184,7 @@ it('keeps missing ecosystems inspectable and removes capability labels from the 
 })
 
 it('routes native menu events to navigation, shortcuts, and rescan', async () => {
-  const { menu, refresh } = fixture()
+  const { menu, refresh } = await fixture()
   await screen.findByRole('heading', { name: 'Overview' })
   menu('projects')
   await screen.findByRole('heading', { name: 'Project space' })
@@ -195,7 +201,7 @@ it('routes native menu events to navigation, shortcuts, and rescan', async () =>
 })
 
 it('handles Windows shortcuts delivered to the webview without repeating operations', async () => {
-  const { refresh } = fixture(true)
+  const { refresh } = await fixture(true)
   await screen.findByRole('heading', { name: 'Overview' })
   fireEvent.keyDown(window, { key: '4', ctrlKey: true })
   await screen.findByRole('heading', { name: 'Global caches' })
@@ -209,7 +215,7 @@ it('handles Windows shortcuts delivered to the webview without repeating operati
 })
 
 it('disables shortcuts independently while leaving menu actions available', async () => {
-  const { menu, refresh, syncViewState, setDisabledShortcuts } = fixture(true)
+  const { menu, refresh, syncViewState, setDisabledShortcuts } = await fixture(true)
   const user = userEvent.setup()
   await screen.findByRole('heading', { name: 'Overview' })
   menu('shortcuts')
@@ -263,13 +269,13 @@ it('disables shortcuts independently while leaving menu actions available', asyn
 })
 
 it('loads saved shortcut switches after reopening the app and restores their defaults', async () => {
-  const { menu, remount, setDisabledShortcuts, syncViewState } = fixture(true)
+  const { menu, remount, setDisabledShortcuts, syncViewState } = await fixture(true)
   const user = userEvent.setup()
   await screen.findByRole('heading', { name: 'Overview' })
   menu('shortcuts')
   await user.click(screen.getByRole('switch', { name: 'Toggle sidebar' }))
   await waitFor(() => expect(setDisabledShortcuts).toHaveBeenCalledWith(['toggle-sidebar']))
-  remount()
+  await remount()
   await screen.findByRole('heading', { name: 'Overview' })
   await waitFor(() =>
     expect(syncViewState).toHaveBeenLastCalledWith({
@@ -305,7 +311,7 @@ it('loads saved shortcut switches after reopening the app and restores their def
 })
 
 it('keeps the shortcut enabled and reports an unsuccessful save', async () => {
-  const { menu, setDisabledShortcuts, refresh } = fixture(true)
+  const { menu, setDisabledShortcuts, refresh } = await fixture(true)
   const user = userEvent.setup()
   setDisabledShortcuts.mockRejectedValueOnce(new Error('Unable to save preferences'))
   await screen.findByRole('heading', { name: 'Overview' })
@@ -320,7 +326,7 @@ it('keeps the shortcut enabled and reports an unsuccessful save', async () => {
 })
 
 it('reports an update check failure and allows retrying without inventing a newer version', async () => {
-  const { menu, checkAppUpdate } = fixture(true)
+  const { menu, checkAppUpdate } = await fixture(true)
   checkAppUpdate.mockRejectedValueOnce(new Error('Network unavailable'))
   checkAppUpdate.mockResolvedValueOnce({ version: '0.1.0', available: false })
   await screen.findByRole('heading', { name: 'Overview' })
