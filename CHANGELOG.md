@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/felixpy/envark/compare/v0.2.0...v0.2.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* **rust:** display compiler versions for installed toolchains ([#19](https://github.com/felixpy/envark/issues/19)) ([e1242b9](https://github.com/felixpy/envark/commit/e1242b9b520167633b786fd6087519e358c19173))
+
 ## [0.2.0](https://github.com/felixpy/envark/compare/v0.1.0...v0.2.0) (2026-10-04)
 
 
