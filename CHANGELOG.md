@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/felixpy/envark/compare/v0.2.1...v0.3.0) (2026-10-06)
+
+
+### Features
+
+* **projects:** measure and safely remove linked worktrees ([#25](https://github.com/felixpy/envark/issues/25)) ([74ac1e0](https://github.com/felixpy/envark/commit/74ac1e0a2e7ef4eeb497a6dcf0673e85baabdf74))
+* **updater:** download and install signed application updates ([#24](https://github.com/felixpy/envark/issues/24)) ([3a28c13](https://github.com/felixpy/envark/commit/3a28c13a118296d6c3aaa8573778b56536b5bdff))
+
+
+### Bug Fixes
+
+* **ui:** format Windows verbatim paths for display ([#23](https://github.com/felixpy/envark/issues/23)) ([b1fc232](https://github.com/felixpy/envark/commit/b1fc232da068a5ff9b37e69b8bb56da8f11cd35c))
+
 ## [0.2.1](https://github.com/felixpy/envark/compare/v0.2.0...v0.2.1) (2026-10-05)
 
 
