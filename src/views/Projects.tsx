@@ -77,8 +77,8 @@ export default function Projects() {
       <PageHeader
         title={t('项目空间', 'Project space')}
         description={t(
-          '按 Git 仓库汇总，自动包含关联 worktree。只清理可重建产物，保留源码、工作树与分支。',
-          'Grouped by Git repository with linked worktrees included automatically. Cleanup preserves source, worktrees, and branches.',
+          '按 Git 仓库汇总，自动包含关联 worktree，查看产物与工作树整体占用。',
+          'Git repositories and linked worktrees, with generated artifacts and total checkout sizes.',
         )}
         actions={
           <>

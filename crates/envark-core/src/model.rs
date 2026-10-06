@@ -306,6 +306,8 @@ pub struct Worktree {
     pub branch: Option<String>,
     pub locked: bool,
     pub issue: Option<String>,
+    #[serde(default)]
+    pub size: Option<Measurement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

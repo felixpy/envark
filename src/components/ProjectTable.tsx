@@ -177,6 +177,7 @@ function WorkspaceRow({
   const s = useStore()
   const { t } = s
   const project = node.project
+  const worktree = node.worktree
   const busyReason =
     s.busy || s.plan
       ? t(
@@ -199,6 +200,14 @@ function WorkspaceRow({
     : project.protected
       ? t('项目已保护', 'Project is protected')
       : t('没有可安全清理的目录', 'No eligible directories')
+  const removalReason = worktree?.locked
+    ? t('工作树已锁定，请先通过 Git 解锁。', 'Worktree is locked. Unlock it through Git first.')
+    : excluded ||
+      (project?.protected ? t('项目已保护', 'Project is protected') : null) ||
+      (!project ? unavailable : worktree?.issue) ||
+      (!worktree?.size?.complete
+        ? t('请先完成工作树扫描。', 'Complete the worktree scan first.')
+        : null)
   const protect = async () => {
     if (!project) return
     const settings = s.data.settings
@@ -248,8 +257,8 @@ function WorkspaceRow({
             variant="outline"
             className="gap-1 text-xs"
             title={t(
-              'Git 已锁定此工作树。Envark 只清理可重建产物，不删除工作树。',
-              'Git locks this worktree. Envark only cleans generated artifacts and never removes the worktree.',
+              'Git 已锁定此工作树，可以清理产物，但不能移除工作树。',
+              'This worktree is locked. Generated artifacts can be cleaned, but the worktree cannot be removed.',
             )}
           >
             <LockKeyhole className="size-3" />
@@ -340,7 +349,18 @@ function WorkspaceRow({
         </div>
       </TableCell>
       <TableCell className="text-right font-mono text-xs">
-        {project ? (
+        {worktree?.size ? (
+          <>
+            {!worktree.size.complete && '≥ '}
+            {formatBytes(worktree.size.bytes)}
+            <span className="ml-1 font-sans text-muted-foreground">{t('总计', 'Total')}</span>
+            {project && (
+              <p className="mt-1 whitespace-nowrap text-[10px] text-muted-foreground">
+                {t('产物', 'Artifacts')} {formatBytes(projectBytes(project))}
+              </p>
+            )}
+          </>
+        ) : project ? (
           <>
             {project.artifacts.some((a) => !a.size.complete) && '≥ '}
             {formatBytes(projectBytes(project))}
@@ -350,7 +370,7 @@ function WorkspaceRow({
         )}
         {familySize !== undefined && (
           <p className="mt-1 whitespace-nowrap text-[10px] text-muted-foreground">
-            {t('含 worktree', 'With worktrees')} {formatBytes(familySize)}
+            {t('产物含 worktree', 'Artifacts with worktrees')} {formatBytes(familySize)}
           </p>
         )}
       </TableCell>
@@ -363,8 +383,21 @@ function WorkspaceRow({
             onClick={() => void s.prepare({ kind: 'cleanProjects', artifactIds: ids })}
           >
             <Trash2 />
-            {familySize !== undefined ? t('全部清理', 'Clean group') : t('清理', 'Clean')}
+            {familySize !== undefined
+              ? t('全部清理产物', 'Clean group artifacts')
+              : t('清理产物', 'Clean artifacts')}
           </ActionButton>
+          {worktree && (
+            <ActionButton
+              variant="ghost"
+              size="sm"
+              className="text-xs text-muted-foreground hover:text-destructive"
+              reason={busyReason || removalReason}
+              onClick={() => void s.prepare({ kind: 'removeWorktree', id: worktree.id })}
+            >
+              {t('移除工作树', 'Remove worktree')}
+            </ActionButton>
+          )}
           {project && (
             <ActionButton
               variant="ghost"

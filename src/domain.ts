@@ -131,6 +131,7 @@ export interface Worktree {
   branch: string | null
   locked: boolean
   issue: string | null
+  size?: Measurement | null
 }
 export interface Cache {
   id: string
@@ -183,6 +184,7 @@ export interface Progress {
   message: string
 }
 export type ActionRequest =
+  | { kind: 'removeWorktree'; id: string }
   | { kind: 'cleanProjects'; artifactIds: string[] }
   | { kind: 'cleanCaches'; ids: string[] }
   | { kind: 'installRuntime'; provider: ProviderId; manager: string; version: string }

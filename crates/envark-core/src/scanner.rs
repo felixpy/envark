@@ -536,6 +536,31 @@ pub(crate) fn scan_roots(
         return Err(Error::Cancelled);
     }
     result.issues.extend(issues);
+    // Measure the entire checkout, including source and ignored files. Only a
+    // successfully scanned, in-scope worktree may become a measurement root.
+    let issues: Vec<String> = pool.install(|| {
+        result
+            .worktrees
+            .par_iter_mut()
+            .filter_map(|worktree| {
+                if worktree.issue.is_some() || !result.projects.iter().any(|p| p.id == worktree.id)
+                {
+                    return None;
+                }
+                match measure(&worktree.path, cancel) {
+                    Ok(size) => {
+                        worktree.size = Some(size);
+                        None
+                    }
+                    Err(error) => Some(format!("{}: {error}", worktree.path.display())),
+                }
+            })
+            .collect()
+    });
+    if cancel.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    result.issues.extend(issues);
     result.projects.sort_by_key(|project| project.last_active);
     result.elapsed_ms = started.elapsed().as_millis();
     progress(Progress {

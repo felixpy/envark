@@ -174,6 +174,7 @@ fn registered_worktree(checkout: &Checkout, git_dir: &Path) -> Result<Worktree> 
         branch: branch(git_dir).ok().flatten(),
         locked: git_dir.join("locked").exists(),
         issue,
+        size: None,
     })
 }
 

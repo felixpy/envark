@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StoreProvider } from '@/store'
 import Projects from '@/views/Projects'
@@ -237,4 +237,41 @@ it('sorts by activity and total size while keeping worktrees with their reposito
   await user.click(screen.getByRole('combobox', { name: 'Sort projects' }))
   await user.click(screen.getByRole('option', { name: 'Size: smallest first' }))
   expect(order().slice(0, 3)).toEqual(['unknown', 'other', 'repository'])
+})
+
+it('shows whole checkout size and sends a separate worktree removal request', async () => {
+  const { prepare } = fixture((data) => {
+    withWorktrees(data)
+    for (const worktree of data.inventory.worktrees) {
+      worktree.size = { bytes: 1048576, files: 12, skipped: 0, complete: true }
+    }
+  })
+  const name = await screen.findByRole('checkbox', { name: 'Select old-branch' })
+  const row = within(name.closest('tr')!)
+  expect(row.getByText('1.0 MB')).toBeTruthy()
+  expect(row.getByText('Total')).toBeTruthy()
+  expect(row.getByText('Artifacts 1.0 KB')).toBeTruthy()
+  await userEvent.setup().click(row.getByRole('button', { name: 'Remove worktree' }))
+  expect(prepare).toHaveBeenCalledWith({ kind: 'removeWorktree', id: 'old-branch' })
+})
+
+it('blocks locked worktree removal using an on-demand reason while allowing artifact cleanup', async () => {
+  fixture((data) => {
+    withWorktrees(data)
+    data.inventory.projects[1].protected = false
+    data.inventory.worktrees[0].locked = true
+    data.inventory.worktrees[0].size = { bytes: 2048, files: 2, skipped: 0, complete: true }
+  })
+  const name = await screen.findByRole('checkbox', { name: 'Select old-branch' })
+  const row = within(name.closest('tr')!)
+  const remove = row.getByRole('button', { name: 'Remove worktree' })
+  expect(remove.getAttribute('aria-disabled')).toBe('true')
+  expect(
+    row.getByRole('button', { name: 'Clean artifacts' }).getAttribute('aria-disabled'),
+  ).toBeNull()
+  expect(screen.queryByText('Worktree is locked. Unlock it through Git first.')).toBeNull()
+  await userEvent.setup().hover(remove)
+  expect((await screen.findByRole('tooltip')).textContent).toBe(
+    'Worktree is locked. Unlock it through Git first.',
+  )
 })
