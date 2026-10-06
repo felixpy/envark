@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Developer environment and space manager",
@@ -35,5 +36,17 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "requireSignedVersion": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlEQzJBMzFDN0VGMzE1RjUKUldUMUZmTitIS1BDblZTUGNac0krMUNIQXhzNTY1OGI5Q1JzZjJFNmxwelRTSUZON0lLa3Jvc00K",
+      "endpoints": [
+        "https://github.com/felixpy/envark/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

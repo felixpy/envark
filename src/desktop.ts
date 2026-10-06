@@ -10,6 +10,13 @@ export type AppLinkTarget = keyof typeof appLinks
 export interface AppRelease {
   version: string
   available: boolean
+  installable?: boolean
+  installIssue?: string | null
+}
+export interface AppUpdateProgress {
+  downloaded: number
+  total: number | null
+  installing: boolean
 }
 export interface ViewState {
   sidebar: boolean

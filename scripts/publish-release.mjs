@@ -1,15 +1,23 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { api, getReleaseById, gh, tagCommit, validateTag } from './release-github.mjs'
+import { verifyUpdaterSignature } from './updater-signature.mjs'
 
 export const targets = {
-  'x86_64-pc-windows-msvc': ['.exe'],
-  'aarch64-apple-darwin': ['.dmg'],
-  'x86_64-apple-darwin': ['.dmg'],
-  'x86_64-unknown-linux-gnu': ['.deb', '.AppImage'],
+  'x86_64-pc-windows-msvc': ['.exe', '.exe.sig'],
+  'aarch64-apple-darwin': ['.dmg', '.app.tar.gz', '.app.tar.gz.sig'],
+  'x86_64-apple-darwin': ['.dmg', '.app.tar.gz', '.app.tar.gz.sig'],
+  'x86_64-unknown-linux-gnu': ['.deb', '.AppImage', '.AppImage.sig'],
+}
+
+const updaterTargets = {
+  'windows-x86_64': ['x86_64-pc-windows-msvc', '.exe'],
+  'darwin-aarch64': ['aarch64-apple-darwin', '.app.tar.gz'],
+  'darwin-x86_64': ['x86_64-apple-darwin', '.app.tar.gz'],
+  'linux-x86_64': ['x86_64-unknown-linux-gnu', '.AppImage'],
 }
 
 function filesIn(directory) {
@@ -30,7 +38,11 @@ export function collectAssets(root, version) {
       const matching = files.filter((file) => file.endsWith(extension))
       assert.equal(matching.length, 1, `Expected one ${extension} installer for ${target}`)
       const path = matching[0]
-      const name = basename(path)
+      const originalName = basename(path)
+      // Tauri's macOS updater archive has no version or architecture in its name.
+      const name = extension.startsWith('.app.tar.gz')
+        ? `Envark_${version}_${target}${extension}`
+        : originalName
       assert.ok(name.includes(`_${version}_`), `Installer version mismatch: ${name}`)
       assert.ok(
         !/[\r\n]/.test(name) && !names.has(name),
@@ -44,10 +56,31 @@ export function collectAssets(root, version) {
         name,
         size: bytes.length,
         digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        target,
       })
     }
   }
   return assets.sort((a, b) => a.name.localeCompare(b.name, 'en'))
+}
+
+export function updaterManifest(assets, tag, repository, notes, publishedAt, publicKey) {
+  validateTag(tag)
+  assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+  const platforms = {}
+  for (const [platform, [target, extension]] of Object.entries(updaterTargets)) {
+    const asset = assets.find((a) => a.target === target && a.name.endsWith(extension))
+    assert.ok(asset, `Missing updater artifact for ${platform}`)
+    const signed = assets.find((a) => a.target === target && a.name === `${asset.name}.sig`)
+    assert.ok(signed, `Missing updater signature for ${platform}`)
+    const signature = readFileSync(signed.path, 'utf8').trim()
+    assert.ok(signature.length > 0 && signature.length < 16384, `Invalid signature for ${platform}`)
+    verifyUpdaterSignature(readFileSync(asset.path), signature, publicKey)
+    platforms[platform] = {
+      signature,
+      url: `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(asset.name)}`,
+    }
+  }
+  return { version: tag.slice(1), notes, pub_date: publishedAt, platforms }
 }
 
 function publish() {
@@ -59,6 +92,38 @@ function publish() {
     return
   }
   const assets = collectAssets('packages', tag.slice(1))
+  const manifestPath = join('packages', 'latest.json')
+  const publicKey = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).plugins.updater
+    .pubkey
+  writeFileSync(
+    manifestPath,
+    JSON.stringify(
+      updaterManifest(
+        assets,
+        tag,
+        process.env.GH_REPO,
+        release.body ?? '',
+        new Date().toISOString(),
+        publicKey,
+      ),
+      null,
+      2,
+    ) + '\n',
+  )
+  const manifestBytes = readFileSync(manifestPath)
+  assets.push({
+    path: manifestPath,
+    name: 'latest.json',
+    size: manifestBytes.length,
+    digest: `sha256:${createHash('sha256').update(manifestBytes).digest('hex')}`,
+  })
+  for (const asset of assets) {
+    if (basename(asset.path) !== asset.name) {
+      const destination = join('packages', asset.name)
+      copyFileSync(asset.path, destination)
+      asset.path = destination
+    }
+  }
   const checksumPath = join('packages', 'SHA256SUMS')
   writeFileSync(
     checksumPath,

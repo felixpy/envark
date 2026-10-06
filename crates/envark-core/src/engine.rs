@@ -38,6 +38,13 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Reserve the operation slot for a desktop update or restart.
+    pub fn reserve_work(&self) -> Result<tokio::sync::OwnedMutexGuard<()>> {
+        self.work.clone().try_lock_owned().map_err(|_| {
+            Error::Conflict("Wait for the current operation before updating or restarting.".into())
+        })
+    }
+
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         let storage = Storage::new(data_dir.clone())?;
         let mut state = Snapshot {
@@ -395,6 +402,31 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_desktop_update_blocks_scans_and_settings_until_the_slot_is_released() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = super::Engine::new(root.path().into()).unwrap();
+        let reservation = engine.reserve_work().unwrap();
+        assert!(
+            engine
+                .save_settings(engine.snapshot().await.settings)
+                .await
+                .is_err()
+        );
+        assert!(
+            engine
+                .refresh("scan".into(), crate::model::silent_progress())
+                .await
+                .is_err()
+        );
+        drop(reservation);
+        assert!(
+            engine
+                .save_settings(engine.snapshot().await.settings)
+                .await
+                .is_ok()
+        );
+    }
     use super::*;
 
     #[tokio::test]

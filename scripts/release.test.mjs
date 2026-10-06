@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { checkVersions } from './check-versions.mjs'
-import { collectAssets, targets } from './publish-release.mjs'
+import { collectAssets, targets, updaterManifest } from './publish-release.mjs'
+import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { findReleaseByTag, getReleaseById } from './release-github.mjs'
 
 test('draft releases resolve without the published-only tag endpoint', () => {
@@ -140,7 +141,7 @@ test('an empty release manifest is valid only for an untagged initial version', 
   assert.throws(() => checkVersions(root), /Only an empty release manifest may bootstrap/)
 })
 
-test('publishing requires all five correctly versioned platform installers', (t) => {
+test('publishing requires every installer, updater bundle, and signature', (t) => {
   const root = fixture(t)
   const version = '0.2.0'
   const paths = []
@@ -154,11 +155,85 @@ test('publishing requires all five correctly versioned platform installers', (t)
     }
   }
   const assets = collectAssets(root, version)
-  assert.equal(assets.length, 5)
+  assert.equal(assets.length, 11)
   assert.ok(assets.every((asset) => /^sha256:[a-f0-9]{64}$/.test(asset.digest)))
   assert.throws(() => collectAssets(root, '0.3.0'))
   rmSync(paths[0])
   assert.throws(() => collectAssets(root, version))
   writeFileSync(paths[0], '')
   assert.throws(() => collectAssets(root, version))
+})
+
+test('updater manifests verify signatures, distinguish macOS architectures, and reject tampering', (t) => {
+  const root = fixture(t)
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519')
+  const id = Buffer.from('0102030405060708', 'hex')
+  const keyPacket = Buffer.concat([
+    Buffer.from('Ed'),
+    id,
+    publicKey.export({ format: 'der', type: 'spki' }).subarray(-32),
+  ])
+  const encodedKey = Buffer.from(
+    `untrusted comment: fixture\n${keyPacket.toString('base64')}\n`,
+  ).toString('base64')
+  for (const [target, extensions] of Object.entries(targets)) {
+    const directory = join(root, `envark-${target}`)
+    mkdirSync(directory)
+    for (const extension of extensions.filter((e) => !e.endsWith('.sig'))) {
+      const name =
+        extension === '.app.tar.gz' ? 'Envark.app.tar.gz' : `Envark_0.3.0_${target}${extension}`
+      const path = join(directory, name)
+      const bytes = Buffer.from(`installer ${target}${extension}`)
+      writeFileSync(path, bytes)
+      if (extensions.includes(`${extension}.sig`)) {
+        const artifactSignature = sign(
+          null,
+          createHash('blake2b512').update(bytes).digest(),
+          privateKey,
+        )
+        const packet = Buffer.concat([Buffer.from('ED'), id, artifactSignature])
+        const comment = 'timestamp:1700000000'
+        const commentSignature = sign(
+          null,
+          Buffer.concat([artifactSignature, Buffer.from(comment)]),
+          privateKey,
+        )
+        writeFileSync(
+          `${path}.sig`,
+          Buffer.from(
+            `untrusted comment: fixture\n${packet.toString('base64')}\ntrusted comment: ${comment}\n${commentSignature.toString('base64')}\n`,
+          ).toString('base64'),
+        )
+      }
+    }
+  }
+  const assets = collectAssets(root, '0.3.0')
+  const manifest = updaterManifest(
+    assets,
+    'v0.3.0',
+    'example/envark',
+    'Changes',
+    '2026-10-06T00:00:00Z',
+    encodedKey,
+  )
+  assert.equal(Object.keys(manifest.platforms).length, 4)
+  assert.notEqual(manifest.platforms['darwin-aarch64'].url, manifest.platforms['darwin-x86_64'].url)
+  assert.equal(manifest.version, '0.3.0')
+  assert.throws(
+    () =>
+      updaterManifest(
+        assets.filter((a) => !a.name.endsWith('.exe.sig')),
+        'v0.3.0',
+        'example/envark',
+        '',
+        '',
+        encodedKey,
+      ),
+    /Missing updater signature/,
+  )
+  writeFileSync(assets.find((a) => a.name.endsWith('.exe')).path, 'tampered')
+  assert.throws(
+    () => updaterManifest(assets, 'v0.3.0', 'example/envark', '', '', encodedKey),
+    /signature is invalid/,
+  )
 })
