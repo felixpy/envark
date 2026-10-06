@@ -1,3 +1,4 @@
+import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
 import {
   ArrowDownWideNarrow,
@@ -208,8 +209,8 @@ export default function Projects() {
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span>{t('扫描范围', 'Scan roots')}:</span>
         {settings.roots.map((root) => (
-          <Badge key={root} variant="outline" className="font-mono font-normal">
-            {root}
+          <Badge key={displayPath(root)} variant="outline" className="font-mono font-normal">
+            {displayPath(root)}
           </Badge>
         ))}
       </div>

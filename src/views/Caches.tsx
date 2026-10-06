@@ -1,3 +1,4 @@
+import { displayPath } from '@/lib/paths'
 import { Database, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes, metadata } from '@/domain'
@@ -108,9 +109,9 @@ export default function Caches() {
                     <div className="font-medium">{cache.name}</div>
                     <p
                       className="mt-1 max-w-md truncate font-mono text-xs text-muted-foreground"
-                      title={cache.path}
+                      title={displayPath(cache.path)}
                     >
-                      {cache.path}
+                      {displayPath(cache.path)}
                     </p>
                   </TableCell>
                   <TableCell>

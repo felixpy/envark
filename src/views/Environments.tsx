@@ -1,3 +1,4 @@
+import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
 import { ArrowUp, Check, Download, FilePenLine, Plus, Star, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -221,7 +222,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                       </div>
                       <div
                         className="truncate font-mono text-xs text-muted-foreground"
-                        title={item.path}
+                        title={displayPath(item.path)}
                       >
                         {item.version}
                       </div>
@@ -280,10 +281,10 @@ export default function Environments({ id }: { id: ProviderId }) {
                         </div>
                       )}
                       <div
-                        title={runtime.path}
+                        title={displayPath(runtime.path)}
                         className="mt-1 max-w-80 truncate font-mono text-xs text-muted-foreground"
                       >
-                        {runtime.path}
+                        {displayPath(runtime.path)}
                       </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">{runtime.manager}</TableCell>
@@ -435,9 +436,9 @@ export default function Environments({ id }: { id: ProviderId }) {
                       </div>
                       <div
                         className="mt-1 max-w-96 truncate font-mono text-xs text-muted-foreground"
-                        title={asset.path}
+                        title={displayPath(asset.path)}
                       >
-                        {asset.path}
+                        {displayPath(asset.path)}
                       </div>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
@@ -478,7 +479,9 @@ export default function Environments({ id }: { id: ProviderId }) {
           {provider.configs.map((file) => (
             <Card key={file.id} className="shadow-none">
               <CardHeader>
-                <CardTitle className="break-all font-mono text-sm">{file.path}</CardTitle>
+                <CardTitle className="break-all font-mono text-sm">
+                  {displayPath(file.path)}
+                </CardTitle>
                 <CardDescription>
                   {file.format} ·{' '}
                   {t(
@@ -620,7 +623,7 @@ export default function Environments({ id }: { id: ProviderId }) {
           <DialogHeader>
             <DialogTitle>{t('编辑配置文件', 'Edit configuration')}</DialogTitle>
             <DialogDescription className="break-all font-mono text-xs">
-              {config?.path}
+              {config ? displayPath(config.path) : undefined}
             </DialogDescription>
           </DialogHeader>
           <Textarea
