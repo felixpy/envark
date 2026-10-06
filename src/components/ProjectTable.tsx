@@ -316,7 +316,7 @@ function WorkspaceRow({
               <label
                 key={artifact.id}
                 className={`inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs ${reason ? 'text-muted-foreground' : 'cursor-pointer'}`}
-                title={busyReason || reason ? undefined : artifact.path}
+                title={busyReason || reason ? undefined : displayPath(artifact.path)}
               >
                 <SelectionCheckbox
                   className="size-3.5"
