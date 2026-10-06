@@ -1,3 +1,4 @@
+import { displayPath } from '@/lib/paths'
 import { Fragment } from 'react'
 import {
   ChevronRight,
@@ -27,7 +28,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 function relativePath(project: Project, artifact: Artifact) {
   const root = project.path.replaceAll('\\', '/').replace(/\/$/, '')
   const path = artifact.path.replaceAll('\\', '/')
-  return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : artifact.name
+  return path.startsWith(`${displayPath(root)}/`) ? path.slice(root.length + 1) : artifact.name
 }
 
 function selectionState(ids: string[], selected: Set<string>) {
@@ -263,8 +264,8 @@ function WorkspaceRow({
         )}
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-        <span className="max-w-72 truncate font-mono" title={node.path}>
-          {node.path}
+        <span className="max-w-72 truncate font-mono" title={displayPath(node.path)}>
+          {displayPath(node.path)}
         </span>
         <span className="inline-flex items-center gap-1">
           <GitBranch className="size-3" />
@@ -315,7 +316,7 @@ function WorkspaceRow({
               <label
                 key={artifact.id}
                 className={`inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs ${reason ? 'text-muted-foreground' : 'cursor-pointer'}`}
-                title={busyReason || reason ? undefined : artifact.path}
+                title={busyReason || reason ? undefined : displayPath(artifact.path)}
               >
                 <SelectionCheckbox
                   className="size-3.5"

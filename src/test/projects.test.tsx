@@ -79,6 +79,19 @@ function fixture(configure?: (data: Snapshot) => void) {
 }
 
 describe('project cleanup selection', () => {
+  it('displays normal Windows paths while keeping the original path for protection', async () => {
+    fixture((data) => {
+      data.inventory.projects = [project('windows', false, 45)]
+      data.inventory.projects[0].path = String.raw`\\?\C:\projects\windows`
+      data.inventory.projects[0].artifacts[0].path = String.raw`\\?\C:\projects\windows\node_modules`
+      data.settings.roots = [String.raw`\\?\C:\projects`]
+    })
+    const path = await screen.findByText(String.raw`C:\projects\windows`)
+    expect(path.getAttribute('title')).toBe(String.raw`C:\projects\windows`)
+    expect(screen.getByText(String.raw`C:\projects`)).toBeTruthy()
+    expect(screen.queryByText(String.raw`\\?\C:\projects\windows`)).toBeNull()
+    expect(screen.getByTitle(String.raw`C:\projects\windows\node_modules`)).toBeTruthy()
+  })
   it('excludes protected projects from bulk cleanup and passes only artifact IDs', async () => {
     const { prepare } = fixture()
     const user = userEvent.setup()

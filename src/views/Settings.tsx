@@ -1,3 +1,4 @@
+import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
 import { FolderPlus, ExternalLink, ShieldCheck, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
@@ -119,14 +120,17 @@ export default function Settings() {
         <CardContent className="space-y-4">
           <div className="divide-y rounded-lg border">
             {settings.roots.map((root) => (
-              <div key={root} className="flex items-center gap-3 p-3">
-                <span className="min-w-0 flex-1 truncate font-mono text-xs" title={root}>
-                  {root}
+              <div key={displayPath(root)} className="flex items-center gap-3 p-3">
+                <span
+                  className="min-w-0 flex-1 truncate font-mono text-xs"
+                  title={displayPath(root)}
+                >
+                  {displayPath(root)}
                 </span>
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label={`${t('移除扫描目录', 'Remove scan folder')} ${root}`}
+                  aria-label={`${t('移除扫描目录', 'Remove scan folder')} ${displayPath(root)}`}
                   disabled={s.busy}
                   onClick={() => patch({ roots: settings.roots.filter((p) => p !== root) })}
                 >
@@ -289,7 +293,7 @@ export default function Settings() {
           <div>
             <p className="text-muted-foreground">{t('数据与操作记录', 'Data & activity')}</p>
             <p className="mt-1 break-all font-mono text-xs">
-              {s.data.dataDir || t('桌面应用中可查看', 'Available in the desktop app')}
+              {displayPath(s.data.dataDir) || t('桌面应用中可查看', 'Available in the desktop app')}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-4">

@@ -1,3 +1,4 @@
+import { displayPath } from '@/lib/paths'
 import { AlertTriangle, CheckCircle2, Trash2, XCircle } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes } from '@/domain'
@@ -83,7 +84,9 @@ export function OperationDialog() {
                     {item.bytes > 0 && <span className="font-mono">{formatBytes(item.bytes)}</span>}
                   </div>
                   {item.path && (
-                    <p className="break-all font-mono text-xs text-muted-foreground">{item.path}</p>
+                    <p className="break-all font-mono text-xs text-muted-foreground">
+                      {displayPath(item.path)}
+                    </p>
                   )}
                   {item.command && (
                     <pre className="whitespace-pre-wrap break-all rounded bg-muted p-2 text-xs">
