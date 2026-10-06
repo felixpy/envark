@@ -271,7 +271,7 @@ it('blocks locked worktree removal using an on-demand reason while allowing arti
   ).toBeNull()
   expect(screen.queryByText('Worktree is locked. Unlock it through Git first.')).toBeNull()
   await userEvent.setup().hover(remove)
-  expect((await screen.findByRole('tooltip')).textContent).toBe(
+  expect((await screen.findByRole('tooltip')).textContent).toContain(
     'Worktree is locked. Unlock it through Git first.',
   )
 })

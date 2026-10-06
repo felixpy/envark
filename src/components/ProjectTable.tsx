@@ -2,9 +2,11 @@ import { Fragment } from 'react'
 import {
   ChevronRight,
   FolderGit2,
+  FolderX,
   GitBranch,
   GitFork,
   LockKeyhole,
+  Shield,
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
@@ -87,7 +89,7 @@ export function ProjectTable({
               <TableHead>{t('最近活动', 'Last activity')}</TableHead>
               <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>
               <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
-              <TableHead>
+              <TableHead className="w-36 pr-4">
                 <span className="sr-only">{t('操作', 'Actions')}</span>
               </TableHead>
             </TableRow>
@@ -208,6 +210,14 @@ function WorkspaceRow({
       (!worktree?.size?.complete
         ? t('请先完成工作树扫描。', 'Complete the worktree scan first.')
         : null)
+  const cleanLabel =
+    familySize !== undefined
+      ? t('全部清理产物', 'Clean group artifacts')
+      : t('清理产物', 'Clean artifacts')
+  const removeLabel = t('移除工作树', 'Remove worktree')
+  const protectLabel = project?.protected
+    ? t('取消保护', 'Unprotect project')
+    : t('保护项目', 'Protect project')
   const protect = async () => {
     if (!project) return
     const settings = s.data.settings
@@ -374,46 +384,46 @@ function WorkspaceRow({
           </p>
         )}
       </TableCell>
-      <TableCell className="text-right">
-        <div className="flex flex-col items-end gap-1">
+      <TableCell className="pr-4 text-right">
+        <div className="inline-grid grid-cols-3 items-center gap-1">
           <ActionButton
             variant="ghost"
-            size="sm"
+            size="icon-sm"
+            className="text-muted-foreground"
+            aria-label={cleanLabel}
+            hint={cleanLabel}
             reason={busyReason || (!ids.length ? excluded || unavailable : null)}
             onClick={() => void s.prepare({ kind: 'cleanProjects', artifactIds: ids })}
           >
-            <Trash2 />
-            {familySize !== undefined
-              ? t('全部清理产物', 'Clean group artifacts')
-              : t('清理产物', 'Clean artifacts')}
+            <Trash2 aria-hidden />
           </ActionButton>
-          {worktree && (
+          {worktree ? (
             <ActionButton
               variant="ghost"
-              size="sm"
-              className="text-xs text-muted-foreground hover:text-destructive"
+              size="icon-sm"
+              className="text-muted-foreground not-aria-disabled:hover:bg-destructive/10 not-aria-disabled:hover:text-destructive"
+              aria-label={removeLabel}
+              hint={removeLabel}
               reason={busyReason || removalReason}
               onClick={() => void s.prepare({ kind: 'removeWorktree', id: worktree.id })}
             >
-              {t('移除工作树', 'Remove worktree')}
+              <FolderX aria-hidden />
             </ActionButton>
+          ) : (
+            <span aria-hidden />
           )}
           {project && (
             <ActionButton
               variant="ghost"
-              size="sm"
+              size="icon-sm"
               reason={busyReason}
-              title={t(
-                '保护项目后，其产物不会进入清理计划。',
-                'Protected project artifacts are excluded from cleanup plans.',
-              )}
-              className="text-xs text-muted-foreground"
+              aria-label={protectLabel}
+              aria-pressed={project.protected}
+              hint={protectLabel}
+              className={project.protected ? 'text-primary' : 'text-muted-foreground'}
               onClick={() => void protect()}
             >
-              <ShieldCheck />
-              {project.protected
-                ? t('取消保护', 'Unprotect project')
-                : t('保护项目', 'Protect project')}
+              {project.protected ? <ShieldCheck aria-hidden /> : <Shield aria-hidden />}
             </ActionButton>
           )}
         </div>
