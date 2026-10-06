@@ -4,7 +4,7 @@ use crate::{
     filesystem::{contained_directory, measure, modified, reject_links},
     model::{
         Artifact, Cache, Inventory, Measurement, Progress, ProgressSink, Project, ProviderId,
-        Settings, now,
+        Settings, Worktree, now,
     },
     process::CommandSpec,
     providers::{self, Context},
@@ -24,6 +24,9 @@ use tokio_util::sync::CancellationToken;
     rename_all_fields = "camelCase"
 )]
 pub enum ActionRequest {
+    RemoveWorktree {
+        id: String,
+    },
     CleanProjects {
         artifact_ids: Vec<String>,
     },
@@ -88,6 +91,10 @@ pub struct PlanView {
 
 #[derive(Debug, Clone)]
 enum Step {
+    Worktree {
+        worktree: Worktree,
+        removal: Option<crate::worktree_removal::Removal>,
+    },
     Project {
         project: Project,
         artifact: Artifact,
@@ -122,6 +129,7 @@ enum Step {
     },
 }
 
+#[derive(Debug)]
 pub struct Plan {
     pub view: PlanView,
     steps: Vec<Step>,
@@ -187,12 +195,22 @@ pub async fn prepare(
     settings: &Settings,
     ctx: &Context,
 ) -> Result<Plan> {
-    let (inventory, settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
-    let plan =
-        tokio::task::spawn_blocking(move || prepare_steps(request, &inventory, &settings, &worker))
-            .await
-            .map_err(|e| Error::Unavailable(e.to_string()))??;
-    for step in &plan.steps {
+    let (inventory, worker_settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
+    let mut plan = tokio::task::spawn_blocking(move || {
+        prepare_steps(request, &inventory, &worker_settings, &worker)
+    })
+    .await
+    .map_err(|e| Error::Unavailable(e.to_string()))??;
+    for (index, step) in plan.steps.iter_mut().enumerate() {
+        if let Step::Worktree { worktree, removal } = step {
+            let (reviewed, ignored) =
+                crate::worktree_removal::prepare(ctx, worktree.clone(), settings.clone()).await?;
+            plan.view.items[index].bytes = reviewed.size.bytes;
+            if ignored {
+                plan.view.warnings.push("This worktree contains ignored files. They will also be permanently removed and cannot be restored from Git.".into());
+            }
+            *removal = Some(reviewed);
+        }
         if let Step::Runtime {
             runtime,
             remove: true,
@@ -238,6 +256,38 @@ fn prepare_steps(
     let is_remove_runtime = matches!(&request, ActionRequest::RemoveRuntime { .. });
     let is_remove_tool = matches!(&request, ActionRequest::RemoveTool { .. });
     match request {
+        ActionRequest::RemoveWorktree { id } => {
+            let worktree = inventory
+                .worktrees
+                .iter()
+                .find(|w| w.id == id)
+                .ok_or_else(|| Error::Conflict("Worktree is no longer in the inventory.".into()))?;
+            let project = inventory
+                .projects
+                .iter()
+                .find(|p| p.id == id)
+                .ok_or_else(|| Error::Conflict("Rescan the worktree before removing it.".into()))?;
+            eligible_project(project, settings)?;
+            if !project.is_worktree || worktree.issue.is_some() || worktree.locked {
+                return Err(Error::Conflict(
+                    "Only healthy, unlocked linked worktrees can be removed.".into(),
+                ));
+            }
+            let size = worktree
+                .size
+                .as_ref()
+                .filter(|s| s.complete)
+                .ok_or_else(|| {
+                    Error::Conflict("Rescan the complete worktree before removing it.".into())
+                })?;
+            view.kind = "removeWorktree".into();
+            view.items.push(PlanItem { title: format!("Remove worktree {}", project.name), path: Some(worktree.path.clone()), command: Some(crate::worktree_removal::removal_command(ctx, worktree)?.display()), bytes: size.bytes, restore: Some("Recreate the checkout with git worktree add. The branch and committed source remain in the main repository.".into()) });
+            view.warnings.push("Git permanently removes this entire checkout without using Trash. Its branch and commits remain in the main repository. Uncommitted and untracked files, locks, links, and nested repositories block removal; force removal is never used.".into());
+            steps.push(Step::Worktree {
+                worktree: worktree.clone(),
+                removal: None,
+            });
+        }
         ActionRequest::UpdateTools { provider, ids } => {
             view.kind = "update".into();
             if ids.len() > 500 {
@@ -736,6 +786,13 @@ pub async fn execute(
             message: title.clone(),
         });
         let outcome = match step {
+            Step::Worktree {
+                removal: Some(removal),
+                ..
+            } => crate::worktree_removal::execute(&ctx, removal, settings.clone()).await,
+            Step::Worktree { removal: None, .. } => Err(Error::Conflict(
+                "Worktree removal was not validated.".into(),
+            )),
             Step::Runtime {
                 runtime,
                 remove,

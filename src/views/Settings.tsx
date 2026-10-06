@@ -230,8 +230,8 @@ export default function Settings() {
             <ShieldCheck className="size-4 shrink-0" />
             <p>
               {t(
-                '源码、锁文件、版本声明、环境变量文件与 Git 数据不会作为清理目标。受保护的项目不可清理。',
-                'Source files, lockfiles, version pins, environment files, and Git data are never cleanup targets. Protected projects cannot be cleaned.',
+                '产物清理保留源码、锁文件、环境配置与 Git 数据。移除工作树会删除整个检出目录，需要单独审阅。受保护的项目不可清理。',
+                'Artifact cleanup preserves source files, lockfiles, environment configuration, and Git data. Removing a worktree deletes its entire checkout and requires a separate review. Protected projects cannot be cleaned.',
               )}
             </p>
           </div>

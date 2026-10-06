@@ -4,27 +4,37 @@ import { Button } from './ui/button'
 import { Checkbox } from './ui/checkbox'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 
-function Availability({ reason, children }: { reason?: string | null; children: ReactElement }) {
+function Availability({
+  reason,
+  hint,
+  children,
+}: {
+  reason?: string | null
+  hint?: string
+  children: ReactElement
+}) {
   const [open, setOpen] = useState(false)
-  if (!reason) return children
-  const explain = (event: SyntheticEvent) => {
+  if (!reason && !hint) return children
+  const explain = (event: SyntheticEvent<HTMLElement>) => {
     event.preventDefault()
     event.stopPropagation()
+    event.currentTarget.focus()
     setOpen(true)
   }
   return (
     <Tooltip open={open} onOpenChange={setOpen} delayDuration={350}>
       <TooltipTrigger
         asChild
-        onClickCapture={explain}
+        onClickCapture={reason ? explain : undefined}
         onKeyDownCapture={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') explain(event)
+          if (reason && (event.key === 'Enter' || event.key === ' ')) explain(event)
         }}
       >
         {children}
       </TooltipTrigger>
       <TooltipContent sideOffset={6} className="max-w-72 text-left leading-relaxed">
-        {reason}
+        {hint && <p className={reason ? 'font-medium' : undefined}>{hint}</p>}
+        {reason && <p className={hint ? 'mt-1' : undefined}>{reason}</p>}
       </TooltipContent>
     </Tooltip>
   )
@@ -32,10 +42,11 @@ function Availability({ reason, children }: { reason?: string | null; children: 
 
 export function ActionButton({
   reason,
+  hint,
   ...props
-}: ComponentProps<typeof Button> & { reason?: string | null }) {
+}: ComponentProps<typeof Button> & { reason?: string | null; hint?: string }) {
   return (
-    <Availability reason={reason}>
+    <Availability reason={reason} hint={hint}>
       <Button
         {...props}
         disabled={reason ? false : props.disabled}

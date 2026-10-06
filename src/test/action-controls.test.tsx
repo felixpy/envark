@@ -4,6 +4,23 @@ import userEvent from '@testing-library/user-event'
 import { ActionButton, SelectionCheckbox } from '@/components/action-controls'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
+it('keeps hinted icon actions accessible and executable through pointer and keyboard', async () => {
+  const action = vi.fn()
+  const user = userEvent.setup()
+  render(
+    <ActionButton aria-label="Clean artifacts" hint="Clean artifacts" onClick={action}>
+      <span aria-hidden>Icon</span>
+    </ActionButton>,
+    { wrapper: TooltipProvider },
+  )
+  const button = screen.getByRole('button', { name: 'Clean artifacts' })
+  await user.hover(button)
+  expect((await screen.findByRole('tooltip')).textContent).toBe('Clean artifacts')
+  await user.click(button)
+  await user.keyboard('{Enter}')
+  expect(action).toHaveBeenCalledTimes(2)
+})
+
 it('explains an unavailable action on hover, focus, and activation without executing it', async () => {
   const action = vi.fn()
   const user = userEvent.setup()

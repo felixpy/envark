@@ -3,9 +3,11 @@ import { Fragment } from 'react'
 import {
   ChevronRight,
   FolderGit2,
+  FolderX,
   GitBranch,
   GitFork,
   LockKeyhole,
+  Shield,
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
@@ -88,7 +90,7 @@ export function ProjectTable({
               <TableHead>{t('最近活动', 'Last activity')}</TableHead>
               <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>
               <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
-              <TableHead>
+              <TableHead className="w-36 pr-4">
                 <span className="sr-only">{t('操作', 'Actions')}</span>
               </TableHead>
             </TableRow>
@@ -178,6 +180,7 @@ function WorkspaceRow({
   const s = useStore()
   const { t } = s
   const project = node.project
+  const worktree = node.worktree
   const busyReason =
     s.busy || s.plan
       ? t(
@@ -200,6 +203,22 @@ function WorkspaceRow({
     : project.protected
       ? t('项目已保护', 'Project is protected')
       : t('没有可安全清理的目录', 'No eligible directories')
+  const removalReason = worktree?.locked
+    ? t('工作树已锁定，请先通过 Git 解锁。', 'Worktree is locked. Unlock it through Git first.')
+    : excluded ||
+      (project?.protected ? t('项目已保护', 'Project is protected') : null) ||
+      (!project ? unavailable : worktree?.issue) ||
+      (!worktree?.size?.complete
+        ? t('请先完成工作树扫描。', 'Complete the worktree scan first.')
+        : null)
+  const cleanLabel =
+    familySize !== undefined
+      ? t('全部清理产物', 'Clean group artifacts')
+      : t('清理产物', 'Clean artifacts')
+  const removeLabel = t('移除工作树', 'Remove worktree')
+  const protectLabel = project?.protected
+    ? t('取消保护', 'Unprotect project')
+    : t('保护项目', 'Protect project')
   const protect = async () => {
     if (!project) return
     const settings = s.data.settings
@@ -249,8 +268,8 @@ function WorkspaceRow({
             variant="outline"
             className="gap-1 text-xs"
             title={t(
-              'Git 已锁定此工作树。Envark 只清理可重建产物，不删除工作树。',
-              'Git locks this worktree. Envark only cleans generated artifacts and never removes the worktree.',
+              'Git 已锁定此工作树，可以清理产物，但不能移除工作树。',
+              'This worktree is locked. Generated artifacts can be cleaned, but the worktree cannot be removed.',
             )}
           >
             <LockKeyhole className="size-3" />
@@ -341,7 +360,18 @@ function WorkspaceRow({
         </div>
       </TableCell>
       <TableCell className="text-right font-mono text-xs">
-        {project ? (
+        {worktree?.size ? (
+          <>
+            {!worktree.size.complete && '≥ '}
+            {formatBytes(worktree.size.bytes)}
+            <span className="ml-1 font-sans text-muted-foreground">{t('总计', 'Total')}</span>
+            {project && (
+              <p className="mt-1 whitespace-nowrap text-[10px] text-muted-foreground">
+                {t('产物', 'Artifacts')} {formatBytes(projectBytes(project))}
+              </p>
+            )}
+          </>
+        ) : project ? (
           <>
             {project.artifacts.some((a) => !a.size.complete) && '≥ '}
             {formatBytes(projectBytes(project))}
@@ -351,37 +381,50 @@ function WorkspaceRow({
         )}
         {familySize !== undefined && (
           <p className="mt-1 whitespace-nowrap text-[10px] text-muted-foreground">
-            {t('含 worktree', 'With worktrees')} {formatBytes(familySize)}
+            {t('产物含 worktree', 'Artifacts with worktrees')} {formatBytes(familySize)}
           </p>
         )}
       </TableCell>
-      <TableCell className="text-right">
-        <div className="flex flex-col items-end gap-1">
+      <TableCell className="pr-4 text-right">
+        <div className="inline-grid grid-cols-3 items-center gap-1">
           <ActionButton
             variant="ghost"
-            size="sm"
+            size="icon-sm"
+            className="text-muted-foreground"
+            aria-label={cleanLabel}
+            hint={cleanLabel}
             reason={busyReason || (!ids.length ? excluded || unavailable : null)}
             onClick={() => void s.prepare({ kind: 'cleanProjects', artifactIds: ids })}
           >
-            <Trash2 />
-            {familySize !== undefined ? t('全部清理', 'Clean group') : t('清理', 'Clean')}
+            <Trash2 aria-hidden />
           </ActionButton>
+          {worktree ? (
+            <ActionButton
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground not-aria-disabled:hover:bg-destructive/10 not-aria-disabled:hover:text-destructive"
+              aria-label={removeLabel}
+              hint={removeLabel}
+              reason={busyReason || removalReason}
+              onClick={() => void s.prepare({ kind: 'removeWorktree', id: worktree.id })}
+            >
+              <FolderX aria-hidden />
+            </ActionButton>
+          ) : (
+            <span aria-hidden />
+          )}
           {project && (
             <ActionButton
               variant="ghost"
-              size="sm"
+              size="icon-sm"
               reason={busyReason}
-              title={t(
-                '保护项目后，其产物不会进入清理计划。',
-                'Protected project artifacts are excluded from cleanup plans.',
-              )}
-              className="text-xs text-muted-foreground"
+              aria-label={protectLabel}
+              aria-pressed={project.protected}
+              hint={protectLabel}
+              className={project.protected ? 'text-primary' : 'text-muted-foreground'}
               onClick={() => void protect()}
             >
-              <ShieldCheck />
-              {project.protected
-                ? t('取消保护', 'Unprotect project')
-                : t('保护项目', 'Protect project')}
+              {project.protected ? <ShieldCheck aria-hidden /> : <Shield aria-hidden />}
             </ActionButton>
           )}
         </div>

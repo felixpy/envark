@@ -138,6 +138,13 @@ export function filterProjectGroups(
     return includeRoot || children.length ? [{ ...group, includeRoot, children }] : []
   })
   const direction = options.sort.endsWith('asc') ? 1 : -1
+  const worktreeSizes = new Map(
+    groups.flatMap((group) =>
+      group.children.flatMap((child) =>
+        child.worktree?.size ? [[child.id, child.worktree.size.bytes] as const] : [],
+      ),
+    ),
+  )
   const bySize = options.sort.startsWith('size')
   const compare = (a: number | null, b: number | null, nameA: string, nameB: string) => {
     if (a === null && b !== null) return 1
@@ -146,7 +153,8 @@ export function filterProjectGroups(
   }
   const value = (projects: Project[]) => {
     if (!projects.length) return null
-    if (bySize) return projects.reduce((sum, p) => sum + projectBytes(p), 0)
+    if (bySize)
+      return projects.reduce((sum, p) => sum + (worktreeSizes.get(p.id) ?? projectBytes(p)), 0)
     const times = projects.flatMap((p) => (p.lastActive === null ? [] : [p.lastActive]))
     return times.length ? Math.max(...times) : null
   }
