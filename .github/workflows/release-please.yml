@@ -63,6 +63,8 @@ jobs:
     with:
       ref: ${{ needs.prepare.outputs.sha }}
       release-tag: ${{ needs.prepare.outputs.tag }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
 
   publish:
     needs: [prepare, desktop]

@@ -9,6 +9,9 @@ on:
       release-tag:
         type: string
         default: ''
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: false
 
 permissions:
   contents: read
@@ -30,11 +33,11 @@ jobs:
           - name: macOS Apple Silicon
             os: macos-latest
             target: aarch64-apple-darwin
-            bundle: dmg
+            bundle: app,dmg
           - name: macOS Intel
             os: macos-latest
             target: x86_64-apple-darwin
-            bundle: dmg
+            bundle: app,dmg
           - name: Ubuntu x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -77,9 +80,17 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
       - name: Build native installers
+        if: inputs.release-tag == ''
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} --ci --config src-tauri/tauri.ci.conf.json
+        env:
+          NO_STRIP: true
+      - name: Build signed release installers
+        if: inputs.release-tag != ''
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundle }} --ci
         env:
           NO_STRIP: true
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: envark-${{ matrix.target }}
@@ -88,6 +99,10 @@ jobs:
           retention-days: 14
           path: |
             target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/deb/*.deb
             target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig

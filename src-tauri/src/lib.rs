@@ -8,6 +8,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use tauri::{Emitter, Manager, State};
 mod links;
 mod menu;
+mod updates;
 
 type NativeResult<T> = std::result::Result<T, String>;
 
@@ -47,13 +48,6 @@ async fn save_settings(
             .map_err(|e| e.to_string())?;
     }
     Ok(snapshot)
-}
-
-#[tauri::command]
-async fn check_app_update() -> NativeResult<envark_core::app_release::AppRelease> {
-    envark_core::app_release::check(env!("CARGO_PKG_VERSION"))
-        .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -170,6 +164,8 @@ async fn save_config(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updates::UpdateState::default())
         .plugin(
             tauri_plugin_opener::Builder::new()
                 .open_js_links_on_click(false)
@@ -207,7 +203,9 @@ pub fn run() {
             read_config,
             save_config,
             links::open_app_link,
-            check_app_update,
+            updates::check_app_update,
+            updates::install_app_update,
+            updates::restart_after_update,
             set_app_theme,
             set_disabled_shortcuts,
             sync_view_state
