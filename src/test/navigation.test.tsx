@@ -10,6 +10,7 @@ async function fixture(native = false) {
   data.platform = 'windows'
   data.settings.language = 'en'
   data.settings.scanOnLaunch = false
+  data.settings.checkUpdates = false
   data.settings.roots = ['/repos']
   data.inventory.scannedAt = Date.now() / 1000
   const repository = { id: 'repo', name: 'main-repo', path: '/repos/main-repo' }
