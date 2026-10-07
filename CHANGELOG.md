@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/felixpy/envark/compare/v0.3.0...v0.3.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **desktop:** improve startup defaults and inventory usability ([#27](https://github.com/felixpy/envark/issues/27)) ([98f1124](https://github.com/felixpy/envark/commit/98f11249deedafad4b194603f8a043b2165345d9))
+
 ## [0.3.0](https://github.com/felixpy/envark/compare/v0.2.1...v0.3.0) (2026-10-06)
 
 
