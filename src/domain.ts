@@ -218,10 +218,10 @@ export interface OperationResult {
 }
 
 export const defaultSettings: Settings = {
-  language: 'zh-CN',
+  language: 'en',
   theme: 'system',
   scanOnLaunch: true,
-  checkUpdates: false,
+  checkUpdates: true,
   roots: [],
   excludes: ['.git', '.svn', '.hg'],
   idleDays: 90,

@@ -39,6 +39,7 @@ import { EcoDot, Spinner } from './components/shared'
 import { OperationDialog } from './components/OperationDialog'
 import { DesktopMenu } from './components/DesktopMenu'
 import { AppUpdateProvider } from './components/AppUpdates'
+import { progressLabel } from './lib/progress'
 const Overview = lazy(() => import('./views/Overview'))
 const Catalog = lazy(() => import('./views/Catalog'))
 const Environments = lazy(() => import('./views/Environments'))
@@ -60,9 +61,10 @@ function Shell() {
   const current = navigation.find((n) => n.id === s.view)?.label ?? t('设置', 'Settings')
   const disk =
     data.inventory.disks.find((d) => data.dataDir.startsWith(d.mount)) ?? data.inventory.disks[0]
+  const status = progressLabel(s.progress, t, Boolean(s.plan))
   return (
     <TooltipProvider>
-      <SidebarProvider keyboardShortcutEnabled={false}>
+      <SidebarProvider keyboardShortcutEnabled={false} className="h-svh min-h-0 overflow-hidden">
         <Sidebar variant="inset">
           <SidebarHeader>
             <SidebarMenu>
@@ -176,7 +178,7 @@ function Shell() {
             </div>
           </SidebarFooter>
         </Sidebar>
-        <SidebarInset className="min-w-0">
+        <SidebarInset className="min-h-0 min-w-0 overflow-hidden md:mb-4">
           <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
             <Separator
@@ -200,8 +202,13 @@ function Shell() {
               {s.busy ? (
                 <>
                   <Spinner />
-                  <span className="max-w-64 truncate text-xs text-muted-foreground">
-                    {s.progress?.message ?? t('正在扫描', 'Scanning')}
+                  <span
+                    role="status"
+                    aria-live="polite"
+                    title={status}
+                    className="max-w-64 truncate text-xs text-muted-foreground"
+                  >
+                    {status}
                   </span>
                   <Button
                     variant="ghost"
@@ -241,17 +248,23 @@ function Shell() {
               {s.error}
             </div>
           )}
-          <div className="mx-auto w-full max-w-6xl flex-1 p-6 lg:p-8">
-            {!s.loaded ? (
-              <div className="flex gap-2 text-sm">
-                <Spinner />
-                {t('加载中…', 'Loading…')}
-              </div>
-            ) : (
-              <Suspense fallback={<Spinner />}>
-                <Page key={s.navigationKey} view={s.view} />
-              </Suspense>
-            )}
+          <div
+            key={s.navigationKey}
+            className="min-h-0 flex-1 overflow-auto overscroll-contain"
+            data-slot="page-scroll"
+          >
+            <div className="mx-auto w-full max-w-6xl p-6 lg:p-8">
+              {!s.loaded ? (
+                <div className="flex gap-2 text-sm">
+                  <Spinner />
+                  {t('加载中…', 'Loading…')}
+                </div>
+              ) : (
+                <Suspense fallback={<Spinner />}>
+                  <Page key={s.navigationKey} view={s.view} />
+                </Suspense>
+              )}
+            </div>
           </div>
         </SidebarInset>
         <DesktopMenu />

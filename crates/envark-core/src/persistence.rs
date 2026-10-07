@@ -175,6 +175,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn saved_preferences_override_new_startup_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let storage = Storage::new(root.path().into()).unwrap();
+        for language in ["en", "zh-TW"] {
+            let settings = Settings {
+                language: language.into(),
+                roots: Vec::new(),
+                check_updates: false,
+                scan_on_launch: false,
+                ..Settings::default()
+            };
+            storage.save_settings(&settings).unwrap();
+            let reopened = Storage::new(root.path().into())
+                .unwrap()
+                .settings()
+                .unwrap();
+            assert_eq!(reopened.language, language);
+            assert!(reopened.roots.is_empty());
+            assert!(!reopened.check_updates);
+            assert!(!reopened.scan_on_launch);
+        }
+    }
+
+    #[test]
     fn damaged_and_future_data_are_preserved_before_recovery() {
         let root = tempfile::tempdir().unwrap();
         let storage = Storage::new(root.path().into()).unwrap();

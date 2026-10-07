@@ -142,7 +142,13 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
 }
 
 fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Option<String>) {
-    for (path, manifest) in package_manifests(root) {
+    // Version managers and npm can report the same prefix through different
+    // aliases (including Windows verbatim paths). Resolve the root once while
+    // preserving package symlinks and the owning runtime for safe operations.
+    let Ok(root) = std::fs::canonicalize(root) else {
+        return;
+    };
+    for (path, manifest) in package_manifests(&root) {
         let Some(name) = manifest["name"].as_str() else {
             continue;
         };
@@ -170,5 +176,72 @@ fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Opt
             && !["npm", "pnpm", "corepack", "yarn"].contains(&name);
         tool.note = manifest["description"].as_str().map(str::to_owned);
         provider.tools.push(tool);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(root: &Path) {
+        let path = root.join("@test/cli");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(
+            path.join("package.json"),
+            r#"{"name":"@test/cli","version":"1.0.0"}"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn repeated_global_prefix_aliases_are_deduplicated_without_merging_other_runtimes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("node-24/node_modules");
+        package(&root);
+        let mut provider = Provider::empty(ProviderId::Js);
+        add_packages(&mut provider, &root, "npm", Some("Node 24".into()));
+        add_packages(
+            &mut provider,
+            &root.join("../node_modules"),
+            "npm",
+            Some("Node 24".into()),
+        );
+        add_packages(
+            &mut provider,
+            &std::fs::canonicalize(&root).unwrap(),
+            "npm",
+            Some("Node 24".into()),
+        );
+        assert_eq!(provider.tools.len(), 1);
+        assert_eq!(provider.tools[0].runtime.as_deref(), Some("Node 24"));
+        assert!(provider.tools[0].can_remove);
+        let other = temp.path().join("node-22/node_modules");
+        package(&other);
+        add_packages(&mut provider, &other, "npm", Some("Node 22".into()));
+        assert_eq!(provider.tools.len(), 2);
+        assert_ne!(provider.tools[0].id, provider.tools[1].id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alias_roots_do_not_hide_linked_package_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("node_modules");
+        std::fs::create_dir(&root).unwrap();
+        package(temp.path());
+        std::os::unix::fs::symlink(temp.path().join("@test/cli"), root.join("linked-cli")).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let mut provider = Provider::empty(ProviderId::Js);
+        add_packages(&mut provider, &alias, "npm", Some("Node 24".into()));
+        add_packages(&mut provider, &root, "npm", Some("Node 24".into()));
+        assert_eq!(provider.tools.len(), 1);
+        assert!(!provider.tools[0].can_update);
+        assert!(
+            std::fs::symlink_metadata(provider.tools[0].path.as_ref().unwrap())
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

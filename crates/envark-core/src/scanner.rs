@@ -345,6 +345,13 @@ pub(crate) fn scan_roots(
     let mut artifacts = std::collections::HashSet::new();
     let mut repositories = std::collections::HashSet::new();
     let mut last_report = Instant::now();
+    progress(Progress {
+        job_id: job_id.into(),
+        stage: "discover".into(),
+        completed: 0,
+        total: None,
+        message: "Scanning Git repositories".into(),
+    });
 
     while let Some(root) = roots.pop_front() {
         if index.contains_key(&root) {
@@ -501,7 +508,7 @@ pub(crate) fn scan_roots(
                     stage: "discover".into(),
                     completed: result.visited,
                     total: None,
-                    message: format!("{} projects", result.projects.len()),
+                    message: format!("Scanning projects: {} paths checked", result.visited),
                 });
                 last_report = Instant::now();
             }
@@ -512,6 +519,13 @@ pub(crate) fn scan_roots(
         .num_threads(4)
         .build()
         .map_err(|e| Error::Unavailable(e.to_string()))?;
+    progress(Progress {
+        job_id: job_id.into(),
+        stage: "measure-projects".into(),
+        completed: 0,
+        total: Some(result.projects.len() as u64),
+        message: "Measuring project artifacts".into(),
+    });
     let issues: Vec<String> = pool.install(|| {
         result
             .projects
@@ -538,6 +552,13 @@ pub(crate) fn scan_roots(
     result.issues.extend(issues);
     // Measure the entire checkout, including source and ignored files. Only a
     // successfully scanned, in-scope worktree may become a measurement root.
+    progress(Progress {
+        job_id: job_id.into(),
+        stage: "measure-worktrees".into(),
+        completed: 0,
+        total: Some(result.worktrees.len() as u64),
+        message: "Measuring linked worktrees".into(),
+    });
     let issues: Vec<String> = pool.install(|| {
         result
             .worktrees
@@ -565,7 +586,7 @@ pub(crate) fn scan_roots(
     result.elapsed_ms = started.elapsed().as_millis();
     progress(Progress {
         job_id: job_id.into(),
-        stage: "complete".into(),
+        stage: "projects-complete".into(),
         completed: result.projects.len() as u64,
         total: Some(result.projects.len() as u64),
         message: format!("{} entries in {} ms", result.visited, result.elapsed_ms),
@@ -602,6 +623,35 @@ mod tests {
         git::init(&root.path().join("backend"));
         git::init(&root.path().join("excluded"));
         root
+    }
+
+    #[test]
+    fn reports_project_phases_without_completing_the_entire_refresh() {
+        let root = fixture();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let result = scan(
+            &Settings {
+                roots: vec![fs::canonicalize(root.path()).unwrap()],
+                ..Settings::default()
+            },
+            &CancellationToken::new(),
+            std::sync::Arc::new(move |event| captured.lock().unwrap().push(event)),
+            "test",
+        )
+        .unwrap();
+        let events = events.lock().unwrap();
+        assert_eq!(events.first().unwrap().stage, "discover");
+        assert!(events.iter().any(|event| event.stage == "measure-projects"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event.stage == "measure-worktrees")
+        );
+        let last = events.last().unwrap();
+        assert_eq!(last.stage, "projects-complete");
+        assert_eq!(last.completed, result.projects.len() as u64);
+        assert!(!events.iter().any(|event| event.stage == "complete"));
     }
 
     #[test]

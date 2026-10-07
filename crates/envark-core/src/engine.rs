@@ -242,6 +242,13 @@ impl Engine {
             });
             providers::updates::check(&mut discovered.providers, &token).await;
         }
+        progress(Progress {
+            job_id: job_id.into(),
+            stage: "measure-caches".into(),
+            completed: 0,
+            total: Some(discovered.caches.len() as u64),
+            message: "Measuring shared caches".into(),
+        });
         let measurement_token = token.clone();
         discovered.caches = tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
