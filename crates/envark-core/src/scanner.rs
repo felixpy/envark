@@ -632,7 +632,7 @@ mod tests {
         let captured = events.clone();
         let result = scan(
             &Settings {
-                roots: vec![root.path().into()],
+                roots: vec![fs::canonicalize(root.path()).unwrap()],
                 ..Settings::default()
             },
             &CancellationToken::new(),
