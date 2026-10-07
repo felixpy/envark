@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 import App from '@/App'
 import { backend, type Backend } from '@/bridge'
-import { emptySnapshot, emptyProvider, type Project, type Settings } from '@/domain'
+import { emptySnapshot, emptyProvider, type Progress, type Project, type Settings } from '@/domain'
 
 async function fixture(native = false) {
   const data = structuredClone(emptySnapshot)
@@ -59,6 +59,7 @@ async function fixture(native = false) {
   js.detected = true
   data.inventory.providers = [js, emptyProvider('py')]
   let menu: ((action: string) => void) | undefined
+  let progress: ((event: Progress) => void) | undefined
   const refresh = vi.fn(async () => data)
   const syncViewState = vi.fn(async () => {})
   const openAppLink = vi.fn(async () => {})
@@ -79,6 +80,12 @@ async function fixture(native = false) {
     saveSettings: async (settings) => {
       data.settings = settings
       return { ...data }
+    },
+    subscribe: async (handler) => {
+      progress = handler
+      return () => {
+        progress = undefined
+      }
     },
     subscribeMenu: async (handler) => {
       menu = handler
@@ -105,8 +112,37 @@ async function fixture(native = false) {
       app = await mount()
     },
     menu: (action: string) => act(() => menu?.(action)),
+    progress: (stage: string, completed = 0) =>
+      act(() =>
+        progress?.({ jobId: 'scan', stage, completed, total: null, message: '7 projects' }),
+      ),
   }
 }
+
+it('describes the active scan phase independently of the current page', async () => {
+  const { refresh, menu, progress } = await fixture(true)
+  let finish!: () => void
+  refresh.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve(structuredClone(emptySnapshot))
+      }),
+  )
+  await screen.findByRole('heading', { name: 'Overview' })
+  menu('refresh')
+  await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+  progress('discover', 42)
+  expect(screen.getByRole('status').textContent).toBe('Scanning projects · 42 paths checked')
+  menu('activity')
+  await screen.findByRole('heading', { name: 'Activity' })
+  expect(screen.getByRole('status').textContent).toBe('Scanning projects · 42 paths checked')
+  progress('updates')
+  expect(screen.getByRole('status').textContent).toBe('Checking tool updates')
+  progress('measure-caches')
+  expect(screen.getByRole('status').textContent).toBe('Measuring caches')
+  await act(async () => finish())
+  expect(screen.queryByRole('status')).toBeNull()
+})
 
 it('overview cards and suggested rows open the correct destinations with idle filters', async () => {
   await fixture()
