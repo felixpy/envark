@@ -2,7 +2,7 @@ name: Build desktop applications
 
 on:
   push:
-    branches: [main]
+    branches: [main, fix/fel-23-macos-signing]
   pull_request:
   workflow_dispatch:
 
