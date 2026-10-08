@@ -1,6 +1,6 @@
 use crate::{
     Error, Result,
-    filesystem::{is_link, measure, reject_links},
+    filesystem::{measure_with, reject_links},
     git,
     model::{Measurement, Settings, Worktree},
     operations::WorktreeFileChange,
@@ -15,7 +15,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub(crate) struct Removal {
@@ -43,7 +42,7 @@ fn validate(worktree: &Worktree, settings: &Settings) -> Result<git::Checkout> {
         .protected_projects
         .iter()
         .filter_map(|p| fs::canonicalize(p).ok())
-        .any(|p| path.starts_with(p))
+        .any(|p| path.starts_with(&p) || p.starts_with(&path))
     {
         return Err(Error::unsafe_path(&path, "worktree is protected"));
     }
@@ -196,32 +195,39 @@ async fn inspect(ctx: &Context, worktree: &Worktree) -> Result<(String, String)>
     Ok((head.stdout.trim().to_owned(), status.stdout))
 }
 
-fn measure_removal(worktree: &Worktree, ctx: &Context) -> Result<Measurement> {
-    for entry in WalkDir::new(&worktree.path)
-        .follow_links(false)
-        .max_open(16)
-    {
-        if ctx.cancel.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        let entry = entry.map_err(|e| Error::Unavailable(e.to_string()))?;
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if is_link(&metadata)
-            || (entry.file_name() == ".git" && entry.path() != worktree.path.join(".git"))
+fn measure_removal(
+    worktree: &Worktree,
+    ctx: &Context,
+) -> Result<(Measurement, Vec<WorktreeFileChange>)> {
+    let mut nested = vec![];
+    let size = measure_with(&worktree.path, &ctx.cancel, |path, metadata| {
+        if path.file_name().is_some_and(|name| name == ".git") && path != worktree.path.join(".git")
         {
-            return Err(Error::unsafe_path(
-                entry.path(),
-                "worktree contains a link, nested repository, or submodule; remove it through Git manually",
-            ));
+            nested.push(WorktreeFileChange {
+                path: path
+                    .parent()
+                    .unwrap_or(path)
+                    .strip_prefix(&worktree.path)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned(),
+                original_path: None,
+                status: if metadata.is_dir() {
+                    "repository"
+                } else {
+                    "submodule"
+                }
+                .into(),
+            });
         }
-    }
-    let size = measure(&worktree.path, &ctx.cancel)?;
+        Ok(())
+    })?;
     if !size.complete {
         return Err(Error::Conflict(
             "Worktree size could not be measured completely. Check permissions and rescan.".into(),
         ));
     }
-    Ok(size)
+    Ok((size, nested))
 }
 
 pub(crate) fn removal_command(
@@ -247,9 +253,9 @@ pub(crate) async fn prepare(
 ) -> Result<(Removal, bool)> {
     let worker = ctx.clone();
     let item = worktree.clone();
-    let (checkout, size, index_digest) = tokio::task::spawn_blocking(move || {
+    let (checkout, size, nested, index_digest) = tokio::task::spawn_blocking(move || {
         let checkout = validate(&item, &settings)?;
-        let size = measure_removal(&item, &worker)?;
+        let (size, nested) = measure_removal(&item, &worker)?;
         let scanned = item
             .size
             .as_ref()
@@ -260,12 +266,13 @@ pub(crate) async fn prepare(
             ));
         }
         let digest = index_digest(&checkout.git_dir, &worker)?;
-        Ok::<_, Error>((checkout, size, digest))
+        Ok::<_, Error>((checkout, size, nested, digest))
     })
     .await
     .map_err(|e| Error::Unavailable(e.to_string()))??;
     let (head, status) = inspect(ctx, &worktree).await?;
-    let (changes, ignored) = parse_status(&status)?;
+    let (mut changes, ignored) = parse_status(&status)?;
+    changes.extend(nested);
     Ok((
         Removal {
             worktree,
@@ -299,7 +306,7 @@ pub(crate) async fn execute(
         if checkout.git_dir != reviewed.git_dir
             || checkout.common_dir != reviewed.common_dir
             || index_digest(&checkout.git_dir, &worker)? != reviewed.index_digest
-            || measure_removal(&reviewed.worktree, &worker)?.fingerprint
+            || measure_removal(&reviewed.worktree, &worker)?.0.fingerprint
                 != reviewed.size.fingerprint
         {
             return Err(Error::Conflict(

@@ -377,15 +377,21 @@ async fn revalidates_git_head_and_registration_after_review() {
 async fn nested_repositories_and_cancellation_preserve_the_checkout() {
     let fixture = Fixture::new();
     git::init(&fixture.linked.join("vendor"));
+    let plan = fixture.plan().await.unwrap();
     assert!(
-        fixture
-            .plan()
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("nested repository")
+        plan.view.worktree_changes[0]
+            .files
+            .iter()
+            .any(|f| f.status == "repository" && f.path == "vendor")
+    );
+    assert_eq!(
+        fixture.execute(plan, fixture.settings.clone()).await.items[0].status,
+        "skipped"
     );
     assert!(fixture.linked.join("vendor/.git").is_dir());
+    let plan = fixture.plan().await.unwrap();
+    assert_eq!(fixture.discard(plan).await.items[0].status, "success");
+    assert!(!fixture.linked.exists());
     let fixture = Fixture::new();
     let plan = fixture.plan().await.unwrap();
     fixture.ctx.cancel.cancel();
@@ -503,4 +509,80 @@ async fn batch_discard_removes_both_changed_and_clean_reviewed_worktrees() {
     );
     assert!(!fixture.linked.exists() && !second.exists());
     assert!(fixture.main.join("source.rs").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dependency_links_are_removed_without_following_external_targets() {
+    let fixture = Fixture::new();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("keep.txt"), "outside content").unwrap();
+    let bin = fixture.linked.join("node_modules/.bin");
+    fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("keep.txt"), bin.join("is-docker")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), bin.join("outside-dir")).unwrap();
+    std::os::unix::fs::symlink("missing", bin.join("broken")).unwrap();
+    fs::write(bin.join("zz-after-links"), "must be measured").unwrap();
+    let plan = fixture.plan().await.unwrap();
+    assert!(plan.view.worktree_changes.is_empty());
+    let result = fixture.execute(plan, fixture.settings.clone()).await;
+    assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+    assert_eq!(
+        fs::read_to_string(outside.path().join("keep.txt")).unwrap(),
+        "outside content"
+    );
+    assert!(!fixture.linked.exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn changed_links_and_protected_descendants_block_removal() {
+    let mut fixture = Fixture::new();
+    let link = fixture.linked.join("node_modules/link");
+    std::os::unix::fs::symlink("before", &link).unwrap();
+    let plan = fixture.plan().await.unwrap();
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink("after", &link).unwrap();
+    assert_eq!(fixture.discard(plan).await.items[0].status, "failed");
+    fixture
+        .settings
+        .protected_projects
+        .push(fixture.linked.join("node_modules"));
+    assert!(fixture.plan().await.is_err());
+}
+
+#[tokio::test]
+async fn submodules_require_discard_confirmation_and_preserve_the_external_repository() {
+    let fixture = Fixture::new();
+    let source = tempfile::tempdir().unwrap();
+    git::init(source.path());
+    fs::write(source.path().join("keep.txt"), "external source").unwrap();
+    git_command(source.path(), &["add", "."]);
+    git_command(source.path(), &["commit", "-qm", "source"]);
+    git_command(
+        &fixture.linked,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            source.path().to_str().unwrap(),
+            "module",
+        ],
+    );
+    git_command(&fixture.linked, &["commit", "-qam", "module"]);
+    let plan = fixture.plan().await.unwrap();
+    assert!(
+        plan.view.worktree_changes[0]
+            .files
+            .iter()
+            .any(|f| f.status == "submodule")
+    );
+    assert_eq!(
+        fixture.execute(plan, fixture.settings.clone()).await.items[0].status,
+        "skipped"
+    );
+    let result = fixture.discard(fixture.plan().await.unwrap()).await;
+    assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+    assert!(source.path().join("keep.txt").exists());
 }
