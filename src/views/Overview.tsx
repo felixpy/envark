@@ -1,3 +1,4 @@
+import { displayDiagnostic } from '@/lib/paths'
 import {
   Archive,
   ArrowRight,
@@ -125,7 +126,7 @@ export default function Overview() {
           {
             icon: AlertTriangle,
             title: `${inventory.issues.length} ${t('项扫描提示', 'scan notices')}`,
-            description: inventory.issues[0],
+            description: displayDiagnostic(inventory.issues[0]),
             cta: t('查看详情', 'View details'),
             action: () => s.go('activity'),
           },
@@ -195,8 +196,8 @@ export default function Overview() {
           </button>
         ))}
       </div>
-      <div className="grid grid-cols-[1fr_340px] gap-4 max-lg:grid-cols-1">
-        <Card className="shadow-none">
+      <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-4 max-lg:grid-cols-1">
+        <Card className="min-w-0 shadow-none">
           <CardHeader>
             <CardTitle>{t('建议任务', 'Suggested tasks')}</CardTitle>
             <CardDescription>
@@ -248,7 +249,7 @@ export default function Overview() {
             )}
           </CardContent>
         </Card>
-        <Card className="shadow-none">
+        <Card className="min-w-0 shadow-none">
           <CardHeader>
             <CardTitle>{t('空间分布', 'Space distribution')}</CardTitle>
             <CardDescription>
@@ -288,7 +289,7 @@ export default function Overview() {
         </Card>
       </div>
       <div className="grid grid-cols-2 gap-4 max-lg:grid-cols-1">
-        <Card className="shadow-none">
+        <Card className="min-w-0 shadow-none">
           <CardHeader>
             <CardTitle>{t('当前运行时', 'Current runtimes')}</CardTitle>
             <CardAction>
@@ -321,7 +322,7 @@ export default function Overview() {
             )}
           </CardContent>
         </Card>
-        <Card className="shadow-none">
+        <Card className="min-w-0 shadow-none">
           <CardHeader>
             <CardTitle>{t('最近操作', 'Recent activity')}</CardTitle>
             <CardAction>
