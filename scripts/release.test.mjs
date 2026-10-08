@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { checkVersions } from './check-versions.mjs'
-import { collectAssets, targets, updaterManifest } from './publish-release.mjs'
+import {
+  collectAssets,
+  prepareReleaseAssets,
+  targets,
+  updaterManifest,
+  verifyReleaseUploads,
+} from './publish-release.mjs'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { findReleaseByTag, getReleaseById } from './release-github.mjs'
 
@@ -164,7 +171,7 @@ test('publishing requires every installer, updater bundle, and signature', (t) =
   assert.throws(() => collectAssets(root, version))
 })
 
-test('updater manifests verify signatures, distinguish macOS architectures, and reject tampering', (t) => {
+function signedFixture(t) {
   const root = fixture(t)
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const id = Buffer.from('0102030405060708', 'hex')
@@ -207,6 +214,11 @@ test('updater manifests verify signatures, distinguish macOS architectures, and 
       }
     }
   }
+  return { root, encodedKey }
+}
+
+test('updater manifests verify signatures, distinguish macOS architectures, and reject tampering', (t) => {
+  const { root, encodedKey } = signedFixture(t)
   const assets = collectAssets(root, '0.3.0')
   const manifest = updaterManifest(
     assets,
@@ -237,3 +249,151 @@ test('updater manifests verify signatures, distinguish macOS architectures, and 
     /signature is invalid/,
   )
 })
+
+test('public release assets omit sidecars while preserving every updater signature and URL', (t) => {
+  const { root, encodedKey } = signedFixture(t)
+  const assets = prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey)
+  assert.equal(assets.length, 9)
+  assert.ok(assets.every((asset) => !asset.name.endsWith('.sig')))
+  const buildAssets = collectAssets(root, '0.3.0')
+  const manifest = JSON.parse(readFileSync(join(root, 'latest.json'), 'utf8'))
+  assert.equal(Object.keys(manifest.platforms).length, 4)
+  for (const { url, signature } of Object.values(manifest.platforms)) {
+    const name = decodeURIComponent(new URL(url).pathname.split('/').at(-1))
+    const published = assets.find((asset) => asset.name === name)
+    assert.ok(published, `Updater download must be published: ${name}`)
+    const sidecar = buildAssets.find((asset) => asset.name === `${name}.sig`)
+    assert.equal(signature, readFileSync(sidecar.path, 'utf8').trim())
+  }
+  const checksums = readFileSync(join(root, 'SHA256SUMS'), 'utf8').trim().split('\n')
+  assert.equal(checksums.length, 8)
+  assert.ok(checksums.every((line) => !line.endsWith('.sig')))
+  for (const line of checksums) {
+    const [digest, name] = line.split('  ')
+    const asset = assets.find((item) => item.name === name)
+    assert.ok(asset)
+    assert.equal(digest, createHash('sha256').update(readFileSync(asset.path)).digest('hex'))
+  }
+})
+
+test('release preparation still rejects missing signatures and tampered installers', (t) => {
+  const { root, encodedKey } = signedFixture(t)
+  const assets = collectAssets(root, '0.3.0')
+  const installer = assets.find((asset) => asset.name.endsWith('.exe'))
+  const original = readFileSync(installer.path)
+  writeFileSync(installer.path, 'tampered')
+  assert.throws(
+    () => prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey),
+    /signature is invalid/,
+  )
+  writeFileSync(installer.path, original)
+  rmSync(`${installer.path}.sig`)
+  assert.throws(
+    () => prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey),
+    /Unexpected installer count/,
+  )
+})
+
+test('draft recovery only retires known sidecars after validating public uploads', (t) => {
+  const { root, encodedKey } = signedFixture(t)
+  const assets = prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey)
+  const uploaded = assets.map((asset) => ({ ...asset, state: 'uploaded' }))
+  assert.deepEqual(verifyReleaseUploads(uploaded, assets), [])
+  const sidecars = collectAssets(root, '0.3.0').filter((asset) => asset.name.endsWith('.sig'))
+  assert.equal(sidecars.length, 4)
+  assert.deepEqual(verifyReleaseUploads([...uploaded, ...sidecars], assets), sidecars)
+  assert.throws(
+    () => verifyReleaseUploads([...uploaded, ...sidecars, { name: 'unrelated.sig' }], assets),
+    /Unexpected assets/,
+  )
+  assert.throws(() => verifyReleaseUploads(uploaded.slice(1), assets), /Unexpected assets/)
+  uploaded[0].digest = `sha256:${'0'.repeat(64)}`
+  assert.throws(() => verifyReleaseUploads([...uploaded, ...sidecars], assets), /Checksum mismatch/)
+})
+
+test(
+  'macOS packaging checks reject missing resource seals and invalid signatures',
+  {
+    skip: process.platform === 'win32',
+  },
+  (t) => {
+    const root = fixture(t)
+    const bundle = join(root, 'bundle with spaces')
+    const app = join(bundle, 'macos', 'Envark.app')
+    const dmgApp = join(root, 'disk image payload', 'Envark.app')
+    const sealPath = (path) => join(path, 'Contents', '_CodeSignature', 'CodeResources')
+    for (const path of [app, dmgApp]) {
+      mkdirSync(dirname(sealPath(path)), { recursive: true })
+      writeFileSync(sealPath(path), 'fixture seal')
+    }
+    const archive = join(bundle, 'macos', 'Envark.app.tar.gz')
+    const pack = () =>
+      execFileSync('tar', ['-czf', archive, '-C', dirname(app), 'Envark.app'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    pack()
+    mkdirSync(join(bundle, 'dmg'))
+    writeFileSync(join(bundle, 'dmg', 'Envark.dmg'), 'fixture image')
+    const bin = join(root, 'bin')
+    const log = join(root, 'verification.log')
+    mkdirSync(bin)
+    // Apple tools are mocked on non-macOS hosts; real signatures are checked in CI.
+    writeFileSync(
+      join(bin, 'codesign'),
+      `#!/usr/bin/env bash
+set -eu
+echo "codesign $*" >> "$VERIFY_LOG"
+if [[ -n "$FAIL_COPY" && "$*" == *"$FAIL_COPY"* ]]; then exit 1; fi
+`,
+      { mode: 0o755 },
+    )
+    writeFileSync(
+      join(bin, 'hdiutil'),
+      `#!/usr/bin/env bash
+set -eu
+echo "hdiutil $*" >> "$VERIFY_LOG"
+if [[ "$1" == attach ]]; then cp -R "$VERIFY_DMG_APP" "$6/Envark.app"; fi
+`,
+      { mode: 0o755 },
+    )
+    function run(extra = {}) {
+      writeFileSync(log, '')
+      return spawnSync('bash', [resolve('scripts/verify-macos-bundles.sh'), bundle], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          VERIFY_LOG: log,
+          VERIFY_DMG_APP: dmgApp,
+          FAIL_COPY: '',
+          REQUIRE_UPDATER_ARCHIVE: 'true',
+          ...extra,
+        },
+      })
+    }
+    const success = run()
+    assert.equal(success.status, 0, success.stderr)
+    const commands = readFileSync(log, 'utf8')
+    assert.equal(commands.split('\n').filter((line) => line.startsWith('codesign ')).length, 3)
+    assert.match(commands, /hdiutil detach/)
+    for (const copy of ['/macos/', '/updater/', '/dmg/']) {
+      assert.notEqual(run({ FAIL_COPY: copy }).status, 0)
+      if (copy === '/dmg/') assert.match(readFileSync(log, 'utf8'), /hdiutil detach/)
+      else assert.doesNotMatch(readFileSync(log, 'utf8'), /hdiutil attach/)
+    }
+    rmSync(sealPath(app))
+    assert.match(run().stderr, /Missing application resource seal/)
+    pack()
+    writeFileSync(sealPath(app), 'fixture seal')
+    assert.match(run().stderr, /Missing application resource seal/)
+    pack()
+    rmSync(sealPath(dmgApp))
+    assert.match(run().stderr, /Missing application resource seal/)
+    assert.match(readFileSync(log, 'utf8'), /hdiutil detach/)
+    writeFileSync(sealPath(dmgApp), 'fixture seal')
+    rmSync(archive)
+    assert.notEqual(run().status, 0, 'Release builds require an updater archive')
+    assert.equal(run({ REQUIRE_UPDATER_ARCHIVE: 'false' }).status, 0)
+  },
+)

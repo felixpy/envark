@@ -29,6 +29,9 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Developer environment and space manager",
+    "macOS": {
+      "signingIdentity": "-"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
