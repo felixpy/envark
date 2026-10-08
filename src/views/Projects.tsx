@@ -110,60 +110,66 @@ export default function Projects() {
           <TabsTrigger value="worktrees">{t('工作树', 'Worktrees')}</TabsTrigger>
         </TabsList>
       </Tabs>
-      <div className="flex flex-wrap items-center gap-3">
-        <SearchInput
-          value={query}
-          onChange={setQuery}
-          placeholder={t('搜索仓库、分支或路径', 'Search repositories, branches, or paths')}
-        />
-        <Tabs value={provider} onValueChange={setProvider}>
-          <TabsList>
-            <TabsTrigger value="all">{t('全部', 'All')}</TabsTrigger>
-            {(['js', 'py', 'jvm', 'rust', 'go'] as const).map((id) => (
-              <TabsTrigger key={id} value={id}>
-                {metadata[id].short}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <Select value={sort} onValueChange={(value) => setSort(value as ProjectSort)}>
-          <SelectTrigger aria-label={t('项目排序', 'Sort projects')} className="w-auto min-w-40">
-            <ArrowDownWideNarrow className="size-4" />
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="activity-desc">
-              {t('活动：最近优先', 'Activity: newest first')}
-            </SelectItem>
-            <SelectItem value="activity-asc">
-              {t('活动：最早优先', 'Activity: oldest first')}
-            </SelectItem>
-            <SelectItem value="size-desc">{t('占用：从大到小', 'Size: largest first')}</SelectItem>
-            <SelectItem value="size-asc">{t('占用：从小到大', 'Size: smallest first')}</SelectItem>
-          </SelectContent>
-        </Select>
-        {mode === 'worktrees' && parents.length > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              setCollapsed((current) => {
-                const next = new Set(current)
-                for (const group of parents) {
-                  if (allExpanded) next.add(group.repository.id)
-                  else next.delete(group.repository.id)
-                }
-                return next
-              })
-            }
-          >
-            {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
-            {allExpanded
-              ? t('收起 worktree', 'Collapse worktrees')
-              : t('展开 worktree', 'Expand worktrees')}
-          </Button>
-        )}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <SearchInput
+            value={query}
+            onChange={setQuery}
+            placeholder={t('搜索仓库、分支或路径', 'Search repositories, branches, or paths')}
+          />
+          <Tabs value={provider} onValueChange={setProvider}>
+            <TabsList>
+              <TabsTrigger value="all">{t('全部', 'All')}</TabsTrigger>
+              {(['js', 'py', 'jvm', 'rust', 'go'] as const).map((id) => (
+                <TabsTrigger key={id} value={id}>
+                  {metadata[id].short}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
+          {mode === 'worktrees' && parents.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setCollapsed((current) => {
+                  const next = new Set(current)
+                  for (const group of parents) {
+                    if (allExpanded) next.add(group.repository.id)
+                    else next.delete(group.repository.id)
+                  }
+                  return next
+                })
+              }
+            >
+              {allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
+              {allExpanded
+                ? t('收起 worktree', 'Collapse worktrees')
+                : t('展开 worktree', 'Expand worktrees')}
+            </Button>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-4">
+          <Select value={sort} onValueChange={(value) => setSort(value as ProjectSort)}>
+            <SelectTrigger aria-label={t('项目排序', 'Sort projects')} className="w-auto min-w-40">
+              <ArrowDownWideNarrow className="size-4" />
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="activity-desc">
+                {t('活动：最近优先', 'Activity: newest first')}
+              </SelectItem>
+              <SelectItem value="activity-asc">
+                {t('活动：最早优先', 'Activity: oldest first')}
+              </SelectItem>
+              <SelectItem value="size-desc">
+                {t('占用：从大到小', 'Size: largest first')}
+              </SelectItem>
+              <SelectItem value="size-asc">
+                {t('占用：从小到大', 'Size: smallest first')}
+              </SelectItem>
+            </SelectContent>
+          </Select>
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
             <Switch
               aria-label={t('仅闲置', 'Idle only')}
