@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/felixpy/envark/compare/v0.3.2...v0.3.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **desktop:** improve project cleanup and runtime discovery ([#31](https://github.com/felixpy/envark/issues/31)) ([4b267e6](https://github.com/felixpy/envark/commit/4b267e6ec15adaaf925d2567cf1ac9272aacac5d))
+
 ## [0.3.2](https://github.com/felixpy/envark/compare/v0.3.1...v0.3.2) (2026-10-08)
 
 
