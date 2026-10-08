@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { test } from 'node:test'
 import { checkVersions } from './check-versions.mjs'
-import { collectAssets, targets, updaterManifest } from './publish-release.mjs'
+import {
+  collectAssets,
+  prepareReleaseAssets,
+  targets,
+  updaterManifest,
+  verifyReleaseUploads,
+} from './publish-release.mjs'
 import { createHash, generateKeyPairSync, sign } from 'node:crypto'
 import { findReleaseByTag, getReleaseById } from './release-github.mjs'
 
@@ -165,7 +171,7 @@ test('publishing requires every installer, updater bundle, and signature', (t) =
   assert.throws(() => collectAssets(root, version))
 })
 
-test('updater manifests verify signatures, distinguish macOS architectures, and reject tampering', (t) => {
+function signedFixture(t) {
   const root = fixture(t)
   const { publicKey, privateKey } = generateKeyPairSync('ed25519')
   const id = Buffer.from('0102030405060708', 'hex')
@@ -208,6 +214,11 @@ test('updater manifests verify signatures, distinguish macOS architectures, and 
       }
     }
   }
+  return { root, encodedKey }
+}
+
+test('updater manifests verify signatures, distinguish macOS architectures, and reject tampering', (t) => {
+  const { root, encodedKey } = signedFixture(t)
   const assets = collectAssets(root, '0.3.0')
   const manifest = updaterManifest(
     assets,
@@ -237,6 +248,67 @@ test('updater manifests verify signatures, distinguish macOS architectures, and 
     () => updaterManifest(assets, 'v0.3.0', 'example/envark', '', '', encodedKey),
     /signature is invalid/,
   )
+})
+
+test('public release assets omit sidecars while preserving every updater signature and URL', (t) => {
+  const { root, encodedKey } = signedFixture(t)
+  const assets = prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey)
+  assert.equal(assets.length, 9)
+  assert.ok(assets.every((asset) => !asset.name.endsWith('.sig')))
+  const buildAssets = collectAssets(root, '0.3.0')
+  const manifest = JSON.parse(readFileSync(join(root, 'latest.json'), 'utf8'))
+  assert.equal(Object.keys(manifest.platforms).length, 4)
+  for (const { url, signature } of Object.values(manifest.platforms)) {
+    const name = decodeURIComponent(new URL(url).pathname.split('/').at(-1))
+    const published = assets.find((asset) => asset.name === name)
+    assert.ok(published, `Updater download must be published: ${name}`)
+    const sidecar = buildAssets.find((asset) => asset.name === `${name}.sig`)
+    assert.equal(signature, readFileSync(sidecar.path, 'utf8').trim())
+  }
+  const checksums = readFileSync(join(root, 'SHA256SUMS'), 'utf8').trim().split('\n')
+  assert.equal(checksums.length, 8)
+  assert.ok(checksums.every((line) => !line.endsWith('.sig')))
+  for (const line of checksums) {
+    const [digest, name] = line.split('  ')
+    const asset = assets.find((item) => item.name === name)
+    assert.ok(asset)
+    assert.equal(digest, createHash('sha256').update(readFileSync(asset.path)).digest('hex'))
+  }
+})
+
+test('release preparation still rejects missing signatures and tampered installers', (t) => {
+  const { root, encodedKey } = signedFixture(t)
+  const assets = collectAssets(root, '0.3.0')
+  const installer = assets.find((asset) => asset.name.endsWith('.exe'))
+  const original = readFileSync(installer.path)
+  writeFileSync(installer.path, 'tampered')
+  assert.throws(
+    () => prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey),
+    /signature is invalid/,
+  )
+  writeFileSync(installer.path, original)
+  rmSync(`${installer.path}.sig`)
+  assert.throws(
+    () => prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey),
+    /Unexpected installer count/,
+  )
+})
+
+test('draft recovery only retires known sidecars after validating public uploads', (t) => {
+  const { root, encodedKey } = signedFixture(t)
+  const assets = prepareReleaseAssets(root, 'v0.3.0', 'example/envark', '', '', encodedKey)
+  const uploaded = assets.map((asset) => ({ ...asset, state: 'uploaded' }))
+  assert.deepEqual(verifyReleaseUploads(uploaded, assets), [])
+  const sidecars = collectAssets(root, '0.3.0').filter((asset) => asset.name.endsWith('.sig'))
+  assert.equal(sidecars.length, 4)
+  assert.deepEqual(verifyReleaseUploads([...uploaded, ...sidecars], assets), sidecars)
+  assert.throws(
+    () => verifyReleaseUploads([...uploaded, ...sidecars, { name: 'unrelated.sig' }], assets),
+    /Unexpected assets/,
+  )
+  assert.throws(() => verifyReleaseUploads(uploaded.slice(1), assets), /Unexpected assets/)
+  uploaded[0].digest = `sha256:${'0'.repeat(64)}`
+  assert.throws(() => verifyReleaseUploads([...uploaded, ...sidecars], assets), /Checksum mismatch/)
 })
 
 test(

@@ -83,33 +83,20 @@ export function updaterManifest(assets, tag, repository, notes, publishedAt, pub
   return { version: tag.slice(1), notes, pub_date: publishedAt, platforms }
 }
 
-function publish() {
-  const tag = validateTag(process.env.RELEASE_TAG)
-  assert.equal(tagCommit(tag), process.env.RELEASE_SHA, 'The tag changed after the build')
-  const release = getReleaseById(process.env.RELEASE_ID, tag)
-  if (!release.draft) {
-    console.log(`${tag} is already published; leaving it unchanged.`)
-    return
-  }
-  const assets = collectAssets('packages', tag.slice(1))
-  const manifestPath = join('packages', 'latest.json')
-  const publicKey = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).plugins.updater
-    .pubkey
+export function prepareReleaseAssets(root, tag, repository, notes, publishedAt, publicKey) {
+  validateTag(tag)
+  const buildAssets = collectAssets(root, tag.slice(1))
+  const manifestPath = join(root, 'latest.json')
   writeFileSync(
     manifestPath,
     JSON.stringify(
-      updaterManifest(
-        assets,
-        tag,
-        process.env.GH_REPO,
-        release.body ?? '',
-        new Date().toISOString(),
-        publicKey,
-      ),
+      updaterManifest(buildAssets, tag, repository, notes, publishedAt, publicKey),
       null,
       2,
     ) + '\n',
   )
+  // Sidecars remain build inputs; clients read their verified signatures from latest.json.
+  const assets = buildAssets.filter((asset) => !asset.name.endsWith('.sig'))
   const manifestBytes = readFileSync(manifestPath)
   assets.push({
     path: manifestPath,
@@ -119,12 +106,12 @@ function publish() {
   })
   for (const asset of assets) {
     if (basename(asset.path) !== asset.name) {
-      const destination = join('packages', asset.name)
+      const destination = join(root, asset.name)
       copyFileSync(asset.path, destination)
       asset.path = destination
     }
   }
-  const checksumPath = join('packages', 'SHA256SUMS')
+  const checksumPath = join(root, 'SHA256SUMS')
   writeFileSync(
     checksumPath,
     assets.map(({ name, digest }) => `${digest.slice(7)}  ${name}\n`).join(''),
@@ -136,9 +123,24 @@ function publish() {
     size: bytes.length,
     digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
   })
-  gh(['release', 'upload', tag, '--clobber', ...assets.map((asset) => asset.path)])
-  const uploaded = api(`releases/${release.id}/assets?per_page=100`)
-  assert.equal(uploaded.length, assets.length, 'Unexpected assets on the draft release')
+  return assets
+}
+
+export function verifyReleaseUploads(uploaded, assets) {
+  // A resumed draft may still contain sidecars uploaded by the older publisher.
+  const obsoleteNames = new Set(
+    Object.values(updaterTargets).map(([target, extension]) => {
+      const asset = assets.find((a) => a.target === target && a.name.endsWith(extension))
+      assert.ok(asset, `Missing updater artifact for ${target}`)
+      return `${asset.name}.sig`
+    }),
+  )
+  const obsolete = uploaded.filter((asset) => obsoleteNames.has(asset.name))
+  assert.equal(
+    uploaded.length - obsolete.length,
+    assets.length,
+    'Unexpected assets on the draft release',
+  )
   for (const asset of assets) {
     const remote = uploaded.find((item) => item.name === asset.name)
     assert.ok(
@@ -146,6 +148,38 @@ function publish() {
       `Upload verification failed: ${asset.name}`,
     )
     if (remote.digest) assert.equal(remote.digest, asset.digest, `Checksum mismatch: ${asset.name}`)
+  }
+  return obsolete
+}
+
+function publish() {
+  const tag = validateTag(process.env.RELEASE_TAG)
+  assert.equal(tagCommit(tag), process.env.RELEASE_SHA, 'The tag changed after the build')
+  const release = getReleaseById(process.env.RELEASE_ID, tag)
+  if (!release.draft) {
+    console.log(`${tag} is already published; leaving it unchanged.`)
+    return
+  }
+  const publicKey = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).plugins.updater
+    .pubkey
+  const assets = prepareReleaseAssets(
+    'packages',
+    tag,
+    process.env.GH_REPO,
+    release.body ?? '',
+    new Date().toISOString(),
+    publicKey,
+  )
+  gh(['release', 'upload', tag, '--clobber', ...assets.map((asset) => asset.path)])
+  const uploaded = api(`releases/${release.id}/assets?per_page=100`)
+  const obsolete = verifyReleaseUploads(uploaded, assets)
+  for (const asset of obsolete) gh(['release', 'delete-asset', tag, asset.name, '--yes'])
+  if (obsolete.length > 0) {
+    assert.equal(
+      verifyReleaseUploads(api(`releases/${release.id}/assets?per_page=100`), assets).length,
+      0,
+      'Obsolete signature assets remain on the draft release',
+    )
   }
   assert.equal(tagCommit(tag), process.env.RELEASE_SHA, 'The tag changed during upload')
   gh(['release', 'edit', tag, '--draft=false'])
