@@ -9,7 +9,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
+pub(crate) const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 
 struct ProcessGuard {
     child: Box<dyn ChildWrapper>,

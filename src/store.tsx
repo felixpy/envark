@@ -36,7 +36,7 @@ interface Store {
   plan: Plan | null
   result: OperationResult | null
   prepare(request: ActionRequest): Promise<void>
-  execute(): Promise<void>
+  execute(discardWorktreeChanges?: boolean): Promise<void>
   closePlan(): void
   reload(): Promise<void>
   t(zh: string, en: string): string
@@ -212,14 +212,14 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
         fail(cause)
       }
     },
-    execute: async () => {
+    execute: async (discardWorktreeChanges = false) => {
       if (!plan || running.current) return
       running.current = true
       const id = crypto.randomUUID()
       setJob(id)
       setError(null)
       try {
-        setResult(await api.execute(plan.id, id))
+        setResult(await api.execute(plan.id, id, discardWorktreeChanges))
         setData(await api.snapshot())
       } catch (cause) {
         fail(cause)

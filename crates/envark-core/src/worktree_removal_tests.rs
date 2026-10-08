@@ -106,10 +106,134 @@ impl Fixture {
             self.ctx.clone(),
             silent_progress(),
             "remove".into(),
+            false,
         )
         .await
         .unwrap()
     }
+    async fn discard(&self, plan: operations::Plan) -> operations::OperationResult {
+        operations::execute(
+            plan,
+            self.settings.clone(),
+            self.ctx.clone(),
+            silent_progress(),
+            "discard".into(),
+            true,
+        )
+        .await
+        .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn explicit_discard_removes_reviewed_staged_unstaged_and_untracked_changes() {
+    let fixture = Fixture::new();
+    git_command(&fixture.linked, &["mv", "source.rs", "renamed source.rs"]);
+    fs::write(fixture.linked.join("renamed source.rs"), "unstaged edit").unwrap();
+    fs::write(fixture.linked.join("new file.txt"), "untracked content").unwrap();
+    let plan = fixture.plan().await.unwrap();
+    let changes = &plan.view.worktree_changes[0];
+    assert_eq!(changes.path, fs::canonicalize(&fixture.linked).unwrap());
+    assert!(changes.files.iter().any(|f| f.path == "renamed source.rs"
+        && f.original_path.as_deref() == Some("source.rs")
+        && f.status == "RM"));
+    assert!(
+        changes
+            .files
+            .iter()
+            .any(|f| f.path == "new file.txt" && f.status == "??")
+    );
+    assert!(
+        plan.view.items[0]
+            .command
+            .as_ref()
+            .unwrap()
+            .contains("--force")
+    );
+    let result = fixture.discard(plan).await;
+    assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+    assert!(!fixture.linked.exists());
+    assert_eq!(
+        fs::read_to_string(fixture.main.join("source.rs")).unwrap(),
+        "committed source"
+    );
+    git_command(
+        &fixture.main,
+        &["show-ref", "--verify", "refs/heads/feature"],
+    );
+}
+
+#[tokio::test]
+async fn discard_rejects_new_content_and_index_changes_after_review() {
+    let fixture = Fixture::new();
+    fs::write(fixture.linked.join("source.rs"), "reviewed changes").unwrap();
+    let plan = fixture.plan().await.unwrap();
+    fs::write(fixture.linked.join("new file.txt"), "not reviewed").unwrap();
+    assert_eq!(fixture.discard(plan).await.items[0].status, "failed");
+    assert!(fixture.linked.join("new file.txt").exists());
+
+    // The worktree contents and status codes stay unchanged while the index changes.
+    git_command(&fixture.linked, &["add", "source.rs"]);
+    fs::write(fixture.linked.join("source.rs"), "working copy").unwrap();
+    let plan = fixture.plan().await.unwrap();
+    let before_status = git_command(&fixture.linked, &["status", "--porcelain"]);
+    let blob = git_command(&fixture.main, &["rev-parse", "HEAD:.gitignore"]);
+    git_command(
+        &fixture.linked,
+        &[
+            "update-index",
+            "--cacheinfo",
+            "100644",
+            blob.trim(),
+            "source.rs",
+        ],
+    );
+    assert_eq!(
+        git_command(&fixture.linked, &["status", "--porcelain"]),
+        before_status
+    );
+    let result = fixture.discard(plan).await;
+    assert_eq!(result.items[0].status, "failed");
+    assert!(result.items[0].message.contains("changed after review"));
+    assert_eq!(
+        fs::read_to_string(fixture.linked.join("source.rs")).unwrap(),
+        "working copy"
+    );
+}
+
+#[tokio::test]
+async fn force_cannot_remove_newly_dirty_worktrees_or_bypass_locks_and_protection() {
+    let fixture = Fixture::new();
+    let plan = fixture.plan().await.unwrap();
+    fs::write(fixture.linked.join("source.rs"), "not reviewed").unwrap();
+    assert_eq!(fixture.discard(plan).await.items[0].status, "failed");
+    let plan = fixture.plan().await.unwrap();
+    git_command(
+        &fixture.main,
+        &["worktree", "lock", fixture.linked.to_str().unwrap()],
+    );
+    assert_eq!(fixture.discard(plan).await.items[0].status, "failed");
+    git_command(
+        &fixture.main,
+        &["worktree", "unlock", fixture.linked.to_str().unwrap()],
+    );
+    let plan = fixture.plan().await.unwrap();
+    let mut settings = fixture.settings.clone();
+    settings
+        .protected_projects
+        .push(fs::canonicalize(&fixture.linked).unwrap());
+    let result = operations::execute(
+        plan,
+        settings,
+        fixture.ctx.clone(),
+        silent_progress(),
+        "discard".into(),
+        true,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.items[0].status, "failed");
+    assert!(fixture.linked.join("source.rs").exists());
 }
 
 #[tokio::test]
@@ -150,27 +274,26 @@ async fn removes_a_clean_registered_checkout_and_preserves_its_branch_and_main_r
 }
 
 #[tokio::test]
-async fn rejects_dirty_untracked_locked_and_protected_worktrees() {
+async fn preserves_dirty_worktrees_by_default_and_rejects_locked_and_protected_worktrees() {
     let mut fixture = Fixture::new();
     fs::write(fixture.linked.join("source.rs"), "uncommitted edit").unwrap();
-    assert!(
-        fixture
-            .plan()
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("uncommitted")
+    let plan = fixture.plan().await.unwrap();
+    assert_eq!(
+        fixture.execute(plan, fixture.settings.clone()).await.items[0].status,
+        "skipped"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.linked.join("source.rs")).unwrap(),
+        "uncommitted edit"
     );
     git_command(&fixture.linked, &["restore", "source.rs"]);
     fs::write(fixture.linked.join("untracked.txt"), "untracked source").unwrap();
-    assert!(
-        fixture
-            .plan()
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("untracked")
+    let plan = fixture.plan().await.unwrap();
+    assert_eq!(
+        fixture.execute(plan, fixture.settings.clone()).await.items[0].status,
+        "skipped"
     );
+    assert!(fixture.linked.join("untracked.txt").exists());
     fs::remove_file(fixture.linked.join("untracked.txt")).unwrap();
     git_command(
         &fixture.main,
@@ -282,18 +405,46 @@ async fn batch_removal_reviews_all_worktrees_before_mutation_and_revalidates_eac
     let inventory = fixture.inventory();
     let ids: Vec<_> = inventory.worktrees.iter().map(|w| w.id.clone()).collect();
     fs::write(second.join("untracked.txt"), "preserve").unwrap();
-    assert!(
-        operations::prepare(
-            ActionRequest::RemoveWorktrees { ids: ids.clone() },
-            &inventory,
-            &fixture.settings,
-            &fixture.ctx
-        )
-        .await
-        .is_err()
-    );
+    let plan = operations::prepare(
+        ActionRequest::RemoveWorktrees { ids: ids.clone() },
+        &inventory,
+        &fixture.settings,
+        &fixture.ctx,
+    )
+    .await
+    .unwrap();
     assert!(fixture.linked.exists() && second.exists());
-    fs::remove_file(second.join("untracked.txt")).unwrap();
+    let result = fixture.execute(plan, fixture.settings.clone()).await;
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .filter(|i| i.status == "skipped")
+            .count(),
+        1
+    );
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .filter(|i| i.status == "success")
+            .count(),
+        1
+    );
+    assert!(second.join("untracked.txt").exists());
+    assert!(!fixture.linked.exists());
+}
+
+#[tokio::test]
+async fn batch_removal_revalidates_each_item_after_review() {
+    let fixture = Fixture::new();
+    let second = fixture.main.parent().unwrap().join("second");
+    git_command(
+        &fixture.main,
+        &["worktree", "add", "-b", "second", second.to_str().unwrap()],
+    );
+    let inventory = fixture.inventory();
+    let ids: Vec<_> = inventory.worktrees.iter().map(|w| w.id.clone()).collect();
     let plan = operations::prepare(
         ActionRequest::RemoveWorktrees { ids },
         &inventory,
@@ -319,5 +470,37 @@ async fn batch_removal_reviews_all_worktrees_before_mutation_and_revalidates_eac
     );
     assert!(second.join("untracked.txt").exists());
     assert!(!fixture.linked.exists());
+    assert!(fixture.main.join("source.rs").exists());
+}
+
+#[tokio::test]
+async fn batch_discard_removes_both_changed_and_clean_reviewed_worktrees() {
+    let fixture = Fixture::new();
+    let second = fixture.main.parent().unwrap().join("second");
+    git_command(
+        &fixture.main,
+        &["worktree", "add", "-b", "second", second.to_str().unwrap()],
+    );
+    fs::write(fixture.linked.join("source.rs"), "reviewed edit").unwrap();
+    let inventory = fixture.inventory();
+    let plan = operations::prepare(
+        ActionRequest::RemoveWorktrees {
+            ids: inventory.worktrees.iter().map(|w| w.id.clone()).collect(),
+        },
+        &inventory,
+        &fixture.settings,
+        &fixture.ctx,
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan.view.worktree_changes.len(), 1);
+    let result = fixture.discard(plan).await;
+    assert_eq!(result.items.len(), 2);
+    assert!(
+        result.items.iter().all(|item| item.status == "success"),
+        "{:?}",
+        result.items
+    );
+    assert!(!fixture.linked.exists() && !second.exists());
     assert!(fixture.main.join("source.rs").exists());
 }

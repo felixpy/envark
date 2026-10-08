@@ -19,7 +19,7 @@ export interface Backend {
   refresh(jobId: string): Promise<Snapshot>
   saveSettings(settings: Settings): Promise<Snapshot>
   prepare(request: ActionRequest): Promise<Plan>
-  execute(planId: string, jobId: string): Promise<OperationResult>
+  execute(planId: string, jobId: string, discardWorktreeChanges?: boolean): Promise<OperationResult>
   cancel(jobId: string): Promise<void>
   selectFolder(): Promise<string | null>
   readConfig(id: string): Promise<ConfigContent>
@@ -51,7 +51,8 @@ const native: Backend = {
   refresh: (jobId) => invoke('refresh', { jobId }),
   saveSettings: (settings) => invoke('save_settings', { settings }),
   prepare: (request) => invoke('prepare_operation', { request }),
-  execute: (planId, jobId) => invoke('execute_operation', { planId, jobId }),
+  execute: (planId, jobId, discardWorktreeChanges = false) =>
+    invoke('execute_operation', { planId, jobId, discardWorktreeChanges }),
   cancel: (jobId) => invoke('cancel', { jobId }),
   selectFolder: async () => {
     const result = await open({ directory: true, multiple: false })

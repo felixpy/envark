@@ -333,6 +333,7 @@ impl Engine {
         plan_id: &str,
         job_id: String,
         progress: ProgressSink,
+        discard_worktree_changes: bool,
     ) -> Result<OperationResult> {
         let _guard = self
             .work
@@ -352,8 +353,15 @@ impl Engine {
         let token = CancellationToken::new();
         let context = Context::new(token.clone())?;
         self.jobs.lock().await.insert(job_id.clone(), token.clone());
-        let outcome =
-            operations::execute(plan, settings, context, progress.clone(), job_id.clone()).await;
+        let outcome = operations::execute(
+            plan,
+            settings,
+            context,
+            progress.clone(),
+            job_id.clone(),
+            discard_worktree_changes,
+        )
+        .await;
         match &outcome {
             Ok(result) => {
                 if !token.is_cancelled()
@@ -366,11 +374,7 @@ impl Engine {
                         .issues
                         .push(format!("Refresh after operation: {error}"));
                 }
-                let failed = result
-                    .items
-                    .iter()
-                    .filter(|i| i.status != "success")
-                    .count();
+                let failed = result.items.iter().filter(|i| i.status == "failed").count();
                 self.log(
                     &kind,
                     format!("{} items processed", result.items.len()),

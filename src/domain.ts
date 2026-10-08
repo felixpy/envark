@@ -210,6 +210,10 @@ export interface Plan {
   }[]
   warnings: string[]
   useTrash: boolean
+  worktreeChanges?: {
+    path: string
+    files: { path: string; originalPath: string | null; status: string }[]
+  }[]
 }
 export interface OperationResult {
   items: { title: string; status: string; message: string; removedBytes: number }[]

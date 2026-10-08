@@ -135,9 +135,15 @@ async fn execute_operation(
     engine: State<'_, Engine>,
     plan_id: String,
     job_id: String,
+    discard_worktree_changes: Option<bool>,
 ) -> NativeResult<OperationResult> {
     engine
-        .execute(&plan_id, job_id, progress(&app))
+        .execute(
+            &plan_id,
+            job_id,
+            progress(&app),
+            discard_worktree_changes.unwrap_or(false),
+        )
         .await
         .map_err(|e| e.to_string())
 }

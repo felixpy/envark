@@ -83,6 +83,21 @@ pub struct PlanItem {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WorktreeFileChange {
+    pub path: String,
+    pub original_path: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeChanges {
+    pub path: PathBuf,
+    pub files: Vec<WorktreeFileChange>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PlanView {
     pub id: String,
     pub kind: String,
@@ -90,6 +105,7 @@ pub struct PlanView {
     pub items: Vec<PlanItem>,
     pub warnings: Vec<String>,
     pub use_trash: bool,
+    pub worktree_changes: Vec<WorktreeChanges>,
 }
 
 #[derive(Debug, Clone)]
@@ -209,8 +225,17 @@ pub async fn prepare(
             let (reviewed, ignored) =
                 crate::worktree_removal::prepare(ctx, worktree.clone(), settings.clone()).await?;
             plan.view.items[index].bytes = reviewed.size.bytes;
+            if !reviewed.changes.is_empty() {
+                plan.view.worktree_changes.push(WorktreeChanges {
+                    path: worktree.path.clone(),
+                    files: reviewed.changes.clone(),
+                });
+                // A dirty checkout needs force only if the user chooses to discard changes.
+                plan.view.items[index].command =
+                    Some(crate::worktree_removal::removal_command(ctx, worktree, true)?.display());
+            }
             if ignored {
-                plan.view.warnings.push("This worktree contains ignored files. They will also be permanently removed and cannot be restored from Git.".into());
+                plan.view.warnings.push(format!("{} contains ignored files. If this worktree is removed, they will also be permanently removed and cannot be restored from Git.", worktree.path.display()));
             }
             *removal = Some(reviewed);
         }
@@ -254,6 +279,7 @@ fn prepare_steps(
         items: vec![],
         warnings: vec![],
         use_trash: settings.use_trash,
+        worktree_changes: vec![],
     };
     let mut steps = vec![];
     let is_remove_runtime = matches!(&request, ActionRequest::RemoveRuntime { .. });
@@ -311,8 +337,8 @@ fn prepare_steps(
                     Error::Conflict("Rescan the complete worktree before removing it.".into())
                 })?;
             view.kind = "removeWorktree".into();
-            view.items.push(PlanItem { title: format!("Remove worktree {}", project.name), path: Some(worktree.path.clone()), command: Some(crate::worktree_removal::removal_command(ctx, worktree)?.display()), bytes: size.bytes, restore: Some("Recreate the checkout with git worktree add. The branch and committed source remain in the main repository.".into()) });
-            view.warnings.push("Git permanently removes this entire checkout without using Trash. Its branch and commits remain in the main repository. Uncommitted and untracked files, locks, links, and nested repositories block removal; force removal is never used.".into());
+            view.items.push(PlanItem { title: format!("Remove worktree {}", project.name), path: Some(worktree.path.clone()), command: Some(crate::worktree_removal::removal_command(ctx, worktree, false)?.display()), bytes: size.bytes, restore: Some("Recreate the checkout with git worktree add. Only the branch and committed source can be restored from Git.".into()) });
+            view.warnings.push("Git permanently removes selected checkouts without using Trash. Branches and commits remain in the main repository. Worktrees with changes are kept unless you explicitly choose to discard those changes. Locks, protection, links, and nested repositories still block removal.".into());
             steps.push(Step::Worktree {
                 worktree: worktree.clone(),
                 removal: None,
@@ -790,6 +816,7 @@ pub async fn execute(
     ctx: Context,
     progress: ProgressSink,
     job_id: String,
+    discard_worktree_changes: bool,
 ) -> Result<OperationResult> {
     if now().saturating_sub(plan.view.created_at) > 600 {
         return Err(Error::Conflict(
@@ -815,11 +842,34 @@ pub async fn execute(
             total: Some(plan.view.items.len() as u64),
             message: title.clone(),
         });
+        if let Step::Worktree {
+            removal: Some(removal),
+            ..
+        } = &step
+            && !removal.changes.is_empty()
+            && !discard_worktree_changes
+        {
+            result.items.push(ItemResult {
+                title,
+                status: "skipped".into(),
+                message: "Worktree kept with its uncommitted and untracked files. No changes were discarded.".into(),
+                removed_bytes: 0,
+            });
+            continue;
+        }
         let outcome = match step {
             Step::Worktree {
                 removal: Some(removal),
                 ..
-            } => crate::worktree_removal::execute(&ctx, removal, settings.clone()).await,
+            } => {
+                crate::worktree_removal::execute(
+                    &ctx,
+                    removal,
+                    settings.clone(),
+                    discard_worktree_changes,
+                )
+                .await
+            }
             Step::Worktree { removal: None, .. } => Err(Error::Conflict(
                 "Worktree removal was not validated.".into(),
             )),
@@ -1006,6 +1056,7 @@ mod tests {
                 }],
                 warnings: vec![],
                 use_trash: false,
+                worktree_changes: vec![],
             },
             steps: vec![Step::Asset {
                 root: root_path,
@@ -1023,6 +1074,7 @@ mod tests {
             ctx,
             silent_progress(),
             "test".into(),
+            false,
         )
         .await
         .unwrap();
@@ -1077,7 +1129,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into(), false)
             .await
             .unwrap();
         assert!(result.items.iter().all(|item| item.status == "success"));
@@ -1163,7 +1215,7 @@ mod tests {
         let mut add = ctx.command("git", &["add", "--", "node_modules"]).unwrap();
         add.cwd = Some(project.clone());
         ctx.runner.run(&add, &ctx.cancel).await.unwrap();
-        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into(), false)
             .await
             .unwrap();
         assert_eq!(result.items[0].status, "failed");
@@ -1220,9 +1272,16 @@ mod tests {
                     .is_err()
             );
             let plan = prepare(request, &inventory, &settings, &ctx).await.unwrap();
-            let result = execute(plan, changed, ctx.clone(), silent_progress(), "test".into())
-                .await
-                .unwrap();
+            let result = execute(
+                plan,
+                changed,
+                ctx.clone(),
+                silent_progress(),
+                "test".into(),
+                false,
+            )
+            .await
+            .unwrap();
             assert_eq!(result.items[0].status, "failed");
             assert!(project.join("node_modules/pkg/code.js").is_file());
         }
@@ -1271,6 +1330,7 @@ mod tests {
             ctx.clone(),
             silent_progress(),
             "test".into(),
+            false,
         )
         .await
         .unwrap();
@@ -1291,7 +1351,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into(), false)
             .await
             .unwrap();
         assert_eq!(result.items[0].status, "success");
@@ -1338,9 +1398,16 @@ mod tests {
             .unwrap();
         let mut changed = settings.clone();
         changed.roots.clear();
-        let result = execute(plan, changed, ctx.clone(), silent_progress(), "test".into())
-            .await
-            .unwrap();
+        let result = execute(
+            plan,
+            changed,
+            ctx.clone(),
+            silent_progress(),
+            "test".into(),
+            false,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.items[0].status, "failed");
         assert!(nested.join("node_modules").is_dir());
         let plan = prepare(request.clone(), &inventory, &settings, &ctx)
@@ -1354,13 +1421,14 @@ mod tests {
             ctx.clone(),
             silent_progress(),
             "test".into(),
+            false,
         )
         .await
         .unwrap();
         assert_eq!(result.items[0].status, "failed");
         std::fs::write(linked.join(".git"), pointer).unwrap();
         let plan = prepare(request, &inventory, &settings, &ctx).await.unwrap();
-        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into(), false)
             .await
             .unwrap();
         assert_eq!(result.items[0].status, "success");
