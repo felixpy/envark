@@ -1,4 +1,4 @@
-import { displayPath } from '@/lib/paths'
+import { displayPath, displayDiagnostic } from '@/lib/paths'
 import { AlertTriangle, CheckCircle2, Trash2, XCircle } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes } from '@/domain'
@@ -50,7 +50,7 @@ export function OperationDialog() {
                 <div className="min-w-0 text-sm">
                   <div className="font-medium">{item.title}</div>
                   <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-xs text-muted-foreground">
-                    {item.message}
+                    {displayDiagnostic(item.message)}
                   </pre>
                 </div>
               </div>

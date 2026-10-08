@@ -1,3 +1,4 @@
+import { displayDiagnostic } from '@/lib/paths'
 import { useState } from 'react'
 import { CheckCircle2, Clock3, XCircle } from 'lucide-react'
 import { useStore } from '@/store'
@@ -11,7 +12,9 @@ export default function Activity() {
   const { t } = s
   const [query, setQuery] = useState('')
   const list = s.data.activity.filter((item) =>
-    `${item.title} ${item.detail}`.toLowerCase().includes(query.trim().toLowerCase()),
+    `${item.title} ${displayDiagnostic(item.detail)}`
+      .toLowerCase()
+      .includes(query.trim().toLowerCase()),
   )
   return (
     <div className="space-y-6">
@@ -30,14 +33,16 @@ export default function Activity() {
         }
       />
       {s.data.inventory.issues.length > 0 && (
-        <div className="space-y-2 rounded-xl border p-4">
-          <h2 className="text-sm font-medium">{t('扫描提示', 'Scan notices')}</h2>
+        <details className="space-y-2 rounded-xl border p-4">
+          <summary className="cursor-pointer text-sm font-medium">
+            {t('扫描提示', 'Scan notices')} ({s.data.inventory.issues.length})
+          </summary>
           {s.data.inventory.issues.map((issue, index) => (
             <p key={index} className="break-all text-xs text-muted-foreground">
-              {issue}
+              {displayDiagnostic(issue)}
             </p>
           ))}
-        </div>
+        </details>
       )}
       <Card className="py-0 shadow-none">
         <CardContent className="divide-y px-5">
@@ -65,7 +70,7 @@ export default function Activity() {
                 <Badge variant="outline">{item.status}</Badge>
               </summary>
               <pre className="mt-3 whitespace-pre-wrap break-all rounded-lg bg-muted p-3 font-mono text-xs text-muted-foreground">
-                {item.detail}
+                {displayDiagnostic(item.detail)}
               </pre>
             </details>
           ))}

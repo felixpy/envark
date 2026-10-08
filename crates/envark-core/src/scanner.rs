@@ -373,7 +373,11 @@ pub(crate) fn scan_roots(
                     {
                         result.projects[owner].activity_complete = false;
                     }
-                    if result.issues.len() < 100 {
+                    if !e
+                        .io_error()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+                        && result.issues.len() < 100
+                    {
                         result.issues.push(e.to_string());
                     }
                     continue;
@@ -384,7 +388,7 @@ pub(crate) fn scan_roots(
             let meta = match fs::symlink_metadata(path) {
                 Ok(meta) => meta,
                 Err(e) => {
-                    if result.issues.len() < 100 {
+                    if e.kind() != std::io::ErrorKind::NotFound && result.issues.len() < 100 {
                         result.issues.push(format!("{}: {e}", path.display()));
                     }
                     continue;
@@ -413,7 +417,7 @@ pub(crate) fn scan_roots(
                 if artifacts.contains(path)
                     || matches!(
                         entry.file_name().to_str(),
-                        Some(".git" | ".svn" | ".hg" | "node_modules")
+                        Some(".git" | ".svn" | ".hg" | "node_modules" | ".uv-cache")
                     )
                 {
                     iter.skip_current_dir();
@@ -623,6 +627,27 @@ mod tests {
         git::init(&root.path().join("backend"));
         git::init(&root.path().join("excluded"));
         root
+    }
+
+    #[test]
+    fn dependency_caches_do_not_produce_false_git_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        git::init(&root);
+        fs::create_dir_all(root.join(".uv-cache/sdists-v9")).unwrap();
+        fs::write(root.join(".uv-cache/sdists-v9/.git"), "*").unwrap();
+        let result = scan(
+            &Settings {
+                roots: vec![root],
+                ..Default::default()
+            },
+            &CancellationToken::new(),
+            crate::model::silent_progress(),
+            "test",
+        )
+        .unwrap();
+        assert!(result.issues.is_empty(), "{:?}", result.issues);
+        assert_eq!(result.projects.len(), 1);
     }
 
     #[test]
