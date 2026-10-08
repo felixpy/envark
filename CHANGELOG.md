@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/felixpy/envark/compare/v0.3.1...v0.3.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **desktop:** repair macOS bundles and require explicit scan folders ([#29](https://github.com/felixpy/envark/issues/29)) ([6395a90](https://github.com/felixpy/envark/commit/6395a90afc7944a7d0b2e8705e85ac5a7ac83247))
+
 ## [0.3.1](https://github.com/felixpy/envark/compare/v0.3.0...v0.3.1) (2026-10-07)
 
 
