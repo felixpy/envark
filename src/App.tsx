@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Settings as SettingsIcon,
   Terminal,
-  X,
 } from 'lucide-react'
 import { Toaster } from 'sonner'
 import { StoreProvider, useStore } from './store'
@@ -39,7 +38,7 @@ import { EcoDot, Spinner } from './components/shared'
 import { OperationDialog } from './components/OperationDialog'
 import { DesktopMenu } from './components/DesktopMenu'
 import { AppUpdateProvider } from './components/AppUpdates'
-import { progressLabel } from './lib/progress'
+import { TaskProgress } from './components/TaskProgress'
 const Overview = lazy(() => import('./views/Overview'))
 const Catalog = lazy(() => import('./views/Catalog'))
 const Environments = lazy(() => import('./views/Environments'))
@@ -61,7 +60,6 @@ function Shell() {
   const current = navigation.find((n) => n.id === s.view)?.label ?? t('设置', 'Settings')
   const disk =
     data.inventory.disks.find((d) => data.dataDir.startsWith(d.mount)) ?? data.inventory.disks[0]
-  const status = progressLabel(s.progress, t, Boolean(s.plan))
   return (
     <TooltipProvider>
       <SidebarProvider keyboardShortcutEnabled={false} className="h-svh min-h-0 overflow-hidden">
@@ -172,13 +170,13 @@ function Shell() {
                     <span>{t('已使用', 'Used')}</span>
                   </>
                 ) : (
-                  <span>{t('扫描后显示磁盘信息', 'Scan to inspect disk usage')}</span>
+                  <span>{t('暂无磁盘信息', 'Disk usage unavailable')}</span>
                 )}
               </div>
             </div>
           </SidebarFooter>
         </Sidebar>
-        <SidebarInset className="min-h-0 min-w-0 overflow-hidden md:mb-4">
+        <SidebarInset className="min-h-0 min-w-0 overflow-hidden md:peer-data-[variant=inset]:mb-4">
           <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4">
             <SidebarTrigger className="-ml-1" />
             <Separator
@@ -199,39 +197,25 @@ function Shell() {
               <span className="text-sm font-medium">{current}</span>
             )}
             <div className="ml-auto flex items-center gap-2">
-              {s.busy ? (
-                <>
-                  <Spinner />
-                  <span
-                    role="status"
-                    aria-live="polite"
-                    title={status}
-                    className="max-w-64 truncate text-xs text-muted-foreground"
-                  >
-                    {status}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label={t('取消', 'Cancel')}
-                    onClick={() => void s.cancel()}
-                  >
-                    <X />
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={!s.api.native}
-                  onClick={() => void s.refresh()}
-                >
-                  <RefreshCw />
-                  {t('刷新', 'Refresh')}
-                </Button>
-              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!s.api.native || s.busy}
+                onClick={() => void s.refresh()}
+              >
+                <RefreshCw />
+                {t('刷新', 'Refresh')}
+              </Button>
             </div>
           </header>
+          {s.busy && !s.plan && (
+            <div className="flex shrink-0 items-center gap-4 border-b bg-muted/40 px-6 py-3">
+              <TaskProgress />
+              <Button variant="outline" size="sm" onClick={() => void s.cancel()}>
+                {t('取消当前任务', 'Cancel current task')}
+              </Button>
+            </div>
+          )}
           {!s.api.native && (
             <div className="border-b bg-muted/50 px-6 py-2 text-xs text-muted-foreground">
               {t(

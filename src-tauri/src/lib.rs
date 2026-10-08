@@ -123,10 +123,20 @@ async fn cancel(engine: State<'_, Engine>, job_id: String) -> NativeResult<()> {
 
 #[tauri::command]
 async fn prepare_operation(
+    app: tauri::AppHandle,
     engine: State<'_, Engine>,
     request: ActionRequest,
+    job_id: String,
 ) -> NativeResult<PlanView> {
-    engine.plan(request).await.map_err(|e| e.to_string())
+    engine
+        .plan(request, job_id, progress(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn refresh_disks(engine: State<'_, Engine>) -> NativeResult<Vec<envark_core::model::Disk>> {
+    engine.refresh_disks().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -205,6 +215,7 @@ pub fn run() {
             refresh,
             cancel,
             prepare_operation,
+            refresh_disks,
             execute_operation,
             read_config,
             save_config,

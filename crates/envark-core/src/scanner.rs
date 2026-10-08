@@ -1,7 +1,7 @@
 use crate::{
     Error, Result,
     artifact_policy::ownership_issue,
-    filesystem::{id_for, is_link, measure, modified, read_small, reject_links},
+    filesystem::{id_for, is_link, modified, read_small, reject_links},
     git,
     model::{Artifact, Progress, ProgressSink, Project, ProviderId, Settings, Worktree},
 };
@@ -129,11 +129,7 @@ pub(crate) fn project_in_scope(path: &Path, settings: &Settings) -> Result<bool>
     Ok(scope_root(path, settings)?.is_some())
 }
 
-pub(crate) fn artifact_in_scope(
-    path: &Path,
-    settings: &Settings,
-    cancel: &CancellationToken,
-) -> Result<()> {
+fn artifact_scope_policy(path: &Path, settings: &Settings) -> Result<(PathBuf, GlobSet)> {
     reject_links(path)?;
     let canonical = fs::canonicalize(path)?;
     if !project_in_scope(&canonical, settings)? {
@@ -153,7 +149,38 @@ pub(crate) fn artifact_in_scope(
     }
     let root = scope_root(&canonical, settings)?
         .ok_or_else(|| Error::unsafe_path(path, "artifact is outside the scan roots"))?;
-    let ignored = exclusions(settings)?;
+    Ok((root, exclusions(settings)?))
+}
+
+fn measure_artifact(
+    path: &Path,
+    settings: &Settings,
+    cancel: &CancellationToken,
+    mut report: impl FnMut(),
+) -> Result<(crate::model::Measurement, Option<String>)> {
+    let policy = artifact_scope_policy(path, settings);
+    let mut issue = policy.as_ref().err().map(ToString::to_string);
+    let size = crate::filesystem::measure_with(path, cancel, |entry, _| {
+        report();
+        if issue.is_none()
+            && let Ok((root, ignored)) = &policy
+            && (entry.file_name().is_some_and(|n| ignored.is_match(n))
+                || ignored.is_match(entry.strip_prefix(root).unwrap_or(entry)))
+        {
+            issue = Some("An excluded entry prevents cleaning its parent directory.".into());
+        }
+        Ok(())
+    })?;
+    Ok((size, issue))
+}
+
+pub(crate) fn artifact_in_scope(
+    path: &Path,
+    settings: &Settings,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let (root, ignored) = artifact_scope_policy(path, settings)?;
+    let canonical = fs::canonicalize(path)?;
     let mut entries = WalkDir::new(&canonical)
         .follow_links(false)
         .max_open(16)
@@ -527,26 +554,57 @@ pub(crate) fn scan_roots(
         job_id: job_id.into(),
         stage: "measure-projects".into(),
         completed: 0,
-        total: Some(result.projects.len() as u64),
-        message: "Measuring project artifacts".into(),
+        total: Some(
+            result
+                .projects
+                .iter()
+                .map(|p| p.artifacts.len() as u64)
+                .sum(),
+        ),
+        message: String::new(),
     });
+    let total_artifacts = result
+        .projects
+        .iter()
+        .map(|p| p.artifacts.len() as u64)
+        .sum();
+    let completed_artifacts = std::sync::atomic::AtomicU64::new(0);
     let issues: Vec<String> = pool.install(|| {
         result
             .projects
             .par_iter_mut()
-            .flat_map(|project| {
-                let mut errors = vec![];
-                for artifact in &mut project.artifacts {
-                    if let Err(error) = artifact_in_scope(&artifact.path, settings, cancel) {
-                        artifact.can_clean = false;
-                        artifact.cleanup_issue = Some(error.to_string());
+            .flat_map(|project| project.artifacts.par_iter_mut())
+            .filter_map(|artifact| {
+                let mut last = Instant::now();
+                let report = || {
+                    progress(Progress {
+                        job_id: job_id.into(),
+                        stage: "measure-projects".into(),
+                        completed: completed_artifacts.load(std::sync::atomic::Ordering::Relaxed),
+                        total: Some(total_artifacts),
+                        message: artifact.path.display().to_string(),
+                    })
+                };
+                report();
+                let measured = measure_artifact(&artifact.path, settings, cancel, || {
+                    if last.elapsed().as_millis() >= 150 {
+                        report();
+                        last = Instant::now();
                     }
-                    match measure(&artifact.path, cancel) {
-                        Ok(size) => artifact.size = size,
-                        Err(e) => errors.push(format!("{}: {e}", artifact.path.display())),
+                });
+                completed_artifacts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                report();
+                match measured {
+                    Ok((size, issue)) => {
+                        artifact.size = size;
+                        if let Some(error) = issue {
+                            artifact.can_clean = false;
+                            artifact.cleanup_issue = Some(error);
+                        }
+                        None
                     }
+                    Err(e) => Some(format!("{}: {e}", artifact.path.display())),
                 }
-                errors
             })
             .collect()
     });
@@ -556,13 +614,21 @@ pub(crate) fn scan_roots(
     result.issues.extend(issues);
     // Measure the entire checkout, including source and ignored files. Only a
     // successfully scanned, in-scope worktree may become a measurement root.
+    let total_worktrees = result
+        .worktrees
+        .iter()
+        .filter(|worktree| {
+            worktree.issue.is_none() && result.projects.iter().any(|p| p.id == worktree.id)
+        })
+        .count() as u64;
     progress(Progress {
         job_id: job_id.into(),
         stage: "measure-worktrees".into(),
         completed: 0,
-        total: Some(result.worktrees.len() as u64),
-        message: "Measuring linked worktrees".into(),
+        total: Some(total_worktrees),
+        message: String::new(),
     });
+    let completed_worktrees = std::sync::atomic::AtomicU64::new(0);
     let issues: Vec<String> = pool.install(|| {
         result
             .worktrees
@@ -572,7 +638,27 @@ pub(crate) fn scan_roots(
                 {
                     return None;
                 }
-                match measure(&worktree.path, cancel) {
+                let mut last = Instant::now();
+                let report = || {
+                    progress(Progress {
+                        job_id: job_id.into(),
+                        stage: "measure-worktrees".into(),
+                        completed: completed_worktrees.load(std::sync::atomic::Ordering::Relaxed),
+                        total: Some(total_worktrees),
+                        message: worktree.path.display().to_string(),
+                    })
+                };
+                report();
+                let measured = crate::filesystem::measure_with(&worktree.path, cancel, |_, _| {
+                    if last.elapsed().as_millis() >= 150 {
+                        report();
+                        last = Instant::now();
+                    }
+                    Ok(())
+                });
+                completed_worktrees.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                report();
+                match measured {
                     Ok(size) => {
                         worktree.size = Some(size);
                         None

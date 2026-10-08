@@ -9,6 +9,7 @@ import type {
   Progress,
   Settings,
   Snapshot,
+  Disk,
 } from './domain'
 import { emptyProvider, emptySnapshot, providerIds } from './domain'
 import type { AppLinkTarget, AppRelease, AppUpdateProgress, ViewState } from './desktop'
@@ -18,7 +19,8 @@ export interface Backend {
   snapshot(): Promise<Snapshot>
   refresh(jobId: string): Promise<Snapshot>
   saveSettings(settings: Settings): Promise<Snapshot>
-  prepare(request: ActionRequest): Promise<Plan>
+  prepare(request: ActionRequest, jobId: string): Promise<Plan>
+  refreshDisks?(): Promise<Disk[]>
   execute(planId: string, jobId: string, discardWorktreeChanges?: boolean): Promise<OperationResult>
   cancel(jobId: string): Promise<void>
   selectFolder(): Promise<string | null>
@@ -50,7 +52,8 @@ const native: Backend = {
   snapshot: () => invoke('snapshot'),
   refresh: (jobId) => invoke('refresh', { jobId }),
   saveSettings: (settings) => invoke('save_settings', { settings }),
-  prepare: (request) => invoke('prepare_operation', { request }),
+  prepare: (request, jobId) => invoke('prepare_operation', { request, jobId }),
+  refreshDisks: () => invoke('refresh_disks'),
   execute: (planId, jobId, discardWorktreeChanges = false) =>
     invoke('execute_operation', { planId, jobId, discardWorktreeChanges }),
   cancel: (jobId) => invoke('cancel', { jobId }),

@@ -106,6 +106,7 @@ pub struct PlanView {
     pub warnings: Vec<String>,
     pub use_trash: bool,
     pub worktree_changes: Vec<WorktreeChanges>,
+    pub runtime_dependents: Vec<crate::runtime_pins::RuntimeDependent>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +153,39 @@ enum Step {
 pub struct Plan {
     pub view: PlanView,
     steps: Vec<Step>,
+    refresh_provider: Option<ProviderId>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RefreshTarget {
+    Artifact {
+        project_id: String,
+        artifact_id: String,
+    },
+    Worktree(String),
+    Cache(String),
+    Provider(ProviderId),
+}
+
+impl Plan {
+    pub(crate) fn refresh_targets(&self) -> Vec<Option<RefreshTarget>> {
+        self.steps
+            .iter()
+            .map(|step| match step {
+                Step::Project {
+                    project, artifact, ..
+                } => Some(RefreshTarget::Artifact {
+                    project_id: project.id.clone(),
+                    artifact_id: artifact.id.clone(),
+                }),
+                Step::Worktree { worktree, .. } => {
+                    Some(RefreshTarget::Worktree(worktree.id.clone()))
+                }
+                Step::Cache { cache, .. } => Some(RefreshTarget::Cache(cache.id.clone())),
+                _ => self.refresh_provider.map(RefreshTarget::Provider),
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -214,13 +248,54 @@ pub async fn prepare(
     settings: &Settings,
     ctx: &Context,
 ) -> Result<Plan> {
+    prepare_with_progress(
+        request,
+        inventory,
+        settings,
+        ctx,
+        crate::model::silent_progress(),
+        "prepare",
+    )
+    .await
+}
+
+pub async fn prepare_with_progress(
+    request: ActionRequest,
+    inventory: &Inventory,
+    settings: &Settings,
+    ctx: &Context,
+    progress: ProgressSink,
+    job_id: &str,
+) -> Result<Plan> {
+    progress(Progress {
+        job_id: job_id.into(),
+        stage: "prepare".into(),
+        completed: 0,
+        total: None,
+        message: String::new(),
+    });
     let (inventory, worker_settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
     let mut plan = tokio::task::spawn_blocking(move || {
         prepare_steps(request, &inventory, &worker_settings, &worker)
     })
     .await
     .map_err(|e| Error::Unavailable(e.to_string()))??;
+    let total = plan.steps.len() as u64;
     for (index, step) in plan.steps.iter_mut().enumerate() {
+        if ctx.cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        progress(Progress {
+            job_id: job_id.into(),
+            stage: "prepare".into(),
+            completed: index as u64,
+            total: Some(total),
+            message: plan.view.items[index]
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| plan.view.items[index].title.clone()),
+        });
         if let Step::Worktree { worktree, removal } = step {
             let (reviewed, ignored) =
                 crate::worktree_removal::prepare(ctx, worktree.clone(), settings.clone()).await?;
@@ -252,6 +327,11 @@ pub async fn prepare(
         } = step
         {
             protect_tracked_files(ctx, project, artifact).await?;
+            let (path, settings, cancel) =
+                (artifact.path.clone(), settings.clone(), ctx.cancel.clone());
+            tokio::task::spawn_blocking(move || artifact_in_scope(&path, &settings, &cancel))
+                .await
+                .map_err(|e| Error::Unavailable(e.to_string()))??;
         }
         if let Step::Ollama {
             endpoint,
@@ -280,8 +360,20 @@ fn prepare_steps(
         warnings: vec![],
         use_trash: settings.use_trash,
         worktree_changes: vec![],
+        runtime_dependents: vec![],
     };
     let mut steps = vec![];
+    let refresh_provider = match &request {
+        ActionRequest::InstallRuntime { provider, .. }
+        | ActionRequest::SetDefault { provider, .. }
+        | ActionRequest::RemoveRuntime { provider, .. }
+        | ActionRequest::UpdateTool { provider, .. }
+        | ActionRequest::UpdateTools { provider, .. }
+        | ActionRequest::RemoveTool { provider, .. }
+        | ActionRequest::RemoveAssets { provider, .. }
+        | ActionRequest::DownloadAsset { provider, .. } => Some(*provider),
+        _ => None,
+    };
     let is_remove_runtime = matches!(&request, ActionRequest::RemoveRuntime { .. });
     let is_remove_tool = matches!(&request, ActionRequest::RemoveTool { .. });
     match request {
@@ -338,7 +430,7 @@ fn prepare_steps(
                 })?;
             view.kind = "removeWorktree".into();
             view.items.push(PlanItem { title: format!("Remove worktree {}", project.name), path: Some(worktree.path.clone()), command: Some(crate::worktree_removal::removal_command(ctx, worktree, false)?.display()), bytes: size.bytes, restore: Some("Recreate the checkout with git worktree add. Only the branch and committed source can be restored from Git.".into()) });
-            view.warnings.push("Git permanently removes selected checkouts without using Trash. Branches and commits remain in the main repository. Worktrees with changes are kept unless you explicitly choose to discard those changes. Locks, protection, links, and nested repositories still block removal.".into());
+            view.warnings.push("Git permanently removes selected checkouts without using Trash. Branches and commits remain in the main repository. Worktrees with changes are kept unless you explicitly choose to discard those changes. Locks and protected paths still block removal. Links inside a checkout are removed without following their targets. Nested repositories and submodules require explicit discard confirmation.".into());
             steps.push(Step::Worktree {
                 worktree: worktree.clone(),
                 removal: None,
@@ -370,7 +462,6 @@ fn prepare_steps(
                         continue;
                     }
                     eligible_project(project, settings)?;
-                    artifact_in_scope(&artifact.path, settings, &ctx.cancel)?;
                     if !artifact.can_clean
                         || !is_project_artifact(project, artifact)
                         || !artifact.size.complete
@@ -467,11 +558,8 @@ fn prepare_steps(
                 ));
             }
             if remove {
-                for project in &inventory.projects {
-                    if project.providers.contains(&provider) && !project.pins.is_empty() {
-                        view.warnings.push(format!("{} has runtime version pins. Verify compatibility before uninstalling.", project.path.display()));
-                    }
-                }
+                view.runtime_dependents =
+                    crate::runtime_pins::dependents(&inventory.projects, provider, runtime);
             } else {
                 view.warnings.push("This changes the manager's default. Already-open terminals and Envark may keep their inherited environment until restarted.".into());
             }
@@ -615,7 +703,11 @@ fn prepare_steps(
             "Select between 1 and 500 items.".into(),
         ));
     }
-    Ok(Plan { view, steps })
+    Ok(Plan {
+        view,
+        steps,
+        refresh_provider,
+    })
 }
 
 fn remove_directory(
@@ -1043,6 +1135,7 @@ mod tests {
         let ctx = Context::new(CancellationToken::new()).unwrap();
         let size = measure(&path, &ctx.cancel).unwrap();
         let plan = Plan {
+            refresh_provider: None,
             view: PlanView {
                 id: "test".into(),
                 kind: "clean".into(),
@@ -1057,6 +1150,7 @@ mod tests {
                 warnings: vec![],
                 use_trash: false,
                 worktree_changes: vec![],
+                runtime_dependents: vec![],
             },
             steps: vec![Step::Asset {
                 root: root_path,

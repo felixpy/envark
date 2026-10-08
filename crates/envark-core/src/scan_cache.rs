@@ -73,6 +73,16 @@ pub struct ScanCache {
 }
 
 impl ScanCache {
+    pub(crate) fn invalidate_paths(&mut self, paths: &[PathBuf]) {
+        for (root, entry) in &mut self.roots {
+            if paths
+                .iter()
+                .any(|path| path.starts_with(root) || root.starts_with(path))
+            {
+                entry.snapshot = None;
+            }
+        }
+    }
     pub fn scan(
         &mut self,
         settings: &Settings,

@@ -114,7 +114,13 @@ async function fixture(native = false) {
     menu: (action: string) => act(() => menu?.(action)),
     progress: (stage: string, completed = 0) =>
       act(() =>
-        progress?.({ jobId: 'scan', stage, completed, total: null, message: '7 projects' }),
+        progress?.({
+          jobId: (refresh.mock.calls.at(-1) as unknown as [string])[0],
+          stage,
+          completed,
+          total: null,
+          message: '7 projects',
+        }),
       ),
   }
 }
@@ -132,14 +138,14 @@ it('describes the active scan phase independently of the current page', async ()
   menu('refresh')
   await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
   progress('discover', 42)
-  expect(screen.getByRole('status').textContent).toBe('Scanning projects · 42 paths checked')
+  expect(screen.getByRole('status').textContent).toContain('Scanning projects · 42 paths checked')
   menu('activity')
   await screen.findByRole('heading', { name: 'Activity' })
-  expect(screen.getByRole('status').textContent).toBe('Scanning projects · 42 paths checked')
+  expect(screen.getByRole('status').textContent).toContain('Scanning projects · 42 paths checked')
   progress('updates')
-  expect(screen.getByRole('status').textContent).toBe('Checking tool updates')
+  expect(screen.getByRole('status').textContent).toContain('Checking tool updates')
   progress('measure-caches')
-  expect(screen.getByRole('status').textContent).toBe('Measuring caches')
+  expect(screen.getByRole('status').textContent).toContain('Measuring caches')
   await act(async () => finish())
   expect(screen.queryByRole('status')).toBeNull()
 })

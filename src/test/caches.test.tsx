@@ -52,6 +52,9 @@ it('selects every eligible cache, shows a mixed state, and explains read-only ro
   expect((await screen.findByRole('tooltip')).textContent).toBe('Cache owner is unavailable.')
   await user.click(screen.getByRole('button', { name: 'Review cleanup (2)' }))
   await waitFor(() =>
-    expect(prepare).toHaveBeenCalledWith({ kind: 'cleanCaches', ids: ['npm', 'pnpm'] }),
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'cleanCaches', ids: ['npm', 'pnpm'] },
+      expect.any(String),
+    ),
   )
 })

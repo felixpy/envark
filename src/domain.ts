@@ -198,6 +198,7 @@ export type ActionRequest =
   | { kind: 'updateTools'; provider: ProviderId; ids: string[] }
   | { kind: 'downloadAsset'; provider: ProviderId; name: string }
 export interface Plan {
+  runtimeDependents?: { path: string; pins: string[] }[]
   id: string
   kind: string
   createdAt: number
