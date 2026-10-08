@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -237,3 +238,90 @@ test('updater manifests verify signatures, distinguish macOS architectures, and 
     /signature is invalid/,
   )
 })
+
+test(
+  'macOS packaging checks reject missing resource seals and invalid signatures',
+  {
+    skip: process.platform === 'win32',
+  },
+  (t) => {
+    const root = fixture(t)
+    const bundle = join(root, 'bundle with spaces')
+    const app = join(bundle, 'macos', 'Envark.app')
+    const dmgApp = join(root, 'disk image payload', 'Envark.app')
+    const sealPath = (path) => join(path, 'Contents', '_CodeSignature', 'CodeResources')
+    for (const path of [app, dmgApp]) {
+      mkdirSync(dirname(sealPath(path)), { recursive: true })
+      writeFileSync(sealPath(path), 'fixture seal')
+    }
+    const archive = join(bundle, 'macos', 'Envark.app.tar.gz')
+    const pack = () =>
+      execFileSync('tar', ['-czf', archive, '-C', dirname(app), 'Envark.app'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    pack()
+    mkdirSync(join(bundle, 'dmg'))
+    writeFileSync(join(bundle, 'dmg', 'Envark.dmg'), 'fixture image')
+    const bin = join(root, 'bin')
+    const log = join(root, 'verification.log')
+    mkdirSync(bin)
+    // Apple tools are mocked on non-macOS hosts; real signatures are checked in CI.
+    writeFileSync(
+      join(bin, 'codesign'),
+      `#!/usr/bin/env bash
+set -eu
+echo "codesign $*" >> "$VERIFY_LOG"
+if [[ -n "$FAIL_COPY" && "$*" == *"$FAIL_COPY"* ]]; then exit 1; fi
+`,
+      { mode: 0o755 },
+    )
+    writeFileSync(
+      join(bin, 'hdiutil'),
+      `#!/usr/bin/env bash
+set -eu
+echo "hdiutil $*" >> "$VERIFY_LOG"
+if [[ "$1" == attach ]]; then cp -R "$VERIFY_DMG_APP" "$6/Envark.app"; fi
+`,
+      { mode: 0o755 },
+    )
+    function run(extra = {}) {
+      writeFileSync(log, '')
+      return spawnSync('bash', [resolve('scripts/verify-macos-bundles.sh'), bundle], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          VERIFY_LOG: log,
+          VERIFY_DMG_APP: dmgApp,
+          FAIL_COPY: '',
+          REQUIRE_UPDATER_ARCHIVE: 'true',
+          ...extra,
+        },
+      })
+    }
+    const success = run()
+    assert.equal(success.status, 0, success.stderr)
+    const commands = readFileSync(log, 'utf8')
+    assert.equal(commands.split('\n').filter((line) => line.startsWith('codesign ')).length, 3)
+    assert.match(commands, /hdiutil detach/)
+    for (const copy of ['/macos/', '/updater/', '/dmg/']) {
+      assert.notEqual(run({ FAIL_COPY: copy }).status, 0)
+      if (copy === '/dmg/') assert.match(readFileSync(log, 'utf8'), /hdiutil detach/)
+      else assert.doesNotMatch(readFileSync(log, 'utf8'), /hdiutil attach/)
+    }
+    rmSync(sealPath(app))
+    assert.match(run().stderr, /Missing application resource seal/)
+    pack()
+    writeFileSync(sealPath(app), 'fixture seal')
+    assert.match(run().stderr, /Missing application resource seal/)
+    pack()
+    rmSync(sealPath(dmgApp))
+    assert.match(run().stderr, /Missing application resource seal/)
+    assert.match(readFileSync(log, 'utf8'), /hdiutil detach/)
+    writeFileSync(sealPath(dmgApp), 'fixture seal')
+    rmSync(archive)
+    assert.notEqual(run().status, 0, 'Release builds require an updater archive')
+    assert.equal(run({ REQUIRE_UPDATER_ARCHIVE: 'false' }).status, 0)
+  },
+)
