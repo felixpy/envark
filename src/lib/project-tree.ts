@@ -59,6 +59,40 @@ export function eligibleArtifacts(project?: Project) {
   )
 }
 
+export type ProjectMode = 'artifacts' | 'worktrees'
+
+export function worktreeRemovalReason(node: WorkspaceNode, t: (zh: string, en: string) => string) {
+  if (!node.worktree) return t('主仓库不可移除。', 'The main checkout cannot be removed.')
+  if (node.project?.protected) return t('项目已保护', 'Project is protected')
+  if (node.worktree.locked)
+    return t(
+      '工作树已锁定，请先通过 Git 解锁。',
+      'Worktree is locked. Unlock it through Git first.',
+    )
+  if (node.worktree.issue) return node.worktree.issue
+  if (!node.project || !node.worktree.size?.complete)
+    return t('请先完成工作树扫描。', 'Complete the worktree scan first.')
+  return null
+}
+
+export function eligibleWorktrees(group: ProjectGroup) {
+  return group.children.filter((node) => !worktreeRemovalReason(node, (_, en) => en))
+}
+
+export function artifactGroups(project: Project) {
+  const groups = new Map<string, Artifact[]>()
+  for (const artifact of project.artifacts) {
+    const group = groups.get(artifact.name) ?? []
+    group.push(artifact)
+    groups.set(artifact.name, group)
+  }
+  return [...groups].map(([name, artifacts]) => ({
+    name,
+    artifacts,
+    eligible: artifacts.filter((a) => !cleanupReason(project, a, (_, en) => en)),
+  }))
+}
+
 export function groupProjects(inventory: Inventory): ProjectGroup[] {
   const groups = new Map<string, ProjectGroup>()
   for (const project of inventory.projects.filter((p) => !p.isWorktree)) {
@@ -121,6 +155,8 @@ export function filterProjectGroups(
     idleOnly: boolean
     idleDays: number
     sort: ProjectSort
+    mode?: ProjectMode
+    cleanableOnly?: boolean
   },
 ): ProjectGroup[] {
   const keyword = options.query.trim().toLowerCase()
@@ -131,9 +167,21 @@ export function filterProjectGroups(
     (!options.idleOnly || (project && idle(project, options.idleDays)))
   const result = groups.flatMap((group) => {
     const parentMatches = matchesText(group.root ?? group.repository)
-    const includeRoot = Boolean(group.root && parentMatches && matchesFilter(group.root))
+    const includeRoot = Boolean(
+      options.mode !== 'worktrees' &&
+      group.root &&
+      parentMatches &&
+      matchesFilter(group.root) &&
+      (!options.cleanableOnly || eligibleArtifacts(group.root).length),
+    )
     const children = group.children.filter(
-      (child) => matchesFilter(child.project) && (parentMatches || matchesText(child)),
+      (child) =>
+        matchesFilter(child.project) &&
+        (parentMatches || matchesText(child)) &&
+        (!options.cleanableOnly ||
+          (options.mode === 'worktrees'
+            ? !worktreeRemovalReason(child, (_, en) => en)
+            : eligibleArtifacts(child.project).length)),
     )
     return includeRoot || children.length ? [{ ...group, includeRoot, children }] : []
   })
@@ -154,7 +202,11 @@ export function filterProjectGroups(
   const value = (projects: Project[]) => {
     if (!projects.length) return null
     if (bySize)
-      return projects.reduce((sum, p) => sum + (worktreeSizes.get(p.id) ?? projectBytes(p)), 0)
+      return projects.reduce(
+        (sum, p) =>
+          sum + (options.mode === 'worktrees' ? (worktreeSizes.get(p.id) ?? 0) : projectBytes(p)),
+        0,
+      )
     const times = projects.flatMap((p) => (p.lastActive === null ? [] : [p.lastActive]))
     return times.length ? Math.max(...times) : null
   }

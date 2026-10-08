@@ -13,6 +13,8 @@ import { useStore } from '@/store'
 import { useSelection } from '@/hooks/use-selection'
 import {
   eligibleArtifacts,
+  eligibleWorktrees,
+  type ProjectMode,
   filterProjectGroups,
   groupProjects,
   groupWorkspaces,
@@ -37,6 +39,8 @@ export default function Projects() {
   const s = useStore()
   const { t } = s
   const { inventory, settings } = s.data
+  const [mode, setMode] = useState<ProjectMode>('artifacts')
+  const [cleanableOnly, setCleanableOnly] = useState(true)
   const [query, setQuery] = useState('')
   const [provider, setProvider] = useState('all')
   const [idleOnly, setIdleOnly] = useState(s.focus.filter === 'idle')
@@ -55,10 +59,16 @@ export default function Projects() {
     idleOnly,
     idleDays: settings.idleDays,
     sort,
+    mode,
+    cleanableOnly,
   })
   const projects = groups.flatMap(groupWorkspaces)
   const eligible = projects.flatMap(eligibleArtifacts)
-  const selection = useSelection(eligible.map((a) => a.id))
+  const artifactSelection = useSelection(eligible.map((a) => a.id))
+  const worktrees = groups.flatMap(eligibleWorktrees)
+  const worktreeSelection = useSelection(worktrees.map((w) => w.id))
+  const selection = mode === 'worktrees' ? worktreeSelection : artifactSelection
+  const chosenWorktrees = worktrees.filter((w) => worktreeSelection.selected.has(w.id))
   const chosen = eligible.filter((a) => selection.selected.has(a.id))
   const selectedProjects = projects.filter((p) =>
     eligibleArtifacts(p).some((a) => selection.selected.has(a.id)),
@@ -94,6 +104,12 @@ export default function Projects() {
           </>
         }
       />
+      <Tabs value={mode} onValueChange={(value) => setMode(value as ProjectMode)}>
+        <TabsList>
+          <TabsTrigger value="artifacts">{t('产物与依赖', 'Artifacts & dependencies')}</TabsTrigger>
+          <TabsTrigger value="worktrees">{t('工作树', 'Worktrees')}</TabsTrigger>
+        </TabsList>
+      </Tabs>
       <div className="flex flex-wrap items-center gap-3">
         <SearchInput
           value={query}
@@ -148,12 +164,25 @@ export default function Projects() {
           </Button>
         )}
         <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
-          <Switch checked={idleOnly} onCheckedChange={setIdleOnly} />
+          <Switch
+            aria-label={t('仅闲置', 'Idle only')}
+            checked={idleOnly}
+            onCheckedChange={setIdleOnly}
+          />
           {t('仅闲置', 'Idle only')} &gt; {settings.idleDays} {t('天', 'days')}
+        </label>
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Switch
+            aria-label={t('仅可清理', 'Cleanable only')}
+            checked={cleanableOnly}
+            onCheckedChange={setCleanableOnly}
+          />
+          {t('仅可清理', 'Cleanable only')}
         </label>
       </div>
       {groups.length ? (
         <ProjectTable
+          mode={mode}
           groups={groups}
           collapsed={collapsed}
           toggleExpanded={toggleExpanded}
@@ -173,21 +202,32 @@ export default function Projects() {
               )}
         </Empty>
       )}
-      {chosen.length > 0 && (
+      {(mode === 'worktrees' ? chosenWorktrees.length > 0 : chosen.length > 0) && (
         <div className="sticky bottom-4 z-10 mx-auto flex w-fit max-w-full flex-wrap items-center gap-4 rounded-xl border bg-background px-4 py-3 shadow-lg">
-          <span className="text-sm">
-            {t('已选', 'Selected')} {selectedProjects.length} {t('个工作区', 'workspaces')}
-            {selectedWorktrees > 0 && (
-              <>
-                {' '}
-                ({t('含', 'including')} {selectedWorktrees} worktree)
-              </>
-            )}{' '}
-            · {chosen.length} {t('个目录', 'directories')} ·{' '}
-            <span className="font-mono">
-              {formatBytes(chosen.reduce((sum, a) => sum + a.size.bytes, 0))}
+          {mode === 'worktrees' ? (
+            <span className="text-sm">
+              {t('已选', 'Selected')} {chosenWorktrees.length} {t('个工作树', 'worktrees')} ·{' '}
+              <span className="font-mono">
+                {formatBytes(
+                  chosenWorktrees.reduce((sum, w) => sum + (w.worktree?.size?.bytes ?? 0), 0),
+                )}
+              </span>
             </span>
-          </span>
+          ) : (
+            <span className="text-sm">
+              {t('已选', 'Selected')} {selectedProjects.length} {t('个工作区', 'workspaces')}
+              {selectedWorktrees > 0 && (
+                <>
+                  {' '}
+                  ({t('含', 'including')} {selectedWorktrees} worktree)
+                </>
+              )}{' '}
+              · {chosen.length} {t('个目录', 'directories')} ·{' '}
+              <span className="font-mono">
+                {formatBytes(chosen.reduce((sum, a) => sum + a.size.bytes, 0))}
+              </span>
+            </span>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -198,11 +238,17 @@ export default function Projects() {
           <ActionButton
             reason={busyReason}
             onClick={() =>
-              void s.prepare({ kind: 'cleanProjects', artifactIds: chosen.map((a) => a.id) })
+              void s.prepare(
+                mode === 'worktrees'
+                  ? { kind: 'removeWorktrees', ids: chosenWorktrees.map((w) => w.id) }
+                  : { kind: 'cleanProjects', artifactIds: chosen.map((a) => a.id) },
+              )
             }
           >
             <Trash2 />
-            {t('审阅清理', 'Review cleanup')}
+            {mode === 'worktrees'
+              ? t('审阅移除工作树', 'Review worktree removal')
+              : t('审阅清理', 'Review cleanup')}
           </ActionButton>
         </div>
       )}

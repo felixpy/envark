@@ -11,9 +11,13 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
-import { formatBytes, metadata, projectBytes, type Artifact, type Project } from '@/domain'
+import { formatBytes, metadata, projectBytes } from '@/domain'
 import {
   cleanupReason,
+  artifactGroups,
+  eligibleWorktrees,
+  worktreeRemovalReason,
+  type ProjectMode,
   eligibleArtifacts,
   groupWorkspaces,
   type ProjectGroup,
@@ -27,12 +31,6 @@ import { Button } from './ui/button'
 import { Card, CardContent } from './ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table'
 
-function relativePath(project: Project, artifact: Artifact) {
-  const root = project.path.replaceAll('\\', '/').replace(/\/$/, '')
-  const path = artifact.path.replaceAll('\\', '/')
-  return path.startsWith(`${displayPath(root)}/`) ? path.slice(root.length + 1) : artifact.name
-}
-
 function selectionState(ids: string[], selected: Set<string>) {
   const count = ids.filter((id) => selected.has(id)).length
   return count && count === ids.length ? true : count ? ('indeterminate' as const) : false
@@ -45,21 +43,26 @@ interface SelectionProps {
 
 export function ProjectTable({
   groups,
+  mode = 'artifacts',
   collapsed,
   toggleExpanded,
   selected,
   toggle,
 }: SelectionProps & {
   groups: ProjectGroup[]
+  mode?: ProjectMode
   collapsed: Set<string>
   toggleExpanded(id: string): void
 }) {
   const s = useStore()
   const { t } = s
-  const ids = groups
-    .flatMap(groupWorkspaces)
-    .flatMap(eligibleArtifacts)
-    .map((a) => a.id)
+  const ids =
+    mode === 'worktrees'
+      ? groups.flatMap(eligibleWorktrees).map((w) => w.id)
+      : groups
+          .flatMap(groupWorkspaces)
+          .flatMap(eligibleArtifacts)
+          .map((a) => a.id)
   const busyReason =
     s.busy || s.plan
       ? t(
@@ -75,7 +78,11 @@ export function ProjectTable({
             <TableRow>
               <TableHead className="w-10 pl-4">
                 <SelectionCheckbox
-                  aria-label={t('选择所有可清理项目', 'Select all eligible artifacts')}
+                  aria-label={
+                    mode === 'worktrees'
+                      ? t('选择全部可移除工作树', 'Select all eligible worktrees')
+                      : t('选择所有可清理项目', 'Select all eligible artifacts')
+                  }
                   reason={
                     busyReason ||
                     (!ids.length
@@ -88,7 +95,7 @@ export function ProjectTable({
               </TableHead>
               <TableHead>{t('项目', 'Project')}</TableHead>
               <TableHead>{t('最近活动', 'Last activity')}</TableHead>
-              <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>
+              {mode === 'artifacts' && <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>}
               <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
               <TableHead className="w-36 pr-4">
                 <span className="sr-only">{t('操作', 'Actions')}</span>
@@ -98,11 +105,15 @@ export function ProjectTable({
           <TableBody>
             {groups.map((group) => {
               const family = groupWorkspaces(group)
-              const familyIds = family.flatMap(eligibleArtifacts).map((a) => a.id)
+              const familyIds =
+                mode === 'worktrees'
+                  ? eligibleWorktrees(group).map((w) => w.id)
+                  : family.flatMap(eligibleArtifacts).map((a) => a.id)
               const expanded = !collapsed.has(group.repository.id)
               return (
                 <Fragment key={group.repository.id}>
                   <WorkspaceRow
+                    mode={mode}
                     node={{
                       id: group.root?.id ?? group.repository.id,
                       name: group.repository.name,
@@ -116,7 +127,12 @@ export function ProjectTable({
                     toggle={toggle}
                     familySize={
                       group.children.length
-                        ? family.reduce((sum, p) => sum + projectBytes(p), 0)
+                        ? mode === 'worktrees'
+                          ? group.children.reduce(
+                              (sum, w) => sum + (w.worktree?.size?.bytes ?? 0),
+                              0,
+                            )
+                          : family.reduce((sum, p) => sum + projectBytes(p), 0)
                         : undefined
                     }
                     disclosure={
@@ -141,10 +157,17 @@ export function ProjectTable({
                   {expanded &&
                     group.children.map((node, index) => (
                       <WorkspaceRow
+                        mode={mode}
                         key={node.id}
                         node={node}
                         included
-                        ids={eligibleArtifacts(node.project).map((a) => a.id)}
+                        ids={
+                          mode === 'worktrees'
+                            ? worktreeRemovalReason(node, t)
+                              ? []
+                              : [node.id]
+                            : eligibleArtifacts(node.project).map((a) => a.id)
+                        }
                         child={index === group.children.length - 1 ? 'last' : 'branch'}
                         selected={selected}
                         toggle={toggle}
@@ -161,6 +184,7 @@ export function ProjectTable({
 }
 
 function WorkspaceRow({
+  mode,
   node,
   included,
   ids,
@@ -170,6 +194,7 @@ function WorkspaceRow({
   selected,
   toggle,
 }: SelectionProps & {
+  mode: ProjectMode
   node: WorkspaceNode
   included: boolean
   ids: string[]
@@ -203,14 +228,7 @@ function WorkspaceRow({
     : project.protected
       ? t('项目已保护', 'Project is protected')
       : t('没有可安全清理的目录', 'No eligible directories')
-  const removalReason = worktree?.locked
-    ? t('工作树已锁定，请先通过 Git 解锁。', 'Worktree is locked. Unlock it through Git first.')
-    : excluded ||
-      (project?.protected ? t('项目已保护', 'Project is protected') : null) ||
-      (!project ? unavailable : worktree?.issue) ||
-      (!worktree?.size?.complete
-        ? t('请先完成工作树扫描。', 'Complete the worktree scan first.')
-        : null)
+  const removalReason = worktreeRemovalReason(node, t)
   const cleanLabel =
     familySize !== undefined
       ? t('全部清理产物', 'Clean group artifacts')
@@ -233,7 +251,10 @@ function WorkspaceRow({
   const checkbox = (
     <SelectionCheckbox
       aria-label={`${t('选择', 'Select')} ${node.name}`}
-      reason={busyReason || (!ids.length ? excluded || unavailable : null)}
+      reason={
+        busyReason ||
+        (!ids.length ? (mode === 'worktrees' ? removalReason : excluded || unavailable) : null)
+      }
       checked={selectionState(ids, selected)}
       onCheckedChange={(on) => toggle(ids, on === true)}
     />
@@ -327,40 +348,59 @@ function WorkspaceRow({
           : t('未知', 'Unknown')}
         {project && !project.activityComplete && <p>{t('扫描不完整', 'Partial scan')}</p>}
       </TableCell>
-      <TableCell>
-        <div className="flex min-w-28 max-w-72 flex-wrap gap-1.5">
-          {project?.artifacts.map((artifact) => {
-            const reason = excluded || cleanupReason(project, artifact, t)
-            return (
-              <label
-                key={artifact.id}
-                className={`inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs ${reason ? 'text-muted-foreground' : 'cursor-pointer'}`}
-                title={busyReason || reason ? undefined : displayPath(artifact.path)}
-              >
-                <SelectionCheckbox
-                  className="size-3.5"
-                  aria-label={relativePath(project, artifact)}
-                  reason={busyReason || reason}
-                  checked={!reason && selected.has(artifact.id)}
-                  onCheckedChange={(on) => toggle([artifact.id], on === true)}
-                />
-                <span className="break-all whitespace-normal font-mono">
-                  {relativePath(project, artifact)}
-                </span>
-              </label>
-            )
-          })}
-          {!project?.artifacts.length && (
-            <span className="text-xs text-muted-foreground">
-              {project
-                ? t('未发现可重建产物', 'No generated artifacts found')
-                : t('未完成扫描', 'Not scanned')}
-            </span>
-          )}
-        </div>
-      </TableCell>
+      {mode === 'artifacts' && (
+        <TableCell>
+          <div className="flex min-w-28 max-w-80 flex-wrap gap-1.5">
+            {project &&
+              artifactGroups(project).map(({ name, artifacts, eligible }) => {
+                const reason =
+                  excluded || (!eligible.length ? cleanupReason(project, artifacts[0], t) : null)
+                const artifactIds = eligible.map((a) => a.id)
+                return (
+                  <label
+                    key={name}
+                    title={artifacts
+                      .map(
+                        (a) =>
+                          `${displayPath(a.path)}${a.cleanupIssue ? ` — ${a.cleanupIssue}` : ''}`,
+                      )
+                      .join('\n')}
+                    className={`inline-flex max-w-full items-center gap-1.5 rounded-md bg-muted px-2 py-1 text-xs ${reason ? 'text-muted-foreground' : 'cursor-pointer'}`}
+                  >
+                    <SelectionCheckbox
+                      className="size-3.5"
+                      aria-label={name}
+                      reason={busyReason || reason}
+                      checked={!reason && selectionState(artifactIds, selected)}
+                      onCheckedChange={(on) => toggle(artifactIds, on === true)}
+                    />
+                    <span className="font-mono">{name}</span>
+                    {artifacts.length > 1 && (
+                      <span className="text-muted-foreground">×{artifacts.length}</span>
+                    )}
+                    <span className="text-muted-foreground">
+                      {formatBytes(artifacts.reduce((sum, a) => sum + a.size.bytes, 0))}
+                    </span>
+                    {eligible.length > 0 && eligible.length < artifacts.length && (
+                      <span>
+                        {artifacts.length - eligible.length} {t('项不可清理', 'unavailable')}
+                      </span>
+                    )}
+                  </label>
+                )
+              })}
+            {!project?.artifacts.length && (
+              <span className="text-xs text-muted-foreground">
+                {t('未发现可重建产物', 'No generated artifacts found')}
+              </span>
+            )}
+          </div>
+        </TableCell>
+      )}
       <TableCell className="text-right font-mono text-xs">
-        {worktree?.size ? (
+        {mode === 'worktrees' && !worktree ? (
+          formatBytes(familySize ?? 0)
+        ) : mode === 'worktrees' && worktree?.size ? (
           <>
             {!worktree.size.complete && '≥ '}
             {formatBytes(worktree.size.bytes)}
@@ -379,39 +419,26 @@ function WorkspaceRow({
         ) : (
           '—'
         )}
-        {familySize !== undefined && (
+        {mode === 'artifacts' && familySize !== undefined && (
           <p className="mt-1 whitespace-nowrap text-[10px] text-muted-foreground">
             {t('产物含 worktree', 'Artifacts with worktrees')} {formatBytes(familySize)}
           </p>
         )}
       </TableCell>
       <TableCell className="pr-4 text-right">
-        <div className="inline-grid grid-cols-3 items-center gap-1">
-          <ActionButton
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground"
-            aria-label={cleanLabel}
-            hint={cleanLabel}
-            reason={busyReason || (!ids.length ? excluded || unavailable : null)}
-            onClick={() => void s.prepare({ kind: 'cleanProjects', artifactIds: ids })}
-          >
-            <Trash2 aria-hidden />
-          </ActionButton>
-          {worktree ? (
+        <div className="flex items-center justify-end gap-1">
+          {mode === 'artifacts' && (
             <ActionButton
               variant="ghost"
               size="icon-sm"
-              className="text-muted-foreground not-aria-disabled:hover:bg-destructive/10 not-aria-disabled:hover:text-destructive"
-              aria-label={removeLabel}
-              hint={removeLabel}
-              reason={busyReason || removalReason}
-              onClick={() => void s.prepare({ kind: 'removeWorktree', id: worktree.id })}
+              className="text-muted-foreground"
+              aria-label={cleanLabel}
+              hint={cleanLabel}
+              reason={busyReason || (!ids.length ? excluded || unavailable : null)}
+              onClick={() => void s.prepare({ kind: 'cleanProjects', artifactIds: ids })}
             >
-              <FolderX aria-hidden />
+              <Trash2 aria-hidden />
             </ActionButton>
-          ) : (
-            <span aria-hidden />
           )}
           {project && (
             <ActionButton
@@ -425,6 +452,19 @@ function WorkspaceRow({
               onClick={() => void protect()}
             >
               {project.protected ? <ShieldCheck aria-hidden /> : <Shield aria-hidden />}
+            </ActionButton>
+          )}
+          {worktree && (
+            <ActionButton
+              variant="ghost"
+              size="icon-sm"
+              className="text-muted-foreground not-aria-disabled:hover:bg-destructive/10 not-aria-disabled:hover:text-destructive"
+              aria-label={removeLabel}
+              hint={removeLabel}
+              reason={busyReason || removalReason}
+              onClick={() => void s.prepare({ kind: 'removeWorktree', id: worktree.id })}
+            >
+              <FolderX aria-hidden />
             </ActionButton>
           )}
         </div>

@@ -153,7 +153,9 @@ it('overview cards and suggested rows open the correct destinations with idle fi
   expect(screen.queryByRole('button', { name: 'Worktrees' })).toBeNull()
   await user.click(await screen.findByRole('button', { name: /2 inactive workspaces/ }))
   await screen.findByRole('heading', { name: 'Project space' })
-  expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('true')
+  expect(screen.getByRole('switch', { name: 'Idle only' }).getAttribute('aria-checked')).toBe(
+    'true',
+  )
   expect(screen.queryByText('recent-repo')).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Overview' }))
   await user.click(await screen.findByRole('button', { name: /Worktree artifacts/ }))
