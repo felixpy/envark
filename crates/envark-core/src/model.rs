@@ -98,19 +98,18 @@ fn deserialize_disabled_shortcuts<'de, D: Deserializer<'de>>(
 
 impl Default for Settings {
     fn default() -> Self {
-        let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
-        Self::for_environment(home, sys_locale::get_locale().as_deref())
+        Self::for_locale(sys_locale::get_locale().as_deref())
     }
 }
 
 impl Settings {
-    fn for_environment(home: Option<PathBuf>, locale: Option<&str>) -> Self {
+    fn for_locale(locale: Option<&str>) -> Self {
         Self {
             language: language_for_locale(locale).into(),
             theme: "system".into(),
             scan_on_launch: true,
             check_updates: true,
-            roots: home.into_iter().collect(),
+            roots: vec![],
             excludes: vec![".git".into(), ".svn".into(), ".hg".into()],
             idle_days: 90,
             use_trash: true,
@@ -150,8 +149,7 @@ mod settings_tests {
     use super::*;
 
     #[test]
-    fn initial_preferences_use_the_home_folder_and_supported_system_language() {
-        let home = PathBuf::from("/test-home");
+    fn initial_preferences_require_scan_folders_and_use_supported_system_language() {
         for (locale, language) in [
             (Some("zh-CN"), "zh-CN"),
             (Some("zh_SG.UTF-8"), "zh-CN"),
@@ -164,13 +162,12 @@ mod settings_tests {
             (Some("ja-JP"), "en"),
             (None, "en"),
         ] {
-            let settings = Settings::for_environment(Some(home.clone()), locale);
+            let settings = Settings::for_locale(locale);
             assert_eq!(settings.language, language);
-            assert_eq!(settings.roots, vec![home.clone()]);
+            assert!(settings.roots.is_empty());
             assert!(settings.scan_on_launch);
             assert!(settings.check_updates);
         }
-        assert!(Settings::for_environment(None, None).roots.is_empty());
     }
 }
 
