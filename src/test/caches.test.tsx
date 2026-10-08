@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { backend } from '@/bridge'
 import { emptySnapshot } from '@/domain'
@@ -43,11 +43,12 @@ it('selects every eligible cache, shows a mixed state, and explains read-only ro
       .getAttribute('aria-checked'),
   ).toBe('mixed')
   await user.click(screen.getByRole('checkbox', { name: 'Select all eligible caches' }))
-  expect(
-    screen.getByRole('checkbox', { name: 'Select external' }).getAttribute('aria-disabled'),
-  ).toBe('true')
+  expect(screen.queryByRole('checkbox', { name: 'Select external' })).toBeNull()
+  expect(screen.getAllByRole('table')).toHaveLength(2)
+  const external = screen.getByText('external').closest('section')!
+  expect(within(external).queryByRole('checkbox')).toBeNull()
   expect(screen.queryByText('Cache owner is unavailable.')).toBeNull()
-  await user.hover(screen.getByRole('checkbox', { name: 'Select external' }))
+  await user.hover(within(screen.getByText('external').closest('tr')!).getByText('Owner-managed'))
   expect((await screen.findByRole('tooltip')).textContent).toBe('Cache owner is unavailable.')
   await user.click(screen.getByRole('button', { name: 'Review cleanup (2)' }))
   await waitFor(() =>
