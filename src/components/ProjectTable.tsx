@@ -109,7 +109,7 @@ export function ProjectTable({
                 mode === 'worktrees'
                   ? eligibleWorktrees(group).map((w) => w.id)
                   : family.flatMap(eligibleArtifacts).map((a) => a.id)
-              const expanded = !collapsed.has(group.repository.id)
+              const expanded = mode === 'artifacts' || !collapsed.has(group.repository.id)
               return (
                 <Fragment key={group.repository.id}>
                   <WorkspaceRow
@@ -136,7 +136,7 @@ export function ProjectTable({
                         : undefined
                     }
                     disclosure={
-                      group.children.length ? (
+                      mode === 'worktrees' && group.children.length ? (
                         <Button
                           variant="ghost"
                           size="sm"

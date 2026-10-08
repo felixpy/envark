@@ -154,8 +154,13 @@ function withWorktrees(data: Snapshot) {
     }))
 }
 
-it('selects a repository family, keeps partial state, and retains collapsed selections', async () => {
-  const { prepare } = fixture(withWorktrees)
+it('keeps worktree folding out of artifact mode and preserves its selection across modes', async () => {
+  const { prepare } = fixture((data) => {
+    withWorktrees(data)
+    data.inventory.worktrees.forEach((w) => {
+      w.size = { bytes: 2048, files: 2, skipped: 0, complete: true }
+    })
+  })
   const user = userEvent.setup()
   await screen.findByText('repository')
   await user.click(screen.getByRole('checkbox', { name: 'Select old-branch' }))
@@ -163,8 +168,14 @@ it('selects a repository family, keeps partial state, and retains collapsed sele
     screen.getByRole('checkbox', { name: 'Select repository' }).getAttribute('aria-checked'),
   ).toBe('mixed')
   await user.click(screen.getByRole('checkbox', { name: 'Select repository' }))
+  expect(screen.queryByRole('button', { name: 'Collapse worktrees' })).toBeNull()
+  expect(screen.queryByRole('button', { name: /Toggle worktrees/ })).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Worktrees' }))
   await user.click(screen.getByRole('button', { name: 'Collapse worktrees' }))
-  expect(screen.queryByText('old-branch')).toBeNull()
+  expect(screen.queryByRole('checkbox', { name: 'Select old-branch' })).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Artifacts & dependencies' }))
+  expect(screen.getByRole('checkbox', { name: 'Select old-branch' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Expand worktrees' })).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
   expect(prepare).toHaveBeenCalledWith({
     kind: 'cleanProjects',

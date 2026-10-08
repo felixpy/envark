@@ -142,7 +142,7 @@ export default function Projects() {
             <SelectItem value="size-asc">{t('占用：从小到大', 'Size: smallest first')}</SelectItem>
           </SelectContent>
         </Select>
-        {parents.length > 0 && (
+        {mode === 'worktrees' && parents.length > 0 && (
           <Button
             variant="outline"
             size="sm"
@@ -163,22 +163,24 @@ export default function Projects() {
               : t('展开 worktree', 'Expand worktrees')}
           </Button>
         )}
-        <label className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
-          <Switch
-            aria-label={t('仅闲置', 'Idle only')}
-            checked={idleOnly}
-            onCheckedChange={setIdleOnly}
-          />
-          {t('仅闲置', 'Idle only')} &gt; {settings.idleDays} {t('天', 'days')}
-        </label>
-        <label className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Switch
-            aria-label={t('仅可清理', 'Cleanable only')}
-            checked={cleanableOnly}
-            onCheckedChange={setCleanableOnly}
-          />
-          {t('仅可清理', 'Cleanable only')}
-        </label>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Switch
+              aria-label={t('仅闲置', 'Idle only')}
+              checked={idleOnly}
+              onCheckedChange={setIdleOnly}
+            />
+            {t('仅闲置', 'Idle only')} &gt; {settings.idleDays} {t('天', 'days')}
+          </label>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Switch
+              aria-label={t('仅可清理', 'Cleanable only')}
+              checked={cleanableOnly}
+              onCheckedChange={setCleanableOnly}
+            />
+            {t('仅可清理', 'Cleanable only')}
+          </label>
+        </div>
       </div>
       {groups.length ? (
         <ProjectTable
