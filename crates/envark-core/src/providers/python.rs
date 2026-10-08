@@ -57,9 +57,60 @@ fn uv_inventory(json: &str, root: &Path, active: Option<&Path>) -> Result<Vec<Ru
     Ok(runtimes)
 }
 
+fn record_current(runtimes: &mut Vec<Runtime>, binary: &Path, version: &str) {
+    let parent = binary.parent().unwrap_or(binary);
+    let selected = runtimes.iter().position(|runtime| {
+        runtime.version == version
+            && if runtime.managed {
+                binary.starts_with(&runtime.path)
+            } else {
+                runtime.path == parent
+            }
+    });
+    for runtime in runtimes.iter_mut() {
+        runtime.active = false;
+    }
+    if let Some(index) = selected {
+        runtimes[index].active = true;
+        runtimes[index].active_known = true;
+    } else {
+        runtimes.push(Runtime {
+            id: id_for("runtime", binary),
+            version: version.into(),
+            selector: None,
+            manager: "PATH".into(),
+            path: parent.into(),
+            active: true,
+            active_known: true,
+            managed: false,
+            size: None,
+            note: Some("Managed by the system or its original installer.".into()),
+        });
+    }
+}
+
+pub(super) async fn current(ctx: &Context, runtimes: &mut Vec<Runtime>) {
+    for name in if cfg!(windows) {
+        ["python", "python3"]
+    } else {
+        ["python3", "python"]
+    } {
+        let Ok(output) = ctx.read(name, &["-I", "-S", "-c", "import json,sys; print(json.dumps([sys.executable, '.'.join(map(str, sys.version_info[:3]))]))"]).await else { continue };
+        let Ok([binary, version]) = serde_json::from_str::<[String; 2]>(&output) else {
+            continue;
+        };
+        let Ok(binary) = std::fs::canonicalize(binary) else {
+            continue;
+        };
+        record_current(runtimes, &binary, &version);
+        break;
+    }
+}
+
 pub async fn uv(ctx: &Context) -> Result<Vec<Runtime>> {
     let root = ctx.read("uv", &["python", "dir"]).await?;
-    let root = std::fs::canonicalize(root.trim())?;
+    let root = PathBuf::from(root.trim());
+    let root = std::fs::canonicalize(&root).unwrap_or(root);
     let active = ctx
         .read("uv", &["python", "find", "--no-python-downloads"])
         .await
@@ -198,6 +249,20 @@ pub async fn verify_removal(ctx: &Context, runtime: &Runtime) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn system_interpreter_is_active_without_manager_ownership() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("python3");
+        std::fs::write(&binary, "python").unwrap();
+        let binary = std::fs::canonicalize(binary).unwrap();
+        let mut runtimes = vec![];
+        record_current(&mut runtimes, &binary, "3.9.6");
+        assert_eq!(runtimes.len(), 1);
+        assert!(runtimes[0].active && runtimes[0].active_known);
+        assert!(!runtimes[0].managed);
+        record_current(&mut runtimes, &binary, "3.9.6");
+        assert_eq!(runtimes.len(), 1);
+    }
 
     #[test]
     fn uv_keeps_architecture_implementation_and_variant_installations_distinct() {

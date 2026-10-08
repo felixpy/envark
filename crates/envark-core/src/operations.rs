@@ -24,6 +24,9 @@ use tokio_util::sync::CancellationToken;
     rename_all_fields = "camelCase"
 )]
 pub enum ActionRequest {
+    RemoveWorktrees {
+        ids: Vec<String>,
+    },
     RemoveWorktree {
         id: String,
     },
@@ -256,6 +259,33 @@ fn prepare_steps(
     let is_remove_runtime = matches!(&request, ActionRequest::RemoveRuntime { .. });
     let is_remove_tool = matches!(&request, ActionRequest::RemoveTool { .. });
     match request {
+        ActionRequest::RemoveWorktrees { ids } => {
+            if ids.is_empty() || ids.len() > 500 {
+                return Err(Error::InvalidInput(
+                    "Select between 1 and 500 worktrees.".into(),
+                ));
+            }
+            view.kind = "removeWorktree".into();
+            let mut seen = HashSet::new();
+            for id in ids {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let child = prepare_steps(
+                    ActionRequest::RemoveWorktree { id },
+                    inventory,
+                    settings,
+                    ctx,
+                )?;
+                view.items.extend(child.view.items);
+                for warning in child.view.warnings {
+                    if !view.warnings.contains(&warning) {
+                        view.warnings.push(warning);
+                    }
+                }
+                steps.extend(child.steps);
+            }
+        }
         ActionRequest::RemoveWorktree { id } => {
             let worktree = inventory
                 .worktrees
@@ -1003,6 +1033,61 @@ mod tests {
             std::fs::metadata(shared).unwrap().len(),
             result.removed_bytes
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_dependencies_without_local_markers_can_be_cleaned_without_removing_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::git::init(&root);
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'").unwrap();
+        for name in ["web", "api"] {
+            let package = root.join("packages").join(name);
+            std::fs::create_dir_all(package.join("node_modules/dep")).unwrap();
+            std::fs::write(package.join("package.json"), "{}").unwrap();
+            std::fs::write(package.join("source.ts"), "source").unwrap();
+            std::fs::write(package.join("node_modules/dep/index.js"), "generated").unwrap();
+        }
+        let settings = Settings {
+            roots: vec![root.clone()],
+            use_trash: false,
+            ..Default::default()
+        };
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let scanned = scanner::scan(&settings, &ctx.cancel, silent_progress(), "test").unwrap();
+        let inventory = Inventory {
+            projects: scanned.projects,
+            ..Default::default()
+        };
+        let artifacts = &inventory.projects[0].artifacts;
+        assert_eq!(artifacts.len(), 2);
+        assert!(artifacts.iter().all(|a| a.can_clean));
+        let plan = prepare(
+            ActionRequest::CleanProjects {
+                artifact_ids: artifacts.iter().map(|a| a.id.clone()).collect(),
+            },
+            &inventory,
+            &settings,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let result = execute(plan, settings, ctx, silent_progress(), "test".into())
+            .await
+            .unwrap();
+        assert!(result.items.iter().all(|item| item.status == "success"));
+        for name in ["web", "api"] {
+            let package = root.join("packages").join(name);
+            assert!(!package.join("node_modules").exists());
+            assert!(package.join("source.ts").is_file());
+            assert!(package.join("package.json").is_file());
+        }
+        assert!(root.join("pnpm-lock.yaml").is_file());
     }
 
     #[tokio::test]

@@ -104,6 +104,7 @@ describe('project cleanup selection', () => {
         artifactIds: ['recent-modules', 'older-modules'],
       }),
     )
+    await user.click(screen.getByRole('switch', { name: 'Cleanable only' }))
     expect(
       screen.getByRole('checkbox', { name: 'Select protected' }).getAttribute('aria-disabled'),
     ).toBe('true')
@@ -119,7 +120,7 @@ describe('project cleanup selection', () => {
     fixture()
     const user = userEvent.setup()
     await screen.findByText('older')
-    await user.click(screen.getByRole('switch'))
+    await user.click(screen.getByRole('switch', { name: 'Idle only' }))
     expect(screen.queryByText('recent')).toBeNull()
     expect(screen.getByText('older')).toBeTruthy()
   })
@@ -153,8 +154,13 @@ function withWorktrees(data: Snapshot) {
     }))
 }
 
-it('selects a repository family, keeps partial state, and retains collapsed selections', async () => {
-  const { prepare } = fixture(withWorktrees)
+it('keeps worktree folding out of artifact mode and preserves its selection across modes', async () => {
+  const { prepare } = fixture((data) => {
+    withWorktrees(data)
+    data.inventory.worktrees.forEach((w) => {
+      w.size = { bytes: 2048, files: 2, skipped: 0, complete: true }
+    })
+  })
   const user = userEvent.setup()
   await screen.findByText('repository')
   await user.click(screen.getByRole('checkbox', { name: 'Select old-branch' }))
@@ -162,8 +168,14 @@ it('selects a repository family, keeps partial state, and retains collapsed sele
     screen.getByRole('checkbox', { name: 'Select repository' }).getAttribute('aria-checked'),
   ).toBe('mixed')
   await user.click(screen.getByRole('checkbox', { name: 'Select repository' }))
+  expect(screen.queryByRole('button', { name: 'Collapse worktrees' })).toBeNull()
+  expect(screen.queryByRole('button', { name: /Toggle worktrees/ })).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Worktrees' }))
   await user.click(screen.getByRole('button', { name: 'Collapse worktrees' }))
-  expect(screen.queryByText('old-branch')).toBeNull()
+  expect(screen.queryByRole('checkbox', { name: 'Select old-branch' })).toBeNull()
+  await user.click(screen.getByRole('tab', { name: 'Artifacts & dependencies' }))
+  expect(screen.getByRole('checkbox', { name: 'Select old-branch' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Expand worktrees' })).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
   expect(prepare).toHaveBeenCalledWith({
     kind: 'cleanProjects',
@@ -175,7 +187,7 @@ it('keeps the parent as context when filtering a worktree and never cleans activ
   const { prepare } = fixture(withWorktrees)
   const user = userEvent.setup()
   await screen.findByText('repository')
-  await user.click(screen.getByRole('switch'))
+  await user.click(screen.getByRole('switch', { name: 'Idle only' }))
   expect(screen.queryByText('active-branch')).toBeNull()
   await user.type(
     screen.getByPlaceholderText('Search repositories, branches, or paths'),
@@ -203,6 +215,8 @@ it('keeps missing worktree reasons inside an on-demand hint and prevents cleanup
       issue: 'Worktree needs repair.',
     })
   })
+  await screen.findByText('repository')
+  await userEvent.setup().click(screen.getByRole('switch', { name: 'Cleanable only' }))
   const control = await screen.findByRole('checkbox', { name: 'Select missing' })
   expect(control.getAttribute('aria-disabled')).toBe('true')
   expect(screen.queryByText('Worktree needs repair.')).toBeNull()
@@ -221,6 +235,7 @@ it('sorts by activity and total size while keeping worktrees with their reposito
   })
   const user = userEvent.setup()
   await screen.findByText('repository')
+  await user.click(screen.getByRole('switch', { name: 'Cleanable only' }))
   const order = () =>
     screen
       .getAllByRole('row')
@@ -259,6 +274,8 @@ it('shows whole checkout size and sends a separate worktree removal request', as
       worktree.size = { bytes: 1048576, files: 12, skipped: 0, complete: true }
     }
   })
+  await screen.findByText('repository')
+  await userEvent.setup().click(screen.getByRole('tab', { name: 'Worktrees' }))
   const name = await screen.findByRole('checkbox', { name: 'Select old-branch' })
   const row = within(name.closest('tr')!)
   expect(row.getByText('1.0 MB')).toBeTruthy()
@@ -287,4 +304,51 @@ it('blocks locked worktree removal using an on-demand reason while allowing arti
   expect((await screen.findByRole('tooltip')).textContent).toContain(
     'Worktree is locked. Unlock it through Git first.',
   )
+})
+
+it('groups workspace dependencies into one selection and hides ineligible projects by default', async () => {
+  const { prepare } = fixture((data) => {
+    const p = data.inventory.projects[0]
+    p.artifacts.push({
+      ...p.artifacts[0],
+      id: 'nested-modules',
+      path: `${p.path}/packages/web/node_modules`,
+    })
+    p.artifacts.push({
+      ...p.artifacts[0],
+      id: 'unverified-nested',
+      path: `${p.path}/packages/unknown/node_modules`,
+      canClean: false,
+      cleanupIssue: 'Ownership is unverified.',
+    })
+  })
+  await screen.findByText('older')
+  expect(screen.queryByText('protected')).toBeNull()
+  expect(screen.queryByText('unverified')).toBeNull()
+  const row = within(screen.getByRole('checkbox', { name: 'Select older' }).closest('tr')!)
+  expect(row.getAllByRole('checkbox')).toHaveLength(2)
+  await userEvent.setup().click(row.getByRole('checkbox', { name: 'node_modules' }))
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Review cleanup' }))
+  expect(prepare).toHaveBeenCalledWith({
+    kind: 'cleanProjects',
+    artifactIds: ['older-modules', 'nested-modules'],
+  })
+})
+
+it('bulk reviews worktrees without selecting artifacts, locked trees, or the main checkout', async () => {
+  const { prepare } = fixture((data) => {
+    withWorktrees(data)
+    data.inventory.worktrees.forEach((w) => {
+      w.size = { bytes: 2048, files: 2, skipped: 0, complete: true }
+    })
+  })
+  await screen.findByText('repository')
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('tab', { name: 'Worktrees' }))
+  await user.click(screen.getByRole('checkbox', { name: 'Select all eligible worktrees' }))
+  await user.click(screen.getByRole('button', { name: 'Review worktree removal' }))
+  expect(prepare).toHaveBeenCalledWith({
+    kind: 'removeWorktrees',
+    ids: ['active-branch', 'old-branch'],
+  })
 })

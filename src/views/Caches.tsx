@@ -59,100 +59,136 @@ export default function Caches() {
           {chosen.length > 0 && ` (${chosen.length})`}
         </ActionButton>
       </div>
-      <Card className="overflow-hidden py-0 shadow-none">
-        <CardContent className="px-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10 pl-4">
-                  <SelectionCheckbox
-                    aria-label={t('选择全部可清理缓存', 'Select all eligible caches')}
-                    reason={
-                      busyReason ||
-                      (!selection.eligibleCount
-                        ? t('当前没有可清理缓存。', 'No eligible caches.')
-                        : null)
-                    }
-                    checked={
-                      selection.checked ? true : selection.chosen.length ? 'indeterminate' : false
-                    }
-                    onCheckedChange={(on) => selection.toggleAll(on === true)}
-                  />
-                </TableHead>
-                <TableHead>{t('缓存', 'Cache')}</TableHead>
-                <TableHead>{t('生态', 'Ecosystem')}</TableHead>
-                <TableHead>{t('清理方式', 'Cleanup strategy')}</TableHead>
-                <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {caches.map((cache) => (
-                <TableRow key={cache.id}>
-                  <TableCell className="pl-4">
-                    <SelectionCheckbox
-                      checked={cache.canClean && selection.selected.has(cache.id)}
-                      reason={
-                        busyReason ||
-                        (!cache.canClean
-                          ? cache.warning ||
-                            t(
-                              '尚不支持此缓存的原生清理，请使用原工具管理。',
-                              'Native cleanup is unavailable. Use the owning tool to manage this cache.',
-                            )
-                          : null)
-                      }
-                      aria-label={`${t('选择', 'Select')} ${cache.name}`}
-                      onCheckedChange={(checked) => selection.toggle([cache.id], checked === true)}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <div className="font-medium">{cache.name}</div>
-                    <p
-                      className="mt-1 max-w-md truncate font-mono text-xs text-muted-foreground"
-                      title={displayPath(cache.path)}
-                    >
-                      {displayPath(cache.path)}
-                    </p>
-                  </TableCell>
-                  <TableCell>
-                    <span className="flex items-center gap-2 text-sm">
-                      <EcoDot id={cache.provider} />
-                      {metadata[cache.provider].short}
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    <Tooltip delayDuration={350}>
-                      <TooltipTrigger asChild>
-                        <Badge
-                          variant={cache.canClean ? 'secondary' : 'outline'}
-                          className="font-normal"
-                          tabIndex={0}
-                        >
-                          {cache.canClean
-                            ? t('工具原生清理', 'Native cleanup')
-                            : t('由原工具管理', 'Owner-managed')}
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent sideOffset={6} className="max-w-72 text-left leading-relaxed">
-                        {cache.warning || cache.strategy}
-                      </TooltipContent>
-                    </Tooltip>
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-xs">
-                    {!cache.size.complete && '≥ '}
-                    {formatBytes(cache.size.bytes)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          {!caches.length && (
-            <Empty>
-              {t('扫描后显示已识别的缓存目录。', 'Known cache directories appear after a scan.')}
-            </Empty>
-          )}
-        </CardContent>
-      </Card>
+      {[true, false].map((canClean) => {
+        const group = caches.filter((cache) => cache.canClean === canClean)
+        if (!group.length) return null
+        return (
+          <section key={String(canClean)} className="space-y-3">
+            <h2 className="text-sm font-medium">
+              {canClean ? t('可清理', 'Available for cleanup') : t('由原工具管理', 'Owner-managed')}
+              <span className="ml-2 font-normal text-muted-foreground">
+                {group.length} ·{' '}
+                {formatBytes(group.reduce((sum, cache) => sum + cache.size.bytes, 0))}
+              </span>
+            </h2>
+            {!canClean && (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  '以下缓存仅展示占用，请通过原工具管理。',
+                  'These caches are shown for storage visibility. Manage them with their owning tools.',
+                )}
+              </p>
+            )}
+            <Card className="overflow-hidden py-0 shadow-none">
+              <CardContent className="px-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10 pl-4">
+                        {canClean && (
+                          <SelectionCheckbox
+                            aria-label={t('选择全部可清理缓存', 'Select all eligible caches')}
+                            reason={
+                              busyReason ||
+                              (!selection.eligibleCount
+                                ? t('当前没有可清理缓存。', 'No eligible caches.')
+                                : null)
+                            }
+                            checked={
+                              selection.checked
+                                ? true
+                                : selection.chosen.length
+                                  ? 'indeterminate'
+                                  : false
+                            }
+                            onCheckedChange={(on) => selection.toggleAll(on === true)}
+                          />
+                        )}
+                      </TableHead>
+                      <TableHead>{t('缓存', 'Cache')}</TableHead>
+                      <TableHead>{t('生态', 'Ecosystem')}</TableHead>
+                      <TableHead>{t('清理方式', 'Cleanup strategy')}</TableHead>
+                      <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {group.map((cache) => (
+                      <TableRow key={cache.id}>
+                        <TableCell className="pl-4">
+                          {canClean && (
+                            <SelectionCheckbox
+                              checked={cache.canClean && selection.selected.has(cache.id)}
+                              reason={
+                                busyReason ||
+                                (!cache.canClean
+                                  ? cache.warning ||
+                                    t(
+                                      '尚不支持此缓存的原生清理，请使用原工具管理。',
+                                      'Native cleanup is unavailable. Use the owning tool to manage this cache.',
+                                    )
+                                  : null)
+                              }
+                              aria-label={`${t('选择', 'Select')} ${cache.name}`}
+                              onCheckedChange={(checked) =>
+                                selection.toggle([cache.id], checked === true)
+                              }
+                            />
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <div className="font-medium">{cache.name}</div>
+                          <p
+                            className="mt-1 max-w-md truncate font-mono text-xs text-muted-foreground"
+                            title={displayPath(cache.path)}
+                          >
+                            {displayPath(cache.path)}
+                          </p>
+                        </TableCell>
+                        <TableCell>
+                          <span className="flex items-center gap-2 text-sm">
+                            <EcoDot id={cache.provider} />
+                            {metadata[cache.provider].short}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Tooltip delayDuration={350}>
+                            <TooltipTrigger asChild>
+                              <Badge
+                                variant={cache.canClean ? 'secondary' : 'outline'}
+                                className="font-normal"
+                                tabIndex={0}
+                              >
+                                {cache.canClean
+                                  ? t('工具原生清理', 'Native cleanup')
+                                  : t('由原工具管理', 'Owner-managed')}
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              sideOffset={6}
+                              className="max-w-72 text-left leading-relaxed"
+                            >
+                              {cache.warning || cache.strategy}
+                            </TooltipContent>
+                          </Tooltip>
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs">
+                          {!cache.size.complete && '≥ '}
+                          {formatBytes(cache.size.bytes)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </section>
+        )
+      })}
+      {!caches.length && (
+        <Empty>
+          {t('扫描后显示已识别的缓存目录。', 'Known cache directories appear after a scan.')}
+        </Empty>
+      )}
       <p className="text-xs text-muted-foreground">
         {t(
           '缓存总量是审阅上限，实际清理量由工具决定。硬链接和共享文件可能让逻辑大小大于物理占用。',

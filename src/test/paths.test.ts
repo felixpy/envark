@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { displayPath } from '@/lib/paths'
+import { displayPath, displayDiagnostic } from '@/lib/paths'
 
 describe('path presentation', () => {
   it('formats drive and UNC paths without changing ordinary or device paths', () => {
@@ -14,4 +14,11 @@ describe('path presentation', () => {
       expect(displayPath(path)).toBe(path)
     }
   })
+})
+
+it('formats every path in diagnostics while preserving device paths', () => {
+  expect(
+    displayDiagnostic(String.raw`Could not inspect \\?\C:\repo: \\?\UNC\server\share missing`),
+  ).toBe(String.raw`Could not inspect C:\repo: \\server\share missing`)
+  expect(displayDiagnostic(String.raw`\\?\Volume{123}\app`)).toBe(String.raw`\\?\Volume{123}\app`)
 })

@@ -32,6 +32,7 @@ async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             Err(error) => provider.issues.push(format!("{name}: {error}")),
         }
     }
+    super::python::current(ctx, &mut provider.runtimes).await;
     for name in ["uv", "pipx", "poetry"] {
         if let Ok(version) = ctx.read(name, &["--version"]).await {
             provider.package_managers.push(basic_tool(

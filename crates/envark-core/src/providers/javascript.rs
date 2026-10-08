@@ -1,6 +1,18 @@
 use super::*;
 use crate::{filesystem::id_for, model::Runtime};
 
+fn fnm_default(root: &Path) -> Option<PathBuf> {
+    let binary = root.join("aliases/default").join(if cfg!(windows) {
+        "node.exe"
+    } else {
+        "bin/node"
+    });
+    binary
+        .is_file()
+        .then(|| std::fs::canonicalize(binary).ok())
+        .flatten()
+}
+
 pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     let mut caches = vec![];
     let active_path = ctx
@@ -30,6 +42,9 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                 ctx.data.join("fnm")
             }
         });
+    // Finder-launched apps do not inherit fnm's shell PATH. Its default alias
+    // identifies the selected installation without sourcing user shell scripts.
+    let active_path = active_path.or_else(|| fnm_default(&fnm_root));
     let nvm_root = std::env::var_os("NVM_HOME")
         .or_else(|| std::env::var_os("NVM_DIR"))
         .map(PathBuf::from)
@@ -73,7 +88,7 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             let version = name.trim_start_matches('v').to_owned();
             provider.runtimes.push(Runtime {
                 selector: None,
-                active_known: true,
+                active_known: active_path.is_some(),
                 id: id_for("runtime", &installation),
                 version: version.clone(),
                 manager: manager.into(),
@@ -182,6 +197,24 @@ fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn fnm_default_resolves_the_selected_installation_without_a_shell_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let installation = root.join("node-versions/v22.22.2/installation");
+        std::fs::create_dir_all(installation.join("bin")).unwrap();
+        std::fs::write(installation.join("bin/node"), "node").unwrap();
+        std::fs::create_dir(root.join("aliases")).unwrap();
+        std::os::unix::fs::symlink(&installation, root.join("aliases/default")).unwrap();
+        assert_eq!(
+            fnm_default(root),
+            std::fs::canonicalize(installation.join("bin/node")).ok()
+        );
+        std::fs::remove_file(root.join("aliases/default")).unwrap();
+        assert!(fnm_default(root).is_none());
+    }
 
     fn package(root: &Path) {
         let path = root.join("@test/cli");

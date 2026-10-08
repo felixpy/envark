@@ -185,6 +185,7 @@ export interface Progress {
 }
 export type ActionRequest =
   | { kind: 'removeWorktree'; id: string }
+  | { kind: 'removeWorktrees'; ids: string[] }
   | { kind: 'cleanProjects'; artifactIds: string[] }
   | { kind: 'cleanCaches'; ids: string[] }
   | { kind: 'installRuntime'; provider: ProviderId; manager: string; version: string }

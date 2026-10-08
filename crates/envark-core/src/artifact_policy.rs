@@ -12,6 +12,42 @@ fn marker(path: &Path) -> bool {
     reject_links(path).is_ok() && path.is_file()
 }
 
+fn dependency_lockfile(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    let manifest = parent.join("package.json");
+    if !marker(&manifest)
+        || !read_small(&manifest, 1024 * 1024)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|value| value.is_object())
+    {
+        return false;
+    }
+    // Workspace packages inherit the repository's lockfile. Never cross a
+    // nested checkout boundary or accept a symlink as ownership evidence.
+    for ancestor in parent.ancestors() {
+        if [
+            "package-lock.json",
+            "npm-shrinkwrap.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lock",
+            "bun.lockb",
+        ]
+        .iter()
+        .any(|name| marker(&ancestor.join(name)))
+        {
+            return true;
+        }
+        if ancestor.join(".git").exists() {
+            break;
+        }
+    }
+    false
+}
+
 /// Conventional directory names alone do not establish generated-file ownership.
 pub fn ownership_issue(path: &Path, name: &str) -> Option<String> {
     let cache_tag = || {
@@ -19,14 +55,17 @@ pub fn ownership_issue(path: &Path, name: &str) -> Option<String> {
         marker(&tag) && read_small(&tag, 4096).is_ok_and(|text| text.starts_with(CACHE_SIGNATURE))
     };
     let owned = match name {
-        "node_modules" => [
-            ".package-lock.json",
-            ".modules.yaml",
-            ".yarn-integrity",
-            ".yarn-state.yml",
-        ]
-        .iter()
-        .any(|name| marker(&path.join(name))),
+        "node_modules" => {
+            [
+                ".package-lock.json",
+                ".modules.yaml",
+                ".yarn-integrity",
+                ".yarn-state.yml",
+            ]
+            .iter()
+            .any(|name| marker(&path.join(name)))
+                || dependency_lockfile(path)
+        }
         ".next" => ["BUILD_ID", "routes-manifest.json"]
             .iter()
             .any(|name| marker(&path.join(name))),
@@ -120,6 +159,29 @@ mod tests {
         std::fs::write(root.path().join("build/src/Main.java"), "class Main {}").unwrap();
         assert!(ownership_issue(&root.path().join("build"), "build").is_some());
         assert!(ownership_issue(&root.path().join("target"), "target").is_some());
+    }
+
+    #[test]
+    fn workspace_dependencies_use_the_repository_lockfile_without_crossing_nested_repositories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let modules = root.join("packages/app/node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'").unwrap();
+        std::fs::write(root.join("packages/app/package.json"), r#"{"name":"app"}"#).unwrap();
+        assert!(ownership_issue(&modules, "node_modules").is_none());
+        std::fs::create_dir(root.join("packages/app/.git")).unwrap();
+        assert!(ownership_issue(&modules, "node_modules").is_some());
+        std::fs::write(root.join("packages/app/bun.lock"), "{}").unwrap();
+        assert!(ownership_issue(&modules, "node_modules").is_none());
+        std::fs::write(root.join("packages/app/package.json"), "not json").unwrap();
+        assert!(ownership_issue(&modules, "node_modules").is_some());
     }
 
     #[test]

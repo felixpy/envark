@@ -270,3 +270,54 @@ async fn nested_repositories_and_cancellation_preserve_the_checkout() {
     assert!(result.cancelled);
     assert!(fixture.linked.join("source.rs").is_file());
 }
+
+#[tokio::test]
+async fn batch_removal_reviews_all_worktrees_before_mutation_and_revalidates_each_item() {
+    let fixture = Fixture::new();
+    let second = fixture.main.parent().unwrap().join("second");
+    git_command(
+        &fixture.main,
+        &["worktree", "add", "-b", "second", second.to_str().unwrap()],
+    );
+    let inventory = fixture.inventory();
+    let ids: Vec<_> = inventory.worktrees.iter().map(|w| w.id.clone()).collect();
+    fs::write(second.join("untracked.txt"), "preserve").unwrap();
+    assert!(
+        operations::prepare(
+            ActionRequest::RemoveWorktrees { ids: ids.clone() },
+            &inventory,
+            &fixture.settings,
+            &fixture.ctx
+        )
+        .await
+        .is_err()
+    );
+    assert!(fixture.linked.exists() && second.exists());
+    fs::remove_file(second.join("untracked.txt")).unwrap();
+    let plan = operations::prepare(
+        ActionRequest::RemoveWorktrees { ids },
+        &inventory,
+        &fixture.settings,
+        &fixture.ctx,
+    )
+    .await
+    .unwrap();
+    assert_eq!(plan.view.items.len(), 2);
+    fs::write(second.join("untracked.txt"), "preserve after review").unwrap();
+    let result = fixture.execute(plan, fixture.settings.clone()).await;
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .filter(|i| i.status == "success")
+            .count(),
+        1
+    );
+    assert_eq!(
+        result.items.iter().filter(|i| i.status == "failed").count(),
+        1
+    );
+    assert!(second.join("untracked.txt").exists());
+    assert!(!fixture.linked.exists());
+    assert!(fixture.main.join("source.rs").exists());
+}
