@@ -65,7 +65,7 @@ Never commit credentials, personal paths, local inventory snapshots, or download
 
 ## Pull requests
 
-Create a focused branch from `main`. Keep one logical change per PR and use an English Conventional Commit title. Explain the problem, resulting behavior, and how you verified it; include screenshots for interface changes.
+Create a focused branch from `main`. Keep one logical change per PR and use an English Conventional Commit title. Explain the problem, resulting behavior, and how you verified it; attach screenshots or link CI artifacts for interface changes. Do not commit temporary review screenshots, recordings, or validation reports, including under `.github/screenshots`. Keep local evidence in ignored `.tools/` or a temporary directory. Images committed as intentional application assets, documentation assets, or test fixtures are separate from temporary review evidence.
 
 Add meaningful regression coverage for behavioral fixes and state any platforms you could not verify. For installation or cleanup changes, explain ownership, path validation, and recovery behavior. Run the checks relevant to your changes and resolve CI failures before requesting a review.
 
