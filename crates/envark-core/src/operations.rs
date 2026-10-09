@@ -519,9 +519,7 @@ fn prepare_steps(
                     .find(|c| c.id == id)
                     .ok_or_else(|| Error::Conflict("Cache no longer exists.".into()))?;
                 if !cache.can_clean {
-                    return Err(Error::Unavailable(
-                        "The cache owner does not support automatic cleanup.".into(),
-                    ));
+                    return Err(Error::Unavailable(cache.warning.clone()));
                 }
                 reject_links(&cache.path)?;
                 if ["cargo-registry", "cargo-git"].contains(&cache.strategy.as_str()) {
@@ -584,6 +582,10 @@ fn prepare_steps(
                     command,
                 });
             }
+            view.use_trash = settings.use_trash
+                && steps
+                    .iter()
+                    .any(|step| matches!(step, Step::CacheFiles { .. }));
             if steps.iter().any(|s| matches!(s, Step::Cache { .. })) {
                 view.warnings.push("Native cache cleanup can permanently remove entries. The displayed size is an upper bound, not a promise of reclaimed space.".into());
             }

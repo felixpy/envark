@@ -347,6 +347,12 @@ mod tests {
         let request = ActionRequest::CleanCaches {
             ids: vec![registry.id.clone()],
         };
+        let trash_plan =
+            operations::prepare(request.clone(), &inventory, &Settings::default(), &ctx)
+                .await
+                .unwrap();
+        assert!(trash_plan.view.use_trash);
+
         let plan = operations::prepare(request.clone(), &inventory, &settings, &ctx)
             .await
             .unwrap();
@@ -439,11 +445,12 @@ esac
                 ids: vec![pip_cache.id],
             },
             &inventory,
-            &settings,
+            &Settings::default(),
             &ctx,
         )
         .await
         .unwrap();
+        assert!(!plan.view.use_trash);
         let result = operations::execute(
             plan,
             settings.clone(),
