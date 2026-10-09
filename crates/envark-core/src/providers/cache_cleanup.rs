@@ -94,8 +94,8 @@ pub(crate) async fn validate_cargo_checkouts(ctx: &Context, cache: &Cache) -> Re
                 "git",
                 &["status", "--porcelain", "-z", "--untracked-files=all"],
             )?;
-            spec.cwd = Some(checkout.clone());
             ctx.apply_read_policy(&mut spec);
+            spec.cwd = Some(checkout.clone());
             let output = ctx.runner.run(&spec, &ctx.cancel).await?;
             // Cargo creates this empty completion marker outside Git. It is not
             // user work; every other untracked or modified entry is protected.
