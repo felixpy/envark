@@ -227,7 +227,13 @@ export interface Plan {
   }[]
 }
 export interface OperationResult {
-  items: { title: string; status: string; message: string; removedBytes: number }[]
+  items: {
+    title: string
+    status: string
+    message: string
+    removedBytes: number
+    targetIds?: string[]
+  }[]
   cancelled: boolean
   removedBytes: number
   reclaimedBytes: number | null

@@ -41,7 +41,10 @@ interface Store {
   addRoot(path?: string): Promise<void>
   plan: Plan | null
   result: OperationResult | null
+  operationError: string | null
+  completedSelectionIds: string[]
   prepare(request: ActionRequest): Promise<void>
+  reviewAgain(): Promise<void>
   execute(discardWorktreeChanges?: boolean): Promise<void>
   closePlan(): void
   reload(): Promise<void>
@@ -70,6 +73,8 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
   const [progress, setProgress] = useState<Progress | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [result, setResult] = useState<OperationResult | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
+  const [completedSelectionIds, setCompletedSelectionIds] = useState<string[]>([])
   const launched = useRef(false)
   const running = useRef(false)
   const reviewedRequest = useRef<ActionRequest | null>(null)
@@ -214,6 +219,8 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     progress,
     plan,
     result,
+    operationError,
+    completedSelectionIds,
     t,
     go: (next, id, nextFocus = {}) => {
       setView(next)
@@ -287,21 +294,40 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       try {
         setResult(null)
         setPlan(await api.prepare(request, id))
+        setOperationError(null)
         reviewedRequest.current = request
       } catch (cause) {
-        fail(cause)
+        if (plan) setOperationError(String(cause))
+        else fail(cause)
       } finally {
         finish()
       }
     },
+    reviewAgain: async () => {
+      if (reviewedRequest.current) await store.prepare(reviewedRequest.current)
+    },
     execute: async (discardWorktreeChanges = false) => {
-      if (!plan || running.current) return
+      if (!plan || result || operationError || running.current) return
       const id = begin('execute', reviewedRequest.current)
       try {
-        setResult(await api.execute(plan.id, id, discardWorktreeChanges))
-        setData(await api.snapshot())
+        const outcome = await api.execute(plan.id, id, discardWorktreeChanges)
+        setResult(outcome)
+        // Paths can be shared by distinct models or tools. Only the backend's
+        // IDs for the step that actually succeeded can clear a selection.
+        setCompletedSelectionIds(
+          outcome.items.flatMap((item) =>
+            item.status === 'success' ? (item.targetIds ?? []) : [],
+          ),
+        )
+        try {
+          setData(await api.snapshot())
+        } catch (cause) {
+          // The operation already completed. Keep its results and never offer
+          // to execute the consumed plan again when only the refresh failed.
+          fail(cause)
+        }
       } catch (cause) {
-        fail(cause)
+        setOperationError(String(cause))
       } finally {
         finish()
       }
@@ -310,6 +336,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       if (!job) {
         setPlan(null)
         setResult(null)
+        setOperationError(null)
       }
     },
     reload: async () => {

@@ -64,9 +64,15 @@ export default function Projects() {
   })
   const projects = groups.flatMap(groupWorkspaces)
   const eligible = projects.flatMap(eligibleArtifacts)
-  const artifactSelection = useSelection(eligible.map((a) => a.id))
+  const artifactSelection = useSelection(
+    eligible.map((a) => a.id),
+    s.completedSelectionIds,
+  )
   const worktrees = groups.flatMap(eligibleWorktrees)
-  const worktreeSelection = useSelection(worktrees.map((w) => w.id))
+  const worktreeSelection = useSelection(
+    worktrees.map((w) => w.id),
+    s.completedSelectionIds,
+  )
   const selection = mode === 'worktrees' ? worktreeSelection : artifactSelection
   const chosenWorktrees = worktrees.filter((w) => worktreeSelection.selected.has(w.id))
   const chosen = eligible.filter((a) => selection.selected.has(a.id))

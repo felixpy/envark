@@ -400,3 +400,66 @@ it.each(['playwright', 'puppeteer'] as const)(
     expect(screen.queryByRole('button', { name: /Install|Download browsers/ })).toBeNull()
   },
 )
+
+it('offers stopping an unresponsive owned Ollama process instead of starting another one', async () => {
+  const provider = emptyProvider('ollama')
+  provider.service = { running: false, owned: true, endpoint: 'http://127.0.0.1:11434' }
+  provider.tools = [
+    {
+      id: 'ollama',
+      name: 'ollama',
+      version: '0.13.0',
+      latest: null,
+      updateStatus: 'unknown',
+      source: 'ollama-official',
+      runtime: null,
+      path: '/example/ollama',
+      size: null,
+      canUpdate: true,
+      canRemove: true,
+      note: null,
+    },
+  ]
+  const prepare = fixture(provider)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Stop service' }))
+  await waitFor(() =>
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'serviceAction', provider: 'ollama', action: 'stop' },
+      expect.any(String),
+    ),
+  )
+  expect(screen.queryByRole('button', { name: 'Start service' })).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Install Ollama' })).toBeNull()
+})
+
+it('can start a detected Ollama binary without claiming ownership of its installation', async () => {
+  const provider = emptyProvider('ollama')
+  provider.service = { running: false, owned: false, endpoint: 'http://127.0.0.1:11434' }
+  provider.tools = [
+    {
+      id: 'ollama',
+      name: 'ollama',
+      version: '0.13.0',
+      latest: null,
+      updateStatus: 'unknown',
+      source: 'PATH',
+      runtime: null,
+      path: '/example/ollama',
+      size: null,
+      canUpdate: false,
+      canRemove: false,
+      note: null,
+    },
+  ]
+  const prepare = fixture(provider)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Start service' }))
+  await waitFor(() =>
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'serviceAction', provider: 'ollama', action: 'start' },
+      expect.any(String),
+    ),
+  )
+  expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
+})

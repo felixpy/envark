@@ -1,3 +1,4 @@
+import { OllamaProgram, OllamaService } from '@/components/OllamaEnvironment'
 import { ManagerInstallDialog } from '@/components/ManagerInstallDialog'
 import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
@@ -90,6 +91,7 @@ export default function Environments({ id }: { id: ProviderId }) {
     provider.assets
       .filter((asset) => asset.canRemove && asset.size.complete)
       .map((asset) => asset.id),
+    s.completedSelectionIds,
   )
   const operation = (
     kind: 'setDefault' | 'removeRuntime' | 'updateTool' | 'removeTool',
@@ -144,44 +146,8 @@ export default function Environments({ id }: { id: ProviderId }) {
             {t(meta.description[0], meta.description[1])}
           </p>
         </div>
-        {['js', 'py', 'go', 'jvm', 'rust', 'ollama'].includes(id) && (
+        {['js', 'py', 'go', 'jvm', 'rust'].includes(id) && (
           <ManagerInstallDialog key={id} provider={id} />
-        )}
-        {provider.service && (
-          <div className="rounded-lg border px-3 py-2 text-xs">
-            <span
-              className={`mr-2 inline-block size-1.5 rounded-full ${provider.service.running ? 'bg-emerald-500' : 'bg-muted-foreground'}`}
-            />
-            {provider.service.running
-              ? t('服务运行中', 'Service running')
-              : t('服务已停止', 'Service stopped')}
-            <p className="mt-1 font-mono text-muted-foreground">{provider.service.endpoint}</p>
-            {(!provider.service.running || provider.service.owned) && (
-              <Button
-                className="mt-2"
-                size="sm"
-                variant="outline"
-                reason={
-                  busyReason ||
-                  (!provider.service.running &&
-                  !provider.tools.some((tool) => tool.name === 'ollama' && tool.canUpdate)
-                    ? t('请先安装 Ollama。', 'Install Ollama first.')
-                    : null)
-                }
-                onClick={() =>
-                  void s.prepare({
-                    kind: 'serviceAction',
-                    provider: id,
-                    action: provider.service!.running ? 'stop' : 'start',
-                  })
-                }
-              >
-                {provider.service.running
-                  ? t('停止服务', 'Stop service')
-                  : t('启动服务', 'Start service')}
-              </Button>
-            )}
-          </div>
         )}
       </div>
       {provider.issues.map((issue) => (
@@ -214,17 +180,8 @@ export default function Environments({ id }: { id: ProviderId }) {
           onRemove={(item) => operation('removeTool', item.id)}
         />
       )}
-      {tab === 'runtime' && id === 'ollama' && (
-        <Tools
-          providerId={id}
-          items={provider.tools}
-          global={false}
-          program
-          onUpdate={(item) => operation('updateTool', item.id)}
-          onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
-          onRemove={(item) => operation('removeTool', item.id)}
-        />
-      )}
+      {tab === 'runtime' && id === 'ollama' && <OllamaProgram provider={provider} />}
+      {id === 'ollama' && tab !== 'runtime' && <OllamaService provider={provider} />}
       {tab === 'runtime' && id !== 'ollama' && (
         <Card className="shadow-none">
           <CardHeader>
@@ -425,7 +382,10 @@ export default function Environments({ id }: { id: ProviderId }) {
                   reason={
                     busyReason ||
                     (!provider.service?.running
-                      ? t('请先点击上方“启动服务”。', 'Click Start service above first.')
+                      ? t(
+                          '请先安装 Ollama 并启动服务。',
+                          'Install Ollama and start its service first.',
+                        )
                       : null)
                   }
                   onClick={() => setDownload(true)}
@@ -618,7 +578,19 @@ export default function Environments({ id }: { id: ProviderId }) {
             <Input
               value={version}
               onChange={(e) => setVersion(e.target.value)}
-              placeholder={id === 'rust' ? 'stable' : '22.11.0'}
+              placeholder={
+                id === 'rust'
+                  ? 'stable'
+                  : id === 'py'
+                    ? '3.13.5'
+                    : id === 'go'
+                      ? '1.25.0'
+                      : id === 'jvm'
+                        ? manager === 'mise'
+                          ? '21'
+                          : '21.0.8-tem'
+                        : '24.0.0'
+              }
             />
           </label>
           <DialogFooter>
@@ -726,7 +698,6 @@ export default function Environments({ id }: { id: ProviderId }) {
 }
 
 function Tools({
-  program = false,
   runtimeManagers = false,
   providerId,
   items,
@@ -735,7 +706,6 @@ function Tools({
   onBatch,
   onRemove,
 }: {
-  program?: boolean
   runtimeManagers?: boolean
   providerId: ProviderId
   items: Tool[]
@@ -750,7 +720,7 @@ function Tools({
     ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
     : null
   const [query, setQuery] = useState('')
-  const [status, setStatus] = useState(s.focus.filter === 'updates' ? 'outdated' : 'all')
+  const [status, setStatus] = useState(global && s.focus.filter === 'updates' ? 'outdated' : 'all')
   const [source, setSource] = useState('all')
   const [runtime, setRuntime] = useState('all')
   const visible = items.filter(
@@ -763,39 +733,35 @@ function Tools({
           ? ['major', 'minor'].includes(updateKind(item))
           : updateKind(item) === status)),
   )
-  const selection = useSelection(visible.filter(canUpdateTool).map((item) => item.id))
+  const selection = useSelection(
+    visible.filter(canUpdateTool).map((item) => item.id),
+    s.completedSelectionIds,
+  )
   return (
     <Card className="shadow-none">
       <CardHeader>
         <CardTitle>
-          {program
-            ? t('Ollama 程序', 'Ollama application')
-            : runtimeManagers
-              ? t('版本管理器', 'Version managers')
-              : global
-                ? t('全局工具', 'Global tools')
-                : t('包管理器与构建工具', 'Package managers & build tools')}
+          {runtimeManagers
+            ? t('版本管理器', 'Version managers')
+            : global
+              ? t('全局工具', 'Global tools')
+              : t('包管理器与构建工具', 'Package managers & build tools')}
         </CardTitle>
         <CardDescription>
-          {program
+          {runtimeManagers
             ? t(
-                '管理程序本身，已下载的模型和配置会保留。',
-                'Manage the application while keeping downloaded models and configuration.',
+                '更新或卸载管理器本身；已安装的运行时版本会保留。',
+                'Update or remove the manager itself while keeping installed runtimes.',
               )
-            : runtimeManagers
+            : global
               ? t(
-                  '更新或卸载管理器本身；已安装的运行时版本会保留。',
-                  'Update or remove the manager itself while keeping installed runtimes.',
+                  '显示安装来源、绑定运行时和可用操作。',
+                  'Inspect installation owners, runtime bindings, and available actions.',
                 )
-              : global
-                ? t(
-                    '显示安装来源、绑定运行时和可用操作。',
-                    'Inspect installation owners, runtime bindings, and available actions.',
-                  )
-                : t(
-                    '查看包管理器版本，并在应用内检查和安装更新。',
-                    'Inspect package manager versions, check for updates, and install them here.',
-                  )}
+              : t(
+                  '查看包管理器版本，并在应用内检查和安装更新。',
+                  'Inspect package manager versions, check for updates, and install them here.',
+                )}
         </CardDescription>
         <CardAction className="flex items-center gap-2">
           {selection.chosen.length > 0 && (
@@ -994,7 +960,16 @@ function Tools({
           </TableBody>
         </Table>
         {!visible.length && (
-          <Empty>{t('没有符合条件的工具。', 'No tools match these filters.')}</Empty>
+          <Empty>
+            {items.length
+              ? t('没有符合条件的工具。', 'No tools match these filters.')
+              : global
+                ? t('尚未检测到全局工具。', 'No global tools detected yet.')
+                : t(
+                    '尚未检测到包管理器或构建工具。',
+                    'No package managers or build tools detected yet.',
+                  )}
+          </Empty>
         )}
       </CardContent>
     </Card>

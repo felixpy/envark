@@ -191,3 +191,189 @@ it('collapses version-specific dependents and avoids cleanup messaging for runti
   expect(screen.queryByText(/Logical size removed/)).toBeNull()
   expect(screen.queryByText(/Files in Trash/)).toBeNull()
 })
+
+it('requires a new review after execution rejects a consumed plan', async () => {
+  const prepare = vi
+    .fn()
+    .mockResolvedValueOnce(plan)
+    .mockResolvedValueOnce({ ...plan, id: 'new-plan' })
+  const execute = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('This plan expired. Review the operation again.'))
+    .mockResolvedValueOnce({ items: [], removedBytes: 0, reclaimedBytes: null, cancelled: false })
+  const f = await fixture({ prepare, execute })
+  await act(() => f.state().prepare({ kind: 'cleanCaches', ids: ['cache'] }))
+  await act(() => f.state().execute())
+  expect(screen.queryByRole('button', { name: 'Confirm operation' })).toBeNull()
+  expect(screen.getByRole('alert').textContent).toContain('plan expired')
+  expect(f.state().error).toBeNull()
+  await act(() => f.state().execute())
+  expect(execute).toHaveBeenCalledTimes(1)
+  fireEvent.click(screen.getByRole('button', { name: 'Review again' }))
+  await waitFor(() => expect(f.state().plan?.id).toBe('new-plan'))
+  expect(screen.getByRole('button', { name: 'Confirm operation' })).toBeTruthy()
+  await act(() => f.state().execute())
+  expect(execute.mock.calls[1][0]).toBe('new-plan')
+  expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy()
+})
+
+it('keeps actual results when only the post-operation snapshot fails', async () => {
+  const execute = vi.fn(async () => ({
+    items: [],
+    removedBytes: 0,
+    reclaimedBytes: null,
+    cancelled: false,
+  }))
+  const f = await fixture({ execute })
+  await act(() => f.state().prepare({ kind: 'cleanCaches', ids: ['cache'] }))
+  vi.mocked(f.api.snapshot).mockRejectedValueOnce(new Error('Snapshot unavailable'))
+  await act(() => f.state().execute())
+  expect(f.state().operationError).toBeNull()
+  expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Review again' })).toBeNull()
+  await act(() => f.state().execute())
+  expect(execute).toHaveBeenCalledTimes(1)
+})
+
+it('clears only successful target IDs rather than inferring IDs from request order', async () => {
+  const data = structuredClone(emptySnapshot)
+  data.settings.scanOnLaunch = false
+  data.settings.language = 'en'
+  data.inventory.caches = ['success', 'failure', 'not-attempted'].map((id) => ({
+    id,
+    provider: 'js',
+    name: id,
+    path: `/cache/${id}`,
+    strategy: 'npm',
+    warning: '',
+    canClean: true,
+    size: { bytes: 100, files: 1, skipped: 0, complete: true },
+  }))
+  const f = await fixture({
+    snapshot: async () => data,
+    prepare: async () => ({
+      ...plan,
+      items: data.inventory.caches.map((cache) => ({
+        title: cache.name,
+        path: cache.path,
+        command: null,
+        restore: null,
+        bytes: 100,
+      })),
+    }),
+    execute: async () => ({
+      items: [
+        {
+          title: 'success',
+          status: 'success',
+          message: 'Done',
+          removedBytes: 100,
+          targetIds: ['success'],
+        },
+        {
+          title: 'failure',
+          status: 'cancelled',
+          message: 'Interrupted',
+          removedBytes: 0,
+          targetIds: ['failure'],
+        },
+      ],
+      removedBytes: 100,
+      reclaimedBytes: null,
+      cancelled: true,
+    }),
+  })
+  await act(() =>
+    f.state().prepare({ kind: 'cleanCaches', ids: ['not-attempted', 'failure', 'success'] }),
+  )
+  await act(() => f.state().execute())
+  expect(f.state().completedSelectionIds).toEqual(['success'])
+})
+
+it('does not clear failed models sharing the successful model path', async () => {
+  const f = await fixture({
+    prepare: async () => ({
+      ...plan,
+      items: ['model-b', 'model-a'].map((title) => ({
+        title,
+        path: '/shared/models',
+        command: null,
+        restore: null,
+        bytes: 0,
+      })),
+    }),
+    execute: async () => ({
+      items: [
+        {
+          title: 'model-b',
+          status: 'success',
+          message: 'Removed',
+          removedBytes: 0,
+          targetIds: ['model-b-id'],
+        },
+        {
+          title: 'model-a',
+          status: 'failed',
+          message: 'Still in use',
+          removedBytes: 0,
+          targetIds: ['model-a-id'],
+        },
+      ],
+      cancelled: false,
+      removedBytes: 0,
+      reclaimedBytes: null,
+    }),
+  })
+  await act(() =>
+    f
+      .state()
+      .prepare({ kind: 'removeAssets', provider: 'ollama', ids: ['model-a-id', 'model-b-id'] }),
+  )
+  await act(() => f.state().execute())
+  expect(f.state().completedSelectionIds).toEqual(['model-b-id'])
+})
+
+it('clears successful tool IDs without requiring a filesystem path or an inventory asset', async () => {
+  const f = await fixture({
+    execute: async () => ({
+      items: [
+        {
+          title: 'Update a tool',
+          status: 'success',
+          message: 'Updated',
+          removedBytes: 0,
+          targetIds: ['tool-id'],
+        },
+        {
+          title: 'Update a second tool',
+          status: 'failed',
+          message: 'Unavailable',
+          removedBytes: 0,
+          targetIds: ['other-tool'],
+        },
+      ],
+      cancelled: false,
+      removedBytes: 0,
+      reclaimedBytes: null,
+    }),
+  })
+  await act(() =>
+    f.state().prepare({ kind: 'updateTools', provider: 'js', ids: ['other-tool', 'tool-id'] }),
+  )
+  await act(() => f.state().execute())
+  expect(f.state().completedSelectionIds).toEqual(['tool-id'])
+})
+
+it('preserves selections when older result payloads omit target IDs', async () => {
+  const f = await fixture({
+    execute: async () => ({
+      items: [{ title: 'Update tool-id', status: 'success', message: 'Updated', removedBytes: 0 }],
+      cancelled: false,
+      removedBytes: 0,
+      reclaimedBytes: null,
+    }),
+  })
+  await act(() => f.state().prepare({ kind: 'updateTools', provider: 'js', ids: ['tool-id'] }))
+  await act(() => f.state().execute())
+  expect(f.state().completedSelectionIds).toEqual([])
+})

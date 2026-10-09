@@ -120,7 +120,10 @@ pub struct PlanView {
 
 #[derive(Debug, Clone)]
 enum Step {
-    Native(Box<providers::native_lifecycle::Plan>),
+    Native {
+        plan: Box<providers::native_lifecycle::Plan>,
+        target_ids: Vec<String>,
+    },
     Worktree {
         worktree: Worktree,
         removal: Option<crate::worktree_removal::Removal>,
@@ -131,6 +134,7 @@ enum Step {
         modified: Option<u64>,
     },
     Asset {
+        id: String,
         root: PathBuf,
         path: PathBuf,
         size: Measurement,
@@ -162,16 +166,36 @@ enum Step {
         command: CommandSpec,
     },
     Ollama {
+        asset_id: Option<String>,
         endpoint: String,
         name: String,
-        digest: String,
-        command: CommandSpec,
+        digest: Option<String>,
     },
     Tool {
         tool: crate::model::Tool,
         remove: bool,
         command: CommandSpec,
     },
+}
+
+impl Step {
+    fn target_ids(&self) -> Vec<String> {
+        match self {
+            Self::Native { target_ids, .. } => target_ids.clone(),
+            Self::Worktree { worktree, .. } => vec![worktree.id.clone()],
+            Self::Project { artifact, .. } => vec![artifact.id.clone()],
+            Self::Asset { id, .. } => vec![id.clone()],
+            Self::CacheFiles { cache, .. } => vec![cache.id.clone()],
+            Self::Cache { cache, related, .. } => std::iter::once(cache)
+                .chain(related)
+                .map(|cache| cache.id.clone())
+                .collect(),
+            Self::ManagerRemove { tool, .. } | Self::Tool { tool, .. } => vec![tool.id.clone()],
+            Self::Runtime { runtime, .. } => vec![runtime.id.clone()],
+            Self::Ollama { asset_id, .. } => asset_id.iter().cloned().collect(),
+            Self::ManagerInstall { .. } | Self::Command(_) => vec![],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -199,7 +223,7 @@ impl Plan {
         self.steps
             .iter()
             .map(|step| match step {
-                Step::Native(plan) => Some(RefreshTarget::Providers(plan.providers())),
+                Step::Native { plan, .. } => Some(RefreshTarget::Providers(plan.providers())),
                 Step::Project {
                     project, artifact, ..
                 } => Some(RefreshTarget::Artifact {
@@ -225,6 +249,8 @@ impl Plan {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemResult {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub target_ids: Vec<String>,
     pub title: String,
     pub status: String,
     pub message: String,
@@ -311,7 +337,7 @@ pub async fn prepare_with_progress(
     if let Some(native) =
         providers::native_lifecycle::prepare(ctx, request.clone(), inventory, settings).await?
     {
-        let mut plan = native_plan(native, settings);
+        let mut plan = native_plan(native, settings, &request);
         if let ActionRequest::RemoveRuntime { provider, id } = &request
             && let Some(runtime) = inventory
                 .providers
@@ -344,7 +370,7 @@ pub async fn prepare_with_progress(
                 providers::native_lifecycle::prepare(ctx, action.clone(), inventory, settings)
                     .await?
             {
-                native_plan(native, settings)
+                native_plan(native, settings, &action)
             } else {
                 prepare_steps(action, inventory, settings, ctx)?
             };
@@ -480,13 +506,31 @@ pub async fn prepare_with_progress(
             ..
         } = step
         {
-            providers::ollama::verify(ctx, endpoint, name, digest).await?;
+            if let Some(digest) = digest {
+                providers::ollama::verify(ctx, endpoint, name, digest).await?;
+            } else {
+                providers::ollama::models(endpoint, &ctx.cancel).await?;
+            }
         }
     }
     Ok(plan)
 }
 
-fn native_plan(native: providers::native_lifecycle::Plan, settings: &Settings) -> Plan {
+fn native_target_ids(request: &ActionRequest) -> Vec<String> {
+    match request {
+        ActionRequest::UpdateTool { id, .. }
+        | ActionRequest::RemoveTool { id, .. }
+        | ActionRequest::SetDefault { id, .. }
+        | ActionRequest::RemoveRuntime { id, .. } => vec![id.clone()],
+        _ => vec![],
+    }
+}
+
+fn native_plan(
+    native: providers::native_lifecycle::Plan,
+    settings: &Settings,
+    request: &ActionRequest,
+) -> Plan {
     Plan {
         view: PlanView {
             id: uuid::Uuid::new_v4().to_string(),
@@ -498,7 +542,10 @@ fn native_plan(native: providers::native_lifecycle::Plan, settings: &Settings) -
             worktree_changes: vec![],
             runtime_dependents: vec![],
         },
-        steps: vec![Step::Native(Box::new(native))],
+        steps: vec![Step::Native {
+            plan: Box::new(native),
+            target_ids: native_target_ids(request),
+        }],
         refresh_provider: None,
     }
 }
@@ -915,16 +962,22 @@ fn prepare_steps(
                                 "Refresh the local Ollama service before removing models.".into(),
                             )
                         })?;
-                    let command = providers::ollama::command(ctx, &endpoint, "rm", &asset.name)?;
-                    view.items.push(command_description(
-                        format!("Remove {} at {endpoint}", asset.name),
-                        &command,
-                    ));
+                    providers::ollama::validate(&endpoint, &asset.name)?;
+                    view.items.push(PlanItem {
+                        title: format!("Remove {} at {endpoint}", asset.name),
+                        path: None,
+                        command: Some(format!(
+                            "DELETE {endpoint}/api/delete (model: {})",
+                            asset.name
+                        )),
+                        bytes: 0,
+                        restore: Some("Download this model again from the Models tab.".into()),
+                    });
                     steps.push(Step::Ollama {
+                        asset_id: Some(asset.id.clone()),
                         endpoint,
                         name: asset.name.clone(),
-                        digest: asset.version.clone(),
-                        command,
+                        digest: Some(asset.version.clone()),
                     });
                 } else {
                     let root = asset
@@ -935,6 +988,7 @@ fn prepare_steps(
                     contained_directory(&root, &asset.path)?;
                     view.items.push(PlanItem { title: format!("{} {}", asset.name, asset.version), path: Some(asset.path.clone()), command: None, bytes: asset.size.bytes, restore: Some("Reinstall the browser with the owning project's browser automation CLI.".into()) });
                     steps.push(Step::Asset {
+                        id: asset.id.clone(),
                         root,
                         path: asset.path.clone(),
                         size: asset.size.clone(),
@@ -949,13 +1003,22 @@ fn prepare_steps(
             name,
         } => {
             let endpoint = providers::ollama::ENDPOINT;
-            let command = providers::ollama::command(ctx, endpoint, "pull", &name)?;
-            command_item(
-                format!("Download {name} at {endpoint}"),
-                command,
-                &mut view,
-                &mut steps,
-            );
+            providers::ollama::validate(endpoint, &name)?;
+            view.items.push(PlanItem {
+                title: format!("Download {name} at {endpoint}"),
+                path: None,
+                command: Some(format!("POST {endpoint}/api/pull (model: {name})")),
+                bytes: 0,
+                restore: Some(
+                    "Remove this model from the Models tab if it is no longer needed.".into(),
+                ),
+            });
+            steps.push(Step::Ollama {
+                asset_id: None,
+                endpoint: endpoint.into(),
+                name,
+                digest: None,
+            });
         }
         ActionRequest::ServiceAction { .. } => {
             return Err(Error::InvalidInput(
@@ -1271,6 +1334,7 @@ pub async fn execute(
             break;
         }
         let title = plan.view.items[index].title.clone();
+        let target_ids = step.target_ids();
         progress(Progress {
             job_id: job_id.clone(),
             stage: "execute".into(),
@@ -1286,6 +1350,7 @@ pub async fn execute(
             && !discard_worktree_changes
         {
             result.items.push(ItemResult {
+                target_ids,
                 title,
                 status: "skipped".into(),
                 message: "Worktree kept with its uncommitted and untracked files. No changes were discarded.".into(),
@@ -1318,21 +1383,24 @@ pub async fn execute(
                 endpoint,
                 name,
                 digest,
-                command,
-            } => match providers::ollama::verify(&ctx, &endpoint, &name, &digest).await {
-                Ok(()) => ctx
-                    .runner
-                    .run(&command, &ctx.cancel)
-                    .await
-                    .map(|output| (0, output.stdout.trim().chars().take(4000).collect())),
-                Err(error) => Err(error),
-            },
+                ..
+            } => {
+                providers::ollama::execute_model(
+                    &ctx,
+                    &endpoint,
+                    &name,
+                    digest.as_deref(),
+                    &progress,
+                    &job_id,
+                )
+                .await
+            }
             Step::Tool {
                 tool,
                 remove,
                 command,
             } => run_tool(&ctx, tool, remove, command).await,
-            Step::Native(native) => native.execute(&ctx, settings.use_trash).await,
+            Step::Native { plan, .. } => plan.execute(&ctx, settings.use_trash).await,
             Step::ManagerInstall { installation, .. } => match installation {
                 Some(installation) => {
                     providers::manager_install::execute(&ctx, *installation).await
@@ -1403,6 +1471,7 @@ pub async fn execute(
                 path,
                 size,
                 modified,
+                ..
             } => {
                 let token = ctx.cancel.clone();
                 let use_trash = settings.use_trash;
@@ -1428,6 +1497,7 @@ pub async fn execute(
             Ok((bytes, message)) => {
                 result.removed_bytes += bytes;
                 result.items.push(ItemResult {
+                    target_ids,
                     title,
                     status: "success".into(),
                     message,
@@ -1437,6 +1507,7 @@ pub async fn execute(
             Err(Error::Cancelled) => {
                 result.cancelled = true;
                 result.items.push(ItemResult {
+                    target_ids,
                     title,
                     status: "cancelled".into(),
                     message: "Cancellation requested; inspect the inventory for partial changes."
@@ -1446,6 +1517,7 @@ pub async fn execute(
                 break;
             }
             Err(e) => result.items.push(ItemResult {
+                target_ids,
                 title,
                 status: "failed".into(),
                 message: e.to_string(),
@@ -1459,6 +1531,96 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_model_paths_keep_distinct_semantic_target_ids() {
+        let mut owner = crate::model::Provider::empty(ProviderId::Ollama);
+        owner.service = Some(crate::model::ServiceStatus {
+            running: true,
+            owned: false,
+            endpoint: providers::ollama::ENDPOINT.into(),
+        });
+        for name in ["model-a", "model-b"] {
+            owner.assets.push(crate::model::Asset {
+                id: format!("asset-{name}"),
+                name: name.into(),
+                version: "digest".into(),
+                path: PathBuf::from("/shared/models"),
+                size: Default::default(),
+                last_used: None,
+                modified: None,
+                used_by: vec![],
+                can_remove: true,
+                note: None,
+            });
+        }
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let plan = prepare_steps(
+            ActionRequest::RemoveAssets {
+                provider: ProviderId::Ollama,
+                ids: vec!["asset-model-b".into(), "asset-model-a".into()],
+            },
+            &Inventory {
+                providers: vec![owner],
+                ..Default::default()
+            },
+            &Settings::default(),
+            &ctx,
+        )
+        .unwrap();
+        for step in &plan.steps {
+            let Step::Ollama { name, .. } = step else {
+                panic!("expected a model step")
+            };
+            assert_eq!(step.target_ids(), vec![format!("asset-{name}")]);
+        }
+    }
+
+    #[test]
+    fn grouped_caches_and_both_tool_execution_routes_preserve_target_ids() {
+        let cache = |id: &str| Cache {
+            id: id.into(),
+            provider: ProviderId::Jvm,
+            name: id.into(),
+            path: PathBuf::from("/cache").join(id),
+            size: Default::default(),
+            strategy: "gradle-caches".into(),
+            warning: String::new(),
+            can_clean: true,
+        };
+        let step = Step::Cache {
+            cache: cache("gradle-cache"),
+            related: vec![cache("gradle-distributions")],
+            command: CommandSpec::new("unused", ["--version"]),
+        };
+        assert_eq!(
+            step.target_ids(),
+            vec!["gradle-cache", "gradle-distributions"]
+        );
+        let tool = providers::basic_tool("formatter", "1.0.0".into(), "npm", None);
+        let id = tool.id.clone();
+        let step = Step::Tool {
+            tool,
+            remove: false,
+            command: CommandSpec::new("unused", ["--version"]),
+        };
+        assert_eq!(step.target_ids(), vec![id]);
+        assert_eq!(
+            native_target_ids(&ActionRequest::UpdateTool {
+                provider: ProviderId::Go,
+                id: "native-sdk-tool".into()
+            }),
+            vec!["native-sdk-tool"]
+        );
+        assert!(
+            native_target_ids(&ActionRequest::InstallRuntime {
+                provider: ProviderId::Go,
+                manager: "go".into(),
+                version: "1.26.0".into()
+            })
+            .is_empty()
+        );
+    }
 
     #[test]
     fn manager_installation_retains_the_reviewed_cleanup_policy() {
@@ -1575,6 +1737,7 @@ mod tests {
                 runtime_dependents: vec![],
             },
             steps: vec![Step::Asset {
+                id: "fixture-asset".into(),
                 root: root_path,
                 modified: modified(&path),
                 path,
@@ -1595,6 +1758,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.items[0].status, "success");
+        assert_eq!(result.items[0].target_ids, vec!["fixture-asset"]);
         assert_eq!(result.removed_bytes, 2 * 1024 * 1024);
         assert_eq!(result.reclaimed_bytes, None);
         assert_eq!(

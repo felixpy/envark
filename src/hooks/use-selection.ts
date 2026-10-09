@@ -1,7 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-export function useSelection(eligible: string[]) {
+const noCompletedIds: readonly string[] = []
+
+export function useSelection(eligible: string[], completedIds: readonly string[] = noCompletedIds) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    setSelected((current) => {
+      if (!completedIds.some((id) => current.has(id))) return current
+      const next = new Set(current)
+      for (const id of completedIds) next.delete(id)
+      return next
+    })
+  }, [completedIds])
   const chosen = eligible.filter((id) => selected.has(id))
   const toggle = (ids: string[], on: boolean) =>
     setSelected((current) => {

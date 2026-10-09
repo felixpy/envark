@@ -21,7 +21,10 @@ export default function Caches() {
   const s = useStore()
   const { t } = s
   const caches = s.data.inventory.caches
-  const selection = useSelection(caches.filter((c) => c.canClean).map((c) => c.id))
+  const selection = useSelection(
+    caches.filter((c) => c.canClean).map((c) => c.id),
+    s.completedSelectionIds,
+  )
   const chosen = caches.filter((c) => selection.chosen.includes(c.id))
   const busyReason = s.busy
     ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
@@ -39,6 +42,7 @@ export default function Caches() {
         <Database className="size-5 text-muted-foreground" />
         <div>
           <p className="text-xl font-semibold tabular-nums">
+            {caches.some((cache) => !cache.size.complete) && '≈ '}
             {formatBytes(caches.reduce((sum, cache) => sum + cache.size.bytes, 0))}
           </p>
           <p className="text-xs text-muted-foreground">
@@ -194,8 +198,18 @@ export default function Caches() {
                             </TooltipContent>
                           </Tooltip>
                         </TableCell>
-                        <TableCell className="text-right font-mono text-xs">
-                          {!cache.size.complete && '≥ '}
+                        <TableCell
+                          className="text-right font-mono text-xs"
+                          title={
+                            !cache.size.complete
+                              ? t(
+                                  '大小尚未确认，可能是上次测量值。请刷新。',
+                                  'Size is unconfirmed and may be a previous measurement. Refresh to confirm.',
+                                )
+                              : undefined
+                          }
+                        >
+                          {!cache.size.complete && '≈ '}
                           {formatBytes(cache.size.bytes)}
                         </TableCell>
                       </TableRow>

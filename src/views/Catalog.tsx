@@ -6,6 +6,7 @@ import {
   providerIds,
   updateKind,
   type ProviderId,
+  type Provider,
 } from '@/domain'
 import { useStore } from '@/store'
 import { EcoDot, PageHeader } from '@/components/shared'
@@ -17,7 +18,14 @@ export function capabilities(id: ProviderId) {
   const language = metadata[id].category === 'lang'
   return [
     ...(language || id === 'ollama'
-      ? [{ id: 'runtime', zh: '运行时', en: 'Runtimes', icon: Cpu }]
+      ? [
+          {
+            id: 'runtime',
+            zh: id === 'ollama' ? '程序与服务' : '运行时',
+            en: id === 'ollama' ? 'Application & service' : 'Runtimes',
+            icon: Cpu,
+          },
+        ]
       : []),
     ...(language
       ? [
@@ -37,6 +45,22 @@ export function capabilities(id: ProviderId) {
       : []),
     { id: 'config', zh: '配置文件', en: 'Configuration', icon: FileCog },
   ]
+}
+
+// Select the table that actually contains the update, including manager-self rows
+// which are displayed with runtimes rather than package managers.
+export function updateTab(provider: Provider) {
+  const outdated = (tool: Provider['tools'][number]) =>
+    ['major', 'minor'].includes(updateKind(tool))
+  if (provider.id === 'ollama') return 'runtime'
+  if (provider.tools.some(outdated)) return 'global'
+  if (
+    provider.packageManagers.some(
+      (tool) => outdated(tool) && provider.managers.some((manager) => manager.name === tool.name),
+    )
+  )
+    return 'runtime'
+  return 'pm'
 }
 
 export default function Catalog() {
@@ -101,9 +125,7 @@ export default function Catalog() {
                         filter === 'downloads'
                           ? 'assets'
                           : filter === 'updates'
-                            ? p.tools.some((tool) => ['major', 'minor'].includes(updateKind(tool)))
-                              ? 'global'
-                              : 'pm'
+                            ? updateTab(p)
                             : undefined,
                     })
                   return (

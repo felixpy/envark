@@ -112,6 +112,9 @@ impl Context {
             }
         }
         if name == "ollama" {
+            if cfg!(target_os = "macos") {
+                candidates.push(PathBuf::from("/Applications/Ollama.app/Contents/Resources"));
+            }
             candidates.push(if cfg!(target_os = "macos") {
                 self.home.join("Applications/Ollama.app/Contents/Resources")
             } else if cfg!(windows) {

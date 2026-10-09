@@ -393,6 +393,7 @@ fn mise_command(ctx: &Context, path: &Path, args: &[&str], scratch: &Path) -> Co
 async fn mise_runtimes(ctx: &Context, path: &Path, provider: ProviderId) -> Result<Vec<Runtime>> {
     let scratch = tempfile::tempdir()?;
     let name = provider_name(provider)?;
+    let manager_owned = owner(ctx, "mise", path).await.is_some();
     let output = ctx
         .runner
         .run(
@@ -420,8 +421,10 @@ async fn mise_runtimes(ctx: &Context, path: &Path, provider: ProviderId) -> Resu
         let Some(path) = record["install_path"].as_str().map(PathBuf::from) else {
             continue;
         };
-        // External links and shared installations are visible, but never mutable.
-        let managed = path.starts_with(mise_data(ctx).join("installs").join(name))
+        // Runtime actions require both an owned SDK directory and the verified
+        // manager that will execute them; discovery must match prepare eligibility.
+        let managed = manager_owned
+            && path.starts_with(mise_data(ctx).join("installs").join(name))
             && reject_links(&path).is_ok()
             && path.is_dir();
         result.push(Runtime {
@@ -434,9 +437,17 @@ async fn mise_runtimes(ctx: &Context, path: &Path, provider: ProviderId) -> Resu
             active_known: record["active"].is_boolean(),
             managed,
             size: None,
-            note: (!managed).then(|| {
-                "Linked or external mise installation; manage it with its original owner.".into()
-            }),
+            note: if !manager_owned {
+                Some(
+                    "The mise manager installation owner is unverified; this runtime is read-only."
+                        .into(),
+                )
+            } else {
+                (!managed).then(|| {
+                    "Linked or external mise installation; manage it with its original owner."
+                        .into()
+                })
+            },
         });
     }
     Ok(result)
@@ -1539,6 +1550,49 @@ esac
         assert_eq!(runtimes.len(), 1);
         assert!(runtimes[0].managed);
         let id = runtimes[0].id.clone();
+        // A system/PATH mise with an unverified installer must not advertise a
+        // removable SDK merely because the SDK directory has the expected layout.
+        let external_mise = root.join("bin/mise");
+        std::fs::create_dir_all(external_mise.parent().unwrap()).unwrap();
+        std::fs::copy(&mise, &external_mise).unwrap();
+        let mut external = Provider::empty(ProviderId::Go);
+        discover(&ctx, &mut external).await;
+        assert_eq!(external.managers[0].path, external_mise);
+        assert!(!external.managers[0].supports_install);
+        assert!(!external.managers[0].supports_default);
+        assert_eq!(external.runtimes.len(), 1);
+        assert!(!external.runtimes[0].active);
+        assert!(external.runtimes[0].active_known);
+        assert!(!external.runtimes[0].managed);
+        assert!(
+            external.runtimes[0]
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("manager installation owner is unverified")
+        );
+        let external_inventory = Inventory {
+            providers: vec![external],
+            ..Default::default()
+        };
+        for request in [
+            ActionRequest::RemoveRuntime {
+                provider: ProviderId::Go,
+                id: id.clone(),
+            },
+            ActionRequest::SetDefault {
+                provider: ProviderId::Go,
+                id: id.clone(),
+            },
+        ] {
+            assert!(
+                prepare(&ctx, request, &external_inventory, &settings)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(mise_data(&ctx).join("installs/go/1.25.0").exists());
+        std::fs::remove_file(external_mise).unwrap();
         inv.providers[0].runtimes = runtimes;
         prepare(
             &ctx,

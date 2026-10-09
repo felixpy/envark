@@ -6,7 +6,13 @@ import { ActionButton as Button } from './action-controls'
 import { Badge } from './ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from './ui/dialog'
 
-export function ManagerInstallDialog({ provider }: { provider: ProviderId }) {
+export function ManagerInstallDialog({
+  provider,
+  prominent = false,
+}: {
+  provider: ProviderId
+  prominent?: boolean
+}) {
   const s = useStore()
   const { t } = s
   const title =
@@ -30,7 +36,7 @@ export function ManagerInstallDialog({ provider }: { provider: ProviderId }) {
   return (
     <>
       <Button
-        variant="outline"
+        variant={prominent ? 'default' : 'outline'}
         size="sm"
         reason={
           s.busy ? t('请等待当前操作完成。', 'Wait for the current operation to finish.') : null

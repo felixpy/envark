@@ -452,21 +452,23 @@ pub(crate) async fn prepare(
                     service_snapshot: Some(snapshot),
                 });
             }
-            let tool = inventory.providers.iter().filter(|p| p.id == ProviderId::Ollama).flat_map(|p| &p.tools).find(|t| owns_tool(t)).cloned()
-                .ok_or_else(|| Error::Unavailable("Install Ollama in Envark or refresh a verified Homebrew installation before managing its service.".into()))?;
-            let root = validate_owner(ctx, &tool).await?;
+            let tool = inventory.providers.iter().filter(|p| p.id == ProviderId::Ollama).flat_map(|p| &p.tools).find(|t| t.name == "ollama" && t.path.is_some()).cloned()
+                .ok_or_else(|| Error::Unavailable("No local Ollama executable was detected. Install Ollama or refresh after adding its executable.".into()))?;
             let path = tool
                 .path
                 .as_ref()
                 .ok_or_else(|| Error::Conflict("Missing Ollama executable.".into()))?
                 .canonicalize()?;
+            if client_version(ctx, &path).await? != tool.version {
+                return Err(Error::Conflict("The installed Ollama client version changed. Refresh before starting its service.".into()));
+            }
             return Ok(Plan {
                 service_snapshot: None,
                 action,
                 fingerprint: Some(fingerprint(ctx, &path)?),
                 version: tool.version.clone(),
                 tool,
-                root,
+                root: path,
                 artifact: None,
                 command: None,
             });
@@ -607,18 +609,16 @@ impl Plan {
         warnings
     }
     async fn validate_service_start(&self, ctx: &Context) -> Result<()> {
-        if validate_owner(ctx, &self.tool).await? != self.root {
-            return Err(Error::Conflict(
-                "The reviewed Ollama installation owner changed.".into(),
-            ));
-        }
         let path = self
             .tool
             .path
             .as_ref()
             .ok_or_else(|| Error::Conflict("Missing reviewed Ollama executable.".into()))?
             .canonicalize()?;
-        if self.fingerprint.as_deref() != Some(&fingerprint(ctx, &path)?) {
+        if path != self.root
+            || self.fingerprint.as_deref() != Some(&fingerprint(ctx, &path)?)
+            || client_version(ctx, &path).await? != self.version
+        {
             return Err(Error::Conflict(
                 "The reviewed Ollama executable changed. Review Start service again.".into(),
             ));
@@ -910,6 +910,7 @@ async fn activate(ctx: &Context, plan: &Plan, staged_root: &Path, backup: &Path)
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn context(root: &Path) -> Context {
         let mut ctx = Context::new(CancellationToken::new()).unwrap();
         ctx.home = root.canonicalize().unwrap();
@@ -949,28 +950,16 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn service_start_reviews_only_the_owned_executable() {
+    async fn service_start_reviews_detected_cli_without_granting_installation_ownership() {
         let temp = tempfile::tempdir().unwrap();
         let ctx = context(temp.path());
         let root = install_root(&ctx);
         fixture(&root, "1.0.0");
-        let path = receipt_path(&ctx);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&Receipt {
-                root: root.clone(),
-                binary: binary(&root),
-                version: "1.0.0".into(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
         let mut provider = Provider::empty(ProviderId::Ollama);
         provider.tools.push(basic_tool(
             "ollama",
             "1.0.0".into(),
-            SOURCE,
+            "PATH",
             Some(binary(&root)),
         ));
         let inventory = Inventory {
@@ -988,6 +977,9 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(!owns_tool(&plan.tool));
+        assert!(!plan.tool.can_update && !plan.tool.can_remove);
+        assert!(receipt(&ctx).is_none());
         assert_eq!(
             plan.fingerprint,
             Some(fingerprint(&ctx, &binary(&root)).unwrap())

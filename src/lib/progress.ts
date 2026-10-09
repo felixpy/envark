@@ -1,4 +1,4 @@
-import { metadata, type ActionRequest, type Progress } from '@/domain'
+import { formatBytes, metadata, type ActionRequest, type Progress } from '@/domain'
 
 type Translate = (zh: string, en: string) => string
 
@@ -6,6 +6,8 @@ export function progressLabel(progress: Progress | null, t: Translate, executing
   if (!progress)
     return executing ? t('正在执行操作', 'Executing operations') : t('正在扫描', 'Scanning')
   switch (progress.stage) {
+    case 'download-model':
+      return `${t('正在下载模型', 'Downloading model')} · ${formatBytes(progress.completed)}${progress.total === null ? '' : ` / ${formatBytes(progress.total)}`}`
     case 'prepare':
       return t('正在检查所选项目，准备操作预览', 'Checking selected items before review')
     case 'refresh-affected':
