@@ -40,6 +40,7 @@ interface Store {
   setDisabledShortcuts(disabled: Settings['disabledShortcuts']): Promise<void>
   addRoot(path?: string): Promise<void>
   plan: Plan | null
+  operationOpen: boolean
   result: OperationResult | null
   operationError: string | null
   completedSelectionIds: string[]
@@ -78,6 +79,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
   const launched = useRef(false)
   const running = useRef(false)
   const reviewedRequest = useRef<ActionRequest | null>(null)
+  const cancelledPreparation = useRef<string | null>(null)
   const begin = (
     kind: NonNullable<Store['task']>['kind'],
     request: ActionRequest | null = null,
@@ -218,6 +220,8 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     task,
     progress,
     plan,
+    operationOpen:
+      !!plan || !!operationError || task?.kind === 'prepare' || task?.kind === 'execute',
     result,
     operationError,
     completedSelectionIds,
@@ -271,7 +275,9 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       }
     },
     cancel: async () => {
-      if (job) await api.cancel(job)
+      if (!job) return
+      if (task?.kind === 'prepare') cancelledPreparation.current = job
+      await api.cancel(job)
     },
     addRoot: async (path) => {
       if (running.current) return
@@ -291,14 +297,21 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     prepare: async (request) => {
       if (running.current) return
       const id = begin('prepare', request)
+      cancelledPreparation.current = null
+      reviewedRequest.current = request
+      setPlan(null)
+      setResult(null)
+      setOperationError(null)
       try {
-        setResult(null)
-        setPlan(await api.prepare(request, id))
-        setOperationError(null)
-        reviewedRequest.current = request
+        const prepared = await api.prepare(request, id)
+        if (cancelledPreparation.current !== id) setPlan(prepared)
       } catch (cause) {
-        if (plan) setOperationError(String(cause))
-        else fail(cause)
+        if (
+          cancelledPreparation.current !== id &&
+          !String(cause).includes('The operation was cancelled.')
+        ) {
+          setOperationError(String(cause))
+        }
       } finally {
         finish()
       }
