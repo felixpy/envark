@@ -225,7 +225,10 @@ it('keeps missing ecosystems inspectable and removes capability labels from the 
   await screen.findByRole('heading', { name: 'Python' })
   expect(
     screen.getByRole('button', { name: 'Install version' }).getAttribute('aria-description'),
-  ).toMatch(/version manager/)
+  ).toMatch(/Install manager/)
+  expect(screen.getByRole('button', { name: 'Install manager' }).hasAttribute('disabled')).toBe(
+    false,
+  )
 })
 
 it('routes native menu events to navigation, shortcuts, and rescan', async () => {
