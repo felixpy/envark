@@ -730,6 +730,11 @@ fn remove_directory(
         || expected.fingerprint.is_none()
         || current.fingerprint != expected.fingerprint
     {
+        #[cfg(test)]
+        eprintln!(
+            "Measurement changed for {}: expected {expected:#?}, actual {current:#?}",
+            path.display()
+        );
         return Err(Error::Conflict(
             "The contents changed after review. Scan again before cleaning.".into(),
         ));
@@ -1226,7 +1231,10 @@ mod tests {
         let result = execute(plan, settings, ctx, silent_progress(), "test".into(), false)
             .await
             .unwrap();
-        assert!(result.items.iter().all(|item| item.status == "success"));
+        assert!(
+            result.items.iter().all(|item| item.status == "success"),
+            "{result:#?}"
+        );
         for name in ["web", "api"] {
             let package = root.join("packages").join(name);
             assert!(!package.join("node_modules").exists());

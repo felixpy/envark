@@ -256,6 +256,7 @@ mod tests {
         use std::os::unix::fs::symlink;
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
+        let canonical_root = fs::canonicalize(root.path()).unwrap();
         fs::write(outside.path().join("large"), vec![0u8; 4096]).unwrap();
         symlink(outside.path(), root.path().join("a-directory-link")).unwrap();
         symlink(
@@ -271,7 +272,7 @@ mod tests {
         fs::create_dir(root.path().join("z-directory")).unwrap();
         fs::write(root.path().join("z-file"), "123").unwrap();
         fs::write(root.path().join("z-directory/file"), "12345").unwrap();
-        let measured = measure(root.path(), &CancellationToken::new()).unwrap();
+        let measured = measure(&canonical_root, &CancellationToken::new()).unwrap();
         assert!(measured.complete);
         assert_eq!(measured.files, 2);
         assert_eq!(measured.bytes, 8);
@@ -283,7 +284,7 @@ mod tests {
         .unwrap();
         assert_ne!(
             measured.fingerprint,
-            measure(root.path(), &CancellationToken::new())
+            measure(&canonical_root, &CancellationToken::new())
                 .unwrap()
                 .fingerprint
         );

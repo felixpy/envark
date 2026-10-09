@@ -690,7 +690,8 @@ mod operation_tests {
     #[tokio::test]
     async fn cleanup_does_not_reenter_global_refresh_and_releases_the_operation_slot() {
         let root = tempfile::tempdir().unwrap();
-        let projects = root.path().join("projects");
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        let projects = canonical_root.join("projects");
         let repo = projects.join("selected");
         crate::git::init(&repo);
         std::fs::write(repo.join("package.json"), "{}").unwrap();

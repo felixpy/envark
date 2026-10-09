@@ -214,8 +214,9 @@ mod tests {
     #[tokio::test]
     async fn cleanup_updates_only_attempted_artifacts_without_rediscovering_projects() {
         let root = tempfile::tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
         for name in ["changed", "unrelated"] {
-            let path = root.path().join(name);
+            let path = canonical_root.join(name);
             git::init(&path);
             std::fs::write(path.join("package.json"), "{}").unwrap();
             std::fs::create_dir_all(path.join("node_modules/pkg")).unwrap();
@@ -223,7 +224,7 @@ mod tests {
             std::fs::write(path.join("node_modules/pkg/file"), "payload").unwrap();
         }
         let settings = Settings {
-            roots: vec![root.path().into()],
+            roots: vec![canonical_root],
             ..Default::default()
         };
         let ctx = Context::new(CancellationToken::new()).unwrap();
