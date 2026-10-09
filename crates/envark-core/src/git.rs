@@ -215,9 +215,12 @@ pub(crate) fn worktrees(
 
 #[cfg(test)]
 pub(crate) fn init(path: &Path) {
+    // Git cannot mkdir a Windows verbatim path supplied as an argument. Let
+    // Rust create the fixture and initialize it from its working directory.
+    fs::create_dir_all(path).unwrap();
     let output = std::process::Command::new("git")
         .args(["init", "--quiet"])
-        .arg(path)
+        .current_dir(path)
         .output()
         .unwrap();
     assert!(

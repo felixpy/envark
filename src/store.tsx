@@ -26,6 +26,11 @@ interface Store {
   navigationKey: number
   go(view: View, provider?: ProviderId | null, focus?: NavigationFocus): void
   busy: boolean
+  task: {
+    kind: 'scan' | 'prepare' | 'execute'
+    startedAt: number
+    request: ActionRequest | null
+  } | null
   progress: Progress | null
   cancel(): Promise<void>
   refresh(): Promise<void>
@@ -36,7 +41,7 @@ interface Store {
   plan: Plan | null
   result: OperationResult | null
   prepare(request: ActionRequest): Promise<void>
-  execute(): Promise<void>
+  execute(discardWorktreeChanges?: boolean): Promise<void>
   closePlan(): void
   reload(): Promise<void>
   t(zh: string, en: string): string
@@ -59,33 +64,54 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
   const [focus, setFocus] = useState<NavigationFocus>({})
   const [navigationKey, setNavigationKey] = useState(0)
   const [job, setJob] = useState<string | null>(null)
+  const jobRef = useRef<string | null>(null)
+  const [task, setTask] = useState<Store['task']>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [result, setResult] = useState<OperationResult | null>(null)
   const launched = useRef(false)
   const running = useRef(false)
+  const reviewedRequest = useRef<ActionRequest | null>(null)
+  const begin = (
+    kind: NonNullable<Store['task']>['kind'],
+    request: ActionRequest | null = null,
+  ) => {
+    const id = crypto.randomUUID()
+    running.current = true
+    jobRef.current = id
+    setJob(id)
+    setTask({ kind, startedAt: Date.now(), request })
+    setProgress(null)
+    setError(null)
+    return id
+  }
+  const finish = () => {
+    running.current = false
+    jobRef.current = null
+    setJob(null)
+    setTask(null)
+    setProgress(null)
+  }
   const t = (zh: string, en: string) =>
     data.settings.language === 'en' ? en : data.settings.language === 'zh-TW' ? traditional(zh) : zh
   const fail = (cause: unknown) => {
     const message = String(cause)
+    if (message.includes('The operation was cancelled.')) {
+      setError(null)
+      return
+    }
     setError(message)
     toast.error(message)
   }
   const refresh = async () => {
     if (running.current) return
-    running.current = true
-    const id = crypto.randomUUID()
-    setJob(id)
-    setProgress(null)
-    setError(null)
+    const id = begin('scan')
     try {
       setData(await api.refresh(id))
     } catch (cause) {
       fail(cause)
     } finally {
-      running.current = false
-      setJob(null)
-      setProgress(null)
+      finish()
     }
   }
   useEffect(() => {
@@ -93,7 +119,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     let unsubscribe: (() => void) | undefined
     void api
       .subscribe((event) => {
-        if (active) setProgress(event)
+        if (active && event.jobId === jobRef.current) setProgress(event)
       })
       .then((stop) => {
         if (active) unsubscribe = stop
@@ -122,6 +148,36 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       unsubscribe?.()
     }
   }, [api])
+  useEffect(() => {
+    if (!loaded || !api.refreshDisks) return
+    let active = true
+    let pending = false
+    let updated = 0
+    const refreshDisks = async () => {
+      if (pending || document.hidden || Date.now() - updated < 5000) return
+      pending = true
+      try {
+        const disks = await api.refreshDisks!()
+        if (active)
+          setData((current) => ({ ...current, inventory: { ...current.inventory, disks } }))
+        updated = Date.now()
+      } catch {
+        // Keep the previous reading when a transient OS query fails.
+      } finally {
+        pending = false
+      }
+    }
+    void refreshDisks()
+    const timer = window.setInterval(() => void refreshDisks(), 30000)
+    window.addEventListener('focus', refreshDisks)
+    document.addEventListener('visibilitychange', refreshDisks)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshDisks)
+      document.removeEventListener('visibilitychange', refreshDisks)
+    }
+  }, [api, loaded])
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
     const apply = () =>
@@ -153,6 +209,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     focus,
     navigationKey,
     busy: job !== null,
+    task,
     progress,
     plan,
     result,
@@ -205,28 +262,27 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
     },
     prepare: async (request) => {
       if (running.current) return
+      const id = begin('prepare', request)
       try {
         setResult(null)
-        setPlan(await api.prepare(request))
+        setPlan(await api.prepare(request, id))
+        reviewedRequest.current = request
       } catch (cause) {
         fail(cause)
+      } finally {
+        finish()
       }
     },
-    execute: async () => {
+    execute: async (discardWorktreeChanges = false) => {
       if (!plan || running.current) return
-      running.current = true
-      const id = crypto.randomUUID()
-      setJob(id)
-      setError(null)
+      const id = begin('execute', reviewedRequest.current)
       try {
-        setResult(await api.execute(plan.id, id))
+        setResult(await api.execute(plan.id, id, discardWorktreeChanges))
         setData(await api.snapshot())
       } catch (cause) {
         fail(cause)
       } finally {
-        running.current = false
-        setJob(null)
-        setProgress(null)
+        finish()
       }
     },
     closePlan: () => {

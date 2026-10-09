@@ -198,6 +198,7 @@ export type ActionRequest =
   | { kind: 'updateTools'; provider: ProviderId; ids: string[] }
   | { kind: 'downloadAsset'; provider: ProviderId; name: string }
 export interface Plan {
+  runtimeDependents?: { path: string; pins: string[] }[]
   id: string
   kind: string
   createdAt: number
@@ -210,6 +211,10 @@ export interface Plan {
   }[]
   warnings: string[]
   useTrash: boolean
+  worktreeChanges?: {
+    path: string
+    files: { path: string; originalPath: string | null; status: string }[]
+  }[]
 }
 export interface OperationResult {
   items: { title: string; status: string; message: string; removedBytes: number }[]

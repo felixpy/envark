@@ -85,6 +85,24 @@ impl Engine {
         self.state.read().await.clone()
     }
 
+    pub async fn refresh_disks(&self) -> Result<Vec<Disk>> {
+        let disks: Vec<Disk> = tokio::task::spawn_blocking(|| {
+            sysinfo::Disks::new_with_refreshed_list()
+                .iter()
+                .map(|disk| Disk {
+                    name: disk.name().to_string_lossy().into_owned(),
+                    mount: disk.mount_point().into(),
+                    total: disk.total_space(),
+                    available: disk.available_space(),
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| Error::Unavailable(e.to_string()))?;
+        self.state.write().await.inventory.disks = disks.clone();
+        Ok(disks)
+    }
+
     pub async fn save_settings(&self, settings: Settings) -> Result<Snapshot> {
         let _guard = self.work.try_lock().map_err(|_| {
             Error::Conflict("Wait for the current operation before changing settings.".into())
@@ -305,19 +323,31 @@ impl Engine {
         Ok(())
     }
 
-    pub async fn plan(&self, request: ActionRequest) -> Result<PlanView> {
+    pub async fn plan(
+        &self,
+        request: ActionRequest,
+        job_id: String,
+        progress: ProgressSink,
+    ) -> Result<PlanView> {
         let _guard = self
             .work
             .try_lock()
             .map_err(|_| Error::Conflict("Wait for the current operation to finish.".into()))?;
         let state = self.snapshot().await;
-        let plan = operations::prepare(
+        let token = CancellationToken::new();
+        let context = Context::new(token.clone())?;
+        self.jobs.lock().await.insert(job_id.clone(), token.clone());
+        let outcome = operations::prepare_with_progress(
             request,
             &state.inventory,
             &state.settings,
-            &Context::new(CancellationToken::new())?,
+            &context,
+            progress,
+            &job_id,
         )
-        .await?;
+        .await;
+        self.jobs.lock().await.remove(&job_id);
+        let plan = outcome?;
         let view = plan.view.clone();
         let mut plans = self.plans.lock().await;
         plans.retain(|_, plan| now().saturating_sub(plan.view.created_at) < 600);
@@ -333,6 +363,7 @@ impl Engine {
         plan_id: &str,
         job_id: String,
         progress: ProgressSink,
+        discard_worktree_changes: bool,
     ) -> Result<OperationResult> {
         let _guard = self
             .work
@@ -349,28 +380,59 @@ impl Engine {
             ));
         }
         let kind = plan.view.kind.clone();
+        let targets = plan.refresh_targets();
         let token = CancellationToken::new();
         let context = Context::new(token.clone())?;
         self.jobs.lock().await.insert(job_id.clone(), token.clone());
-        let outcome =
-            operations::execute(plan, settings, context, progress.clone(), job_id.clone()).await;
+        let outcome = operations::execute(
+            plan,
+            settings,
+            context.clone(),
+            progress.clone(),
+            job_id.clone(),
+            discard_worktree_changes,
+        )
+        .await;
         match &outcome {
             Ok(result) => {
-                if !token.is_cancelled()
-                    && let Err(error) = self.refresh_inner(&job_id, token, progress, true).await
+                progress(Progress {
+                    job_id: job_id.clone(),
+                    stage: "refresh-affected".into(),
+                    completed: 0,
+                    total: None,
+                    message: String::new(),
+                });
+                let inventory = self.state.read().await.inventory.clone();
+                match crate::operation_refresh::refresh(
+                    inventory,
+                    targets,
+                    result,
+                    context,
+                    progress,
+                    job_id.clone(),
+                )
+                .await
                 {
-                    self.state
+                    Ok((mut inventory, paths)) => {
+                        if let Ok(mut cache) = self.scans.lock() {
+                            cache.invalidate_paths(&paths);
+                        }
+                        if let Err(error) = self.storage.save_inventory(&inventory) {
+                            inventory
+                                .issues
+                                .push(format!("Updated inventory could not be saved: {error}"));
+                        }
+                        self.state.write().await.inventory = inventory;
+                    }
+                    Err(error) => self
+                        .state
                         .write()
                         .await
                         .inventory
                         .issues
-                        .push(format!("Refresh after operation: {error}"));
+                        .push(format!("Refresh after operation: {error}")),
                 }
-                let failed = result
-                    .items
-                    .iter()
-                    .filter(|i| i.status != "success")
-                    .count();
+                let failed = result.items.iter().filter(|i| i.status == "failed").count();
                 self.log(
                     &kind,
                     format!("{} items processed", result.items.len()),
@@ -403,6 +465,14 @@ impl Engine {
             }
         }
         self.jobs.lock().await.remove(&job_id);
+        if let Err(error) = self.refresh_disks().await {
+            self.state
+                .write()
+                .await
+                .inventory
+                .issues
+                .push(format!("Disk usage refresh: {error}"));
+        }
         outcome
     }
 }
@@ -610,5 +680,79 @@ mod tests {
                 .disabled_shortcuts
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod operation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cleanup_does_not_reenter_global_refresh_and_releases_the_operation_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+        let projects = canonical_root.join("projects");
+        let repo = projects.join("selected");
+        crate::git::init(&repo);
+        std::fs::write(repo.join("package.json"), "{}").unwrap();
+        std::fs::create_dir(repo.join("node_modules")).unwrap();
+        std::fs::write(repo.join("node_modules/.package-lock.json"), "{}").unwrap();
+        std::fs::write(repo.join("node_modules/payload"), "payload").unwrap();
+        let settings = Settings {
+            roots: vec![projects],
+            use_trash: false,
+            ..Default::default()
+        };
+        let scanned = scanner::scan(
+            &settings,
+            &CancellationToken::new(),
+            silent_progress(),
+            "scan",
+        )
+        .unwrap();
+        let project = &scanned.projects[0];
+        let request = ActionRequest::CleanProjects {
+            artifact_ids: vec![project.artifacts[0].id.clone()],
+        };
+        let engine = Engine::new(root.path().join("state")).unwrap();
+        {
+            let mut state = engine.state.write().await;
+            state.settings = settings;
+            state.inventory.projects = scanned.projects;
+            state.inventory.scanned_at = Some(123);
+            let mut sentinel = Provider::empty(ProviderId::Py);
+            sentinel.issues.push("Keep this provider snapshot".into());
+            state.inventory.providers = vec![sentinel];
+        }
+        let events = Arc::new(std::sync::Mutex::new(Vec::<Progress>::new()));
+        let captured = events.clone();
+        let sink: ProgressSink = Arc::new(move |p| captured.lock().unwrap().push(p));
+        let plan = engine
+            .plan(request, "review".into(), sink.clone())
+            .await
+            .unwrap();
+        let result = engine
+            .execute(&plan.id, "execute".into(), sink, false)
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "success");
+        assert!(!repo.join("node_modules").exists());
+        assert!(repo.join("package.json").exists());
+        let snapshot = engine.snapshot().await;
+        assert!(snapshot.inventory.projects[0].artifacts.is_empty());
+        assert_eq!(snapshot.inventory.scanned_at, Some(123));
+        assert_eq!(
+            snapshot.inventory.providers[0].issues,
+            vec!["Keep this provider snapshot"]
+        );
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|p| ["prepare", "execute", "refresh-affected"].contains(&p.stage.as_str()))
+        );
+        assert!(engine.jobs.lock().await.is_empty());
+        assert!(engine.reserve_work().is_ok());
     }
 }

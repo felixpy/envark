@@ -78,6 +78,14 @@ pub fn contained_directory(root: &Path, path: &Path) -> Result<std::path::PathBu
 }
 
 pub fn measure(path: &Path, cancel: &CancellationToken) -> Result<Measurement> {
+    measure_with(path, cancel, |_, _| Ok(()))
+}
+
+pub(crate) fn measure_with(
+    path: &Path,
+    cancel: &CancellationToken,
+    mut inspect: impl FnMut(&Path, &std::fs::Metadata) -> Result<()>,
+) -> Result<Measurement> {
     reject_links(path)?;
     let mut result = Measurement {
         complete: true,
@@ -85,27 +93,43 @@ pub fn measure(path: &Path, cancel: &CancellationToken) -> Result<Measurement> {
     };
     let mut fingerprint = Sha256::new();
     // Link entries contribute no target data; no symlink or junction is followed.
-    let iter = WalkDir::new(path)
+    let mut iter = WalkDir::new(path)
         .follow_links(false)
         .max_open(16)
         .sort_by_file_name()
-        .into_iter()
-        .filter_entry(|e| {
-            e.path()
-                .symlink_metadata()
-                .map(|m| !is_link(&m))
-                .unwrap_or(true)
-        });
-    for entry in iter {
+        .into_iter();
+    while let Some(entry) = iter.next() {
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        match entry.and_then(|e| e.metadata().map(|m| (e, m))) {
+        // WalkDir caches directory-entry metadata on Windows. Read it through
+        // the same filesystem API for every pass so NTFS enumeration snapshots
+        // cannot produce a stale size or a different cleanup fingerprint.
+        match entry
+            .map_err(std::io::Error::from)
+            .and_then(|e| fs::symlink_metadata(e.path()).map(|m| (e, m)))
+        {
             Ok((entry, meta)) => {
+                inspect(entry.path(), &meta)?;
                 let relative = entry.path().strip_prefix(path).unwrap_or(entry.path());
                 let name = relative.as_os_str().as_encoded_bytes();
                 fingerprint.update(name.len().to_le_bytes());
                 fingerprint.update(name);
+                if is_link(&meta) {
+                    // Fingerprint the link itself, never the data it points to.
+                    if meta.is_dir() {
+                        iter.skip_current_dir();
+                    }
+                    fingerprint.update([2]);
+                    match std::fs::read_link(entry.path()) {
+                        Ok(target) => fingerprint.update(target.as_os_str().as_encoded_bytes()),
+                        Err(_) => {
+                            result.complete = false;
+                            result.skipped += 1;
+                        }
+                    }
+                    continue;
+                }
                 fingerprint.update([u8::from(meta.is_file())]);
                 fingerprint.update(meta.len().to_le_bytes());
                 if let Ok(timestamp) = meta
@@ -231,5 +255,70 @@ mod tests {
             0
         );
         assert!(contained_directory(&root_path, &link).is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn link_targets_are_not_counted_and_later_siblings_are_not_skipped() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let canonical_root = fs::canonicalize(root.path()).unwrap();
+        fs::write(outside.path().join("large"), vec![0u8; 4096]).unwrap();
+        symlink(outside.path(), root.path().join("a-directory-link")).unwrap();
+        symlink(
+            outside.path().join("large"),
+            root.path().join("b-file-link"),
+        )
+        .unwrap();
+        symlink(
+            outside.path().join("missing"),
+            root.path().join("c-broken-link"),
+        )
+        .unwrap();
+        fs::create_dir(root.path().join("z-directory")).unwrap();
+        fs::write(root.path().join("z-file"), "123").unwrap();
+        fs::write(root.path().join("z-directory/file"), "12345").unwrap();
+        let measured = measure(&canonical_root, &CancellationToken::new()).unwrap();
+        assert!(measured.complete);
+        assert_eq!(measured.files, 2);
+        assert_eq!(measured.bytes, 8);
+        fs::remove_file(root.path().join("b-file-link")).unwrap();
+        symlink(
+            outside.path().join("other"),
+            root.path().join("b-file-link"),
+        )
+        .unwrap();
+        assert_ne!(
+            measured.fingerprint,
+            measure(&canonical_root, &CancellationToken::new())
+                .unwrap()
+                .fingerprint
+        );
+    }
+    #[test]
+    fn measurement_reads_current_metadata_after_directory_entries_are_buffered() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("a-trigger"), "a").unwrap();
+        let target = root.join("z-target");
+        fs::write(&target, "old").unwrap();
+        let measured = measure_with(&root, &CancellationToken::new(), |path, _| {
+            // Sorted traversal has already buffered both entries here. Windows
+            // DirEntry metadata must not hide a later update to the second file.
+            if path.file_name().is_some_and(|name| name == "a-trigger") {
+                fs::write(&target, "new contents")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(measured.complete);
+        assert_eq!(measured.files, 2);
+        assert_eq!(measured.bytes, 13);
+        assert_eq!(
+            measured.fingerprint,
+            measure(&root, &CancellationToken::new())
+                .unwrap()
+                .fingerprint
+        );
     }
 }

@@ -44,6 +44,12 @@ impl Context {
         if let Ok(path) = which::which(name) {
             return Some(path);
         }
+        self.executable_candidates(name)
+            .into_iter()
+            .find(|path| path.is_file())
+    }
+
+    fn executable_candidates(&self, name: &str) -> Vec<PathBuf> {
         let file = if cfg!(windows) {
             format!("{name}.exe")
         } else {
@@ -66,10 +72,45 @@ impl Context {
                 PathBuf::from("/usr/bin"),
             ]);
         }
-        candidates
-            .into_iter()
-            .map(|dir| dir.join(&file))
-            .find(|path| path.is_file())
+        let configured_root = match name {
+            "cargo" | "rustc" | "rustup" => Some(("CARGO_HOME", "bin")),
+            "pyenv" => Some(("PYENV_ROOT", "bin")),
+            "bun" => Some(("BUN_INSTALL", "bin")),
+            "fnm" => Some(("FNM_DIR", "")),
+            "java" | "javac" => Some(("JAVA_HOME", "bin")),
+            _ => None,
+        };
+        if let Some((variable, suffix)) = configured_root
+            && let Some(root) = std::env::var_os(variable).filter(|root| !root.is_empty())
+        {
+            candidates.insert(0, PathBuf::from(root).join(suffix));
+        }
+        if matches!(name, "python" | "python3") && cfg!(target_os = "macos") {
+            candidates.push(PathBuf::from(
+                "/Library/Frameworks/Python.framework/Versions/Current/bin",
+            ));
+        }
+        if matches!(name, "node" | "npm") && cfg!(windows) {
+            if let Some(root) = std::env::var_os("NVM_SYMLINK") {
+                candidates.push(PathBuf::from(root));
+            }
+            if let Some(root) = std::env::var_os("ProgramFiles") {
+                candidates.push(PathBuf::from(root).join("nodejs"));
+            }
+        }
+        if name == "go" {
+            if let Some(root) = std::env::var_os("GOROOT").filter(|root| !root.is_empty()) {
+                candidates.insert(0, PathBuf::from(root).join("bin"));
+            }
+            if cfg!(windows) {
+                if let Some(root) = std::env::var_os("ProgramFiles") {
+                    candidates.push(PathBuf::from(root).join("Go/bin"));
+                }
+            } else {
+                candidates.push(PathBuf::from("/usr/local/go/bin"));
+            }
+        }
+        candidates.into_iter().map(|dir| dir.join(&file)).collect()
     }
 
     pub fn command(&self, name: &str, args: &[&str]) -> Result<CommandSpec> {
@@ -184,8 +225,15 @@ pub struct Discovery {
 }
 
 pub async fn discover(context: Context) -> Result<Discovery> {
+    discover_selected(context, &ProviderId::ALL).await
+}
+
+pub(crate) async fn discover_selected(
+    context: Context,
+    selected: &[ProviderId],
+) -> Result<Discovery> {
     let mut jobs = tokio::task::JoinSet::new();
-    for id in ProviderId::ALL {
+    for &id in selected {
         let ctx = context.clone();
         jobs.spawn(async move {
             let mut provider = Provider::empty(id);
@@ -446,6 +494,8 @@ pub fn cache_probe(cache: &Cache, command: &CommandSpec) -> Option<CommandSpec> 
 #[cfg(test)]
 mod read_policy_tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::model::ProviderId;
 
     #[test]
     #[ignore = "subprocess fixture launched by read_policy_reaches_child_processes"]
@@ -469,5 +519,66 @@ mod read_policy_tests {
         command.env.insert("RUSTUP_AUTO_INSTALL".into(), "1".into());
         ctx.apply_read_policy(&mut command);
         ctx.runner.run(&command, &ctx.cancel).await.unwrap();
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "isolated environment fixture launched by go_is_detected_without_shell_path"]
+    async fn go_probe_fixture() {
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let root = PathBuf::from(std::env::var_os("GOROOT").unwrap());
+        assert_eq!(ctx.executable("go"), Some(root.join("bin/go")));
+        assert!(
+            ctx.executable_candidates("go")
+                .contains(&PathBuf::from("/usr/local/go/bin/go"))
+        );
+        for name in ["cargo", "rustup", "pyenv", "java", "bun"] {
+            assert_eq!(
+                ctx.executable(name),
+                Some(root.join("bin").join(name)),
+                "{name}"
+            );
+        }
+        let found = discover_selected(ctx, &[ProviderId::Go]).await.unwrap();
+        assert!(found.providers[0].detected);
+        assert_eq!(found.providers[0].runtimes[0].version, "1.26.1");
+        assert_eq!(found.providers[0].runtimes[0].path, root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn go_is_detected_without_shell_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("bin")).unwrap();
+        let go = root.path().join("bin/go");
+        // The probe is intentionally outside PATH, as in a Finder-launched app.
+        let payload = serde_json::json!({"GOROOT":root.path(),"GOVERSION":"go1.26.1"});
+        std::fs::write(&go, format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", payload)).unwrap();
+        std::fs::set_permissions(&go, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for name in ["cargo", "rustup", "pyenv", "java", "bun"] {
+            let binary = root.path().join("bin").join(name);
+            std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "providers::read_policy_tests::go_probe_fixture",
+            ])
+            .env("PATH", root.path().join("empty-path"))
+            .env("GOROOT", root.path())
+            .env("CARGO_HOME", root.path())
+            .env("PYENV_ROOT", root.path())
+            .env("JAVA_HOME", root.path())
+            .env("BUN_INSTALL", root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

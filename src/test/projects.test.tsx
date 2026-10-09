@@ -99,10 +99,13 @@ describe('project cleanup selection', () => {
     await user.click(screen.getByRole('checkbox', { name: 'Select all eligible artifacts' }))
     await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
     await waitFor(() =>
-      expect(prepare).toHaveBeenCalledWith({
-        kind: 'cleanProjects',
-        artifactIds: ['recent-modules', 'older-modules'],
-      }),
+      expect(prepare).toHaveBeenCalledWith(
+        {
+          kind: 'cleanProjects',
+          artifactIds: ['recent-modules', 'older-modules'],
+        },
+        expect.any(String),
+      ),
     )
     await user.click(screen.getByRole('switch', { name: 'Cleanable only' }))
     expect(
@@ -177,10 +180,13 @@ it('keeps worktree folding out of artifact mode and preserves its selection acro
   expect(screen.getByRole('checkbox', { name: 'Select old-branch' })).toBeTruthy()
   expect(screen.queryByRole('button', { name: 'Expand worktrees' })).toBeNull()
   await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
-  expect(prepare).toHaveBeenCalledWith({
-    kind: 'cleanProjects',
-    artifactIds: ['repository-modules', 'active-branch-modules', 'old-branch-modules'],
-  })
+  expect(prepare).toHaveBeenCalledWith(
+    {
+      kind: 'cleanProjects',
+      artifactIds: ['repository-modules', 'active-branch-modules', 'old-branch-modules'],
+    },
+    expect.any(String),
+  )
 })
 
 it('keeps the parent as context when filtering a worktree and never cleans active siblings', async () => {
@@ -197,10 +203,13 @@ it('keeps the parent as context when filtering a worktree and never cleans activ
   expect(screen.queryByText('protected-branch')).toBeNull()
   await user.click(screen.getByRole('checkbox', { name: 'Select repository' }))
   await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
-  expect(prepare).toHaveBeenCalledWith({
-    kind: 'cleanProjects',
-    artifactIds: ['old-branch-modules'],
-  })
+  expect(prepare).toHaveBeenCalledWith(
+    {
+      kind: 'cleanProjects',
+      artifactIds: ['old-branch-modules'],
+    },
+    expect.any(String),
+  )
 })
 
 it('keeps missing worktree reasons inside an on-demand hint and prevents cleanup', async () => {
@@ -282,7 +291,10 @@ it('shows whole checkout size and sends a separate worktree removal request', as
   expect(row.getByText('Total')).toBeTruthy()
   expect(row.getByText('Artifacts 1.0 KB')).toBeTruthy()
   await userEvent.setup().click(row.getByRole('button', { name: 'Remove worktree' }))
-  expect(prepare).toHaveBeenCalledWith({ kind: 'removeWorktree', id: 'old-branch' })
+  expect(prepare).toHaveBeenCalledWith(
+    { kind: 'removeWorktree', id: 'old-branch' },
+    expect.any(String),
+  )
 })
 
 it('blocks locked worktree removal using an on-demand reason while allowing artifact cleanup', async () => {
@@ -329,10 +341,13 @@ it('groups workspace dependencies into one selection and hides ineligible projec
   expect(row.getAllByRole('checkbox')).toHaveLength(2)
   await userEvent.setup().click(row.getByRole('checkbox', { name: 'node_modules' }))
   await userEvent.setup().click(screen.getByRole('button', { name: 'Review cleanup' }))
-  expect(prepare).toHaveBeenCalledWith({
-    kind: 'cleanProjects',
-    artifactIds: ['older-modules', 'nested-modules'],
-  })
+  expect(prepare).toHaveBeenCalledWith(
+    {
+      kind: 'cleanProjects',
+      artifactIds: ['older-modules', 'nested-modules'],
+    },
+    expect.any(String),
+  )
 })
 
 it('bulk reviews worktrees without selecting artifacts, locked trees, or the main checkout', async () => {
@@ -347,8 +362,11 @@ it('bulk reviews worktrees without selecting artifacts, locked trees, or the mai
   await user.click(screen.getByRole('tab', { name: 'Worktrees' }))
   await user.click(screen.getByRole('checkbox', { name: 'Select all eligible worktrees' }))
   await user.click(screen.getByRole('button', { name: 'Review worktree removal' }))
-  expect(prepare).toHaveBeenCalledWith({
-    kind: 'removeWorktrees',
-    ids: ['active-branch', 'old-branch'],
-  })
+  expect(prepare).toHaveBeenCalledWith(
+    {
+      kind: 'removeWorktrees',
+      ids: ['active-branch', 'old-branch'],
+    },
+    expect.any(String),
+  )
 })

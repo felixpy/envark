@@ -51,7 +51,10 @@ it('bulk tool updates include only tools with a verified update capability', asy
   await user.click(screen.getByRole('checkbox', { name: 'Select all updatable tools' }))
   await user.click(screen.getByRole('button', { name: 'Update selected (1)' }))
   await waitFor(() =>
-    expect(prepare).toHaveBeenCalledWith({ kind: 'updateTools', provider: 'js', ids: ['owned'] }),
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'updateTools', provider: 'js', ids: ['owned'] },
+      expect.any(String),
+    ),
   )
 })
 
@@ -75,11 +78,14 @@ it('bulk resource removal excludes resources with incomplete size scans', async 
   await user.click(screen.getByRole('checkbox', { name: 'Select all resources' }))
   await user.click(screen.getByRole('button', { name: 'Review removal' }))
   await waitFor(() =>
-    expect(prepare).toHaveBeenCalledWith({
-      kind: 'removeAssets',
-      provider: 'playwright',
-      ids: ['complete'],
-    }),
+    expect(prepare).toHaveBeenCalledWith(
+      {
+        kind: 'removeAssets',
+        provider: 'playwright',
+        ids: ['complete'],
+      },
+      expect.any(String),
+    ),
   )
 })
 
@@ -113,11 +119,14 @@ it('does not mistake an inherited active runtime for the manager default', async
   await screen.findByText('Current environment')
   await user.click(screen.getByRole('button', { name: 'Set default' }))
   await waitFor(() =>
-    expect(prepare).toHaveBeenCalledWith({
-      kind: 'setDefault',
-      provider: 'js',
-      id: 'runtime',
-    }),
+    expect(prepare).toHaveBeenCalledWith(
+      {
+        kind: 'setDefault',
+        provider: 'js',
+        id: 'runtime',
+      },
+      expect.any(String),
+    ),
   )
   expect(screen.getByRole('button', { name: 'Remove' }).getAttribute('aria-disabled')).toBe('true')
 })
