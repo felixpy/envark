@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { useStore } from '@/store'
 import type { ManagerInstallOption, ProviderId } from '@/domain'
@@ -21,16 +21,29 @@ export function ManagerInstallDialog({
   const [options, setOptions] = useState<ManagerInstallOption[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const request = useRef(0)
+  useEffect(
+    () => () => {
+      request.current += 1
+    },
+    [],
+  )
+  const changeOpen = (next: boolean) => {
+    if (!next) request.current += 1
+    setOpen(next)
+  }
   const load = async () => {
+    const current = ++request.current
     setOpen(true)
     setLoading(true)
     setError('')
     try {
-      setOptions(await s.api.managerOptions(provider))
+      const options = await s.api.managerOptions(provider)
+      if (current === request.current) setOptions(options)
     } catch (error) {
-      setError(String(error))
+      if (current === request.current) setError(String(error))
     } finally {
-      setLoading(false)
+      if (current === request.current) setLoading(false)
     }
   }
   return (
@@ -46,7 +59,7 @@ export function ManagerInstallDialog({
         <Plus />
         {title}
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={changeOpen}>
         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>
@@ -103,7 +116,7 @@ export function ManagerInstallDialog({
                             : null
                       }
                       onClick={() => {
-                        setOpen(false)
+                        changeOpen(false)
                         void s.prepare({ kind: 'installManager', provider, manager: option.name })
                       }}
                     >

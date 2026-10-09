@@ -100,6 +100,25 @@ it('keeps unsigned or unsupported releases available only through the manual rel
   expect(install).not.toHaveBeenCalled()
 })
 
+it('opens immediately during an update check and does not reopen on a late response', async () => {
+  const { check } = fixture()
+  let resolve!: (release: AppRelease) => void
+  check.mockImplementationOnce(
+    () =>
+      new Promise((done) => {
+        resolve = done
+      }),
+  )
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Check update' }))
+  expect(screen.getByRole('dialog', { name: 'Check for Envark updates' })).toBeTruthy()
+  expect(screen.getByRole('status').textContent).toContain('Checking the latest release')
+  await user.keyboard('{Escape}')
+  expect(screen.queryByRole('dialog')).toBeNull()
+  await act(async () => resolve({ version: '0.4.0', available: true, installable: true }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
 it('cleans up the progress listener and permits retry after an installation failure', async () => {
   const { check, install, stop } = fixture()
   install.mockRejectedValueOnce(new Error('Signature verification failed'))

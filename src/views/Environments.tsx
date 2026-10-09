@@ -1,7 +1,7 @@
 import { OllamaProgram, OllamaService } from '@/components/OllamaEnvironment'
 import { ManagerInstallDialog } from '@/components/ManagerInstallDialog'
 import { displayPath } from '@/lib/paths'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowUp, Check, Download, FilePenLine, Plus, Star, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
@@ -81,11 +81,21 @@ export default function Environments({ id }: { id: ProviderId }) {
   const [download, setDownload] = useState(false)
   const [model, setModel] = useState('')
   const [config, setConfig] = useState<ConfigContent | null>(null)
+  const [configId, setConfigId] = useState<string | null>(null)
+  const [configLoading, setConfigLoading] = useState(false)
+  const [configError, setConfigError] = useState('')
+  const configRequest = useRef(0)
+  useEffect(
+    () => () => {
+      configRequest.current += 1
+    },
+    [],
+  )
   const [saving, setSaving] = useState(false)
   const busyReason = s.busy
     ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
     : null
-  const configFile = provider.configs.find((file) => file.id === config?.id)
+  const configFile = provider.configs.find((file) => file.id === configId)
   const configReadOnly = !configFile?.editable
   const assets = useSelection(
     provider.assets
@@ -98,23 +108,42 @@ export default function Environments({ id }: { id: ProviderId }) {
     itemId: string,
   ) => void s.prepare({ kind, provider: id, id: itemId })
   const editConfig = async (configId: string) => {
+    const request = ++configRequest.current
+    setConfigId(configId)
+    setConfig(null)
+    setConfigError('')
+    setConfigLoading(true)
     try {
-      setConfig(await s.api.readConfig(configId))
+      const content = await s.api.readConfig(configId)
+      if (request === configRequest.current) setConfig(content)
     } catch (error) {
-      toast.error(String(error))
+      if (request === configRequest.current) setConfigError(String(error))
+    } finally {
+      if (request === configRequest.current) setConfigLoading(false)
     }
   }
   const saveConfig = async () => {
-    if (!config) return
+    if (!config || saving || configReadOnly) return
     setSaving(true)
+    setConfigError('')
     try {
       setConfig(await s.api.saveConfig(config.id, config.content, config.revision))
-      await s.reload()
+      try {
+        await s.reload()
+      } catch (error) {
+        setConfigError(
+          t(
+            '配置已保存，但刷新界面失败：',
+            'Configuration saved, but refreshing the view failed: ',
+          ) + String(error),
+        )
+        return
+      }
       toast.success(
         t('配置已保存，原文件已备份。', 'Configuration saved. The previous file was backed up.'),
       )
     } catch (error) {
-      toast.error(String(error))
+      setConfigError(String(error))
     } finally {
       setSaving(false)
     }
@@ -649,25 +678,41 @@ export default function Environments({ id }: { id: ProviderId }) {
         </DialogContent>
       </Dialog>
       <Dialog
-        open={!!config}
+        open={configId !== null}
         onOpenChange={(open) => {
-          if (!open && !saving) setConfig(null)
+          if (!open && !saving) {
+            configRequest.current += 1
+            setConfigId(null)
+            setConfig(null)
+            setConfigError('')
+          }
         }}
       >
-        <DialogContent className="sm:max-w-3xl">
+        <DialogContent className="sm:max-w-3xl" showCloseButton={!saving}>
           <DialogHeader>
             <DialogTitle>{t('编辑配置文件', 'Edit configuration')}</DialogTitle>
             <DialogDescription className="break-all font-mono text-xs">
-              {config ? displayPath(config.path) : undefined}
+              {configFile ? displayPath(configFile.path) : undefined}
             </DialogDescription>
           </DialogHeader>
-          <Textarea
-            className="min-h-80 font-mono text-xs"
-            aria-label={t('配置内容', 'Configuration content')}
-            value={config?.content ?? ''}
-            readOnly={configReadOnly || saving}
-            onChange={(e) => setConfig(config ? { ...config, content: e.target.value } : null)}
-          />
+          {configLoading ? (
+            <p role="status" className="py-6 text-sm text-muted-foreground">
+              {t('正在读取配置文件…', 'Reading configuration…')}
+            </p>
+          ) : config ? (
+            <Textarea
+              className="min-h-80 font-mono text-xs"
+              aria-label={t('配置内容', 'Configuration content')}
+              value={config?.content ?? ''}
+              readOnly={configReadOnly || saving}
+              onChange={(e) => setConfig(config ? { ...config, content: e.target.value } : null)}
+            />
+          ) : null}
+          {configError && (
+            <p role="alert" className="whitespace-pre-wrap break-all text-sm text-destructive">
+              {configError}
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             {t(
               '备份保存在应用数据目录中。配置内容可能包含访问凭据，请谨慎分享。',
@@ -675,21 +720,28 @@ export default function Environments({ id }: { id: ProviderId }) {
             )}
           </p>
           <DialogFooter>
-            <Button
-              reason={
-                saving
-                  ? t('正在保存配置。', 'Saving configuration.')
-                  : configReadOnly
-                    ? t(
-                        '此配置格式仅支持查看，请使用外部编辑器修改。',
-                        'This configuration is read-only. Use an external editor to change it.',
-                      )
-                    : null
-              }
-              onClick={() => void saveConfig()}
-            >
-              {saving ? t('保存中', 'Saving') : t('备份并保存', 'Back up & save')}
-            </Button>
+            {!configLoading && !config && configId && (
+              <Button variant="outline" onClick={() => void editConfig(configId)}>
+                {t('重试', 'Retry')}
+              </Button>
+            )}
+            {config && (
+              <Button
+                reason={
+                  saving
+                    ? t('正在保存配置。', 'Saving configuration.')
+                    : configReadOnly
+                      ? t(
+                          '此配置格式仅支持查看，请使用外部编辑器修改。',
+                          'This configuration is read-only. Use an external editor to change it.',
+                        )
+                      : null
+                }
+                onClick={() => void saveConfig()}
+              >
+                {saving ? t('保存中', 'Saving') : t('备份并保存', 'Back up & save')}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
