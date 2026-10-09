@@ -36,6 +36,10 @@ pub enum ActionRequest {
     CleanCaches {
         ids: Vec<String>,
     },
+    InstallManager {
+        provider: ProviderId,
+        manager: String,
+    },
     InstallRuntime {
         provider: ProviderId,
         manager: String,
@@ -135,6 +139,15 @@ enum Step {
         cache: Cache,
         related: Vec<Cache>,
         command: CommandSpec,
+    },
+    ManagerInstall {
+        provider: ProviderId,
+        name: String,
+        installation: Option<Box<providers::manager_install::Installation>>,
+    },
+    ManagerRemove {
+        tool: crate::model::Tool,
+        removal: Option<Box<providers::manager_remove::Removal>>,
     },
     Command(CommandSpec),
     Runtime {
@@ -287,9 +300,10 @@ pub async fn prepare_with_progress(
         total: None,
         message: String::new(),
     });
-    let (inventory, worker_settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
+    let (worker_inventory, worker_settings, worker) =
+        (inventory.clone(), settings.clone(), ctx.clone());
     let mut plan = tokio::task::spawn_blocking(move || {
-        prepare_steps(request, &inventory, &worker_settings, &worker)
+        prepare_steps(request, &worker_inventory, &worker_settings, &worker)
     })
     .await
     .map_err(|e| Error::Unavailable(e.to_string()))??;
@@ -326,6 +340,56 @@ pub async fn prepare_with_progress(
                 plan.view.warnings.push(format!("{} contains ignored files. If this worktree is removed, they will also be permanently removed and cannot be restored from Git.", worktree.path.display()));
             }
             *removal = Some(reviewed);
+        }
+        if let Step::ManagerInstall {
+            provider,
+            name,
+            installation,
+        } = step
+        {
+            let prepared =
+                providers::manager_install::prepare(ctx, inventory, *provider, name).await?;
+            let item = &mut plan.view.items[index];
+            item.title = format!("Install {} {}", name, prepared.version);
+            item.path = Some(prepared.target.clone());
+            item.command = Some(
+                prepared
+                    .commands
+                    .iter()
+                    .map(CommandSpec::display)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            if let Some(url) = &prepared.script {
+                item.command = Some(format!(
+                    "Download: {url}\nRun: {}",
+                    item.command
+                        .as_ref()
+                        .unwrap()
+                        .replace(url, "<downloaded official installer>")
+                ));
+            }
+            if let Some(profile) = &prepared.profile {
+                plan.view.warnings.push(format!("The official installer may add shell initialization to {}. Existing configuration and runtime installations are kept.", profile.display()));
+            } else if prepared.script.is_some() {
+                plan.view.warnings.push("The official installer may add its executable directory to your user PATH. Existing runtime installations are kept.".into());
+            }
+            *installation = Some(Box::new(prepared));
+        }
+        if let Step::ManagerRemove { tool, removal } = step {
+            let prepared = providers::manager_remove::prepare(ctx, tool).await?;
+            let item = &mut plan.view.items[index];
+            item.bytes = prepared.bytes();
+            item.command = prepared.command.as_ref().map(CommandSpec::display);
+            if prepared.command.is_some() {
+                plan.view.use_trash = false;
+            } else if plan.view.use_trash {
+                plan.view.warnings.push("Manager files will move to the system Trash. They continue to occupy disk space until the Trash is emptied.".into());
+            }
+            item.restore =
+                Some("Reinstall this manager in Envark to manage retained runtimes again.".into());
+            plan.view.warnings.push("Only the selected manager installation will be removed. Installed runtimes, project files, caches, and shell configuration are kept. Commands using this manager will be unavailable until it is reinstalled.".into());
+            *removal = Some(Box::new(prepared));
         }
         if let Step::CacheFiles { cache, .. } = step {
             providers::cache_cleanup::validate_cargo_checkouts(ctx, cache).await?;
@@ -380,7 +444,8 @@ fn prepare_steps(
     };
     let mut steps = vec![];
     let refresh_provider = match &request {
-        ActionRequest::InstallRuntime { provider, .. }
+        ActionRequest::InstallManager { provider, .. }
+        | ActionRequest::InstallRuntime { provider, .. }
         | ActionRequest::SetDefault { provider, .. }
         | ActionRequest::RemoveRuntime { provider, .. }
         | ActionRequest::UpdateTool { provider, .. }
@@ -590,6 +655,22 @@ fn prepare_steps(
                 view.warnings.push("Native cache cleanup can permanently remove entries. The displayed size is an upper bound, not a promise of reclaimed space.".into());
             }
         }
+        ActionRequest::InstallManager { provider, manager } => {
+            view.kind = "installManager".into();
+            view.use_trash = false;
+            view.items.push(PlanItem {
+                title: format!("Install {manager}"),
+                path: None,
+                command: None,
+                bytes: 0,
+                restore: None,
+            });
+            steps.push(Step::ManagerInstall {
+                provider,
+                name: manager,
+                installation: None,
+            });
+        }
         ActionRequest::InstallRuntime {
             provider,
             manager,
@@ -678,6 +759,25 @@ fn prepare_steps(
                 return Err(Error::Unavailable(
                     "This installation must be managed with its original installer.".into(),
                 ));
+            }
+            if remove && providers::manager_remove::supported(tool) {
+                view.kind = "removeManager".into();
+                view.items.push(PlanItem {
+                    title: format!("Uninstall {} (keep runtimes)", tool.name),
+                    path: tool.path.clone(),
+                    command: None,
+                    bytes: 0,
+                    restore: None,
+                });
+                steps.push(Step::ManagerRemove {
+                    tool: tool.clone(),
+                    removal: None,
+                });
+                return Ok(Plan {
+                    view,
+                    steps,
+                    refresh_provider,
+                });
             }
             let command = if !remove && providers::package_managers::handles(tool) {
                 providers::updates::require_upgrade(tool)?;
@@ -1151,6 +1251,20 @@ pub async fn execute(
                 remove,
                 command,
             } => run_tool(&ctx, tool, remove, command).await,
+            Step::ManagerInstall { installation, .. } => match installation {
+                Some(installation) => {
+                    providers::manager_install::execute(&ctx, *installation).await
+                }
+                None => Err(Error::Conflict(
+                    "Review the manager installation again.".into(),
+                )),
+            },
+            Step::ManagerRemove { removal, .. } => match removal {
+                Some(removal) => {
+                    providers::manager_remove::execute(&ctx, *removal, settings.use_trash).await
+                }
+                None => Err(Error::Conflict("Review the manager removal again.".into())),
+            },
             Step::Command(command) => ctx.runner.run(&command, &ctx.cancel).await.map(|output| {
                 (
                     0,

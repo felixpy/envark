@@ -216,6 +216,17 @@ impl Engine {
         Ok(self.snapshot().await)
     }
 
+    pub async fn manager_options(
+        &self,
+        provider: ProviderId,
+    ) -> Result<Vec<crate::providers::manager_install::OptionView>> {
+        let inventory = self.snapshot().await.inventory;
+        let ctx = Context::new(CancellationToken::new())?;
+        Ok(crate::providers::manager_install::options(
+            &ctx, &inventory, provider,
+        ))
+    }
+
     pub async fn check_tool_updates(
         &self,
         provider_id: ProviderId,

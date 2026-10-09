@@ -183,11 +183,20 @@ export interface Progress {
   total: number | null
   message: string
 }
+export interface ManagerInstallOption {
+  name: string
+  source: string
+  installed: boolean
+  available: boolean
+  reason: string | null
+}
+
 export type ActionRequest =
   | { kind: 'removeWorktree'; id: string }
   | { kind: 'removeWorktrees'; ids: string[] }
   | { kind: 'cleanProjects'; artifactIds: string[] }
   | { kind: 'cleanCaches'; ids: string[] }
+  | { kind: 'installManager'; provider: ProviderId; manager: string }
   | { kind: 'installRuntime'; provider: ProviderId; manager: string; version: string }
   | {
       kind: 'setDefault' | 'removeRuntime' | 'updateTool' | 'removeTool'

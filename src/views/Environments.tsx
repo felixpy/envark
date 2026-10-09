@@ -1,3 +1,4 @@
+import { ManagerInstallDialog } from '@/components/ManagerInstallDialog'
 import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
 import { ArrowUp, Check, Download, FilePenLine, Plus, Star, Trash2 } from 'lucide-react'
@@ -143,6 +144,7 @@ export default function Environments({ id }: { id: ProviderId }) {
             {t(meta.description[0], meta.description[1])}
           </p>
         </div>
+        {(id === 'js' || id === 'py') && <ManagerInstallDialog key={id} provider={id} />}
         {provider.service && (
           <div className="rounded-lg border px-3 py-2 text-xs">
             <span
@@ -202,7 +204,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                   (!provider.managers.some((m) => m.supportsInstall)
                     ? t(
                         '请先安装支持的版本管理器，再刷新环境。',
-                        'Install a supported version manager, then refresh environments.',
+                        'Use Install manager above to add a version manager.',
                       )
                     : null)
                 }
@@ -731,8 +733,8 @@ function Tools({
         <CardDescription>
           {runtimeManagers
             ? t(
-                '检查并更新管理器本身；已安装的运行时版本会保留。',
-                'Check and update the manager itself while keeping installed runtimes.',
+                '更新或卸载管理器本身；已安装的 Node/Python 版本会保留。',
+                'Update or remove the manager itself while keeping installed Node/Python versions.',
               )
             : global
               ? t(
@@ -908,7 +910,7 @@ function Tools({
                       <ArrowUp />
                       {t('更新', 'Update')}
                     </Button>
-                    {global && (
+                    {(global || item.canRemove) && (
                       <Button
                         variant="outline"
                         size="sm"

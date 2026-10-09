@@ -95,7 +95,7 @@ pub(crate) fn command(ctx: &Context, tool: &Tool) -> Result<CommandSpec> {
         command.env.insert("NODE_VERSION".into(), String::new());
         command.env.insert(
             "METHOD".into(),
-            if root.join(".git").is_dir() {
+            if root.join(".git").is_dir() && !super::manager_install::script_nvm(ctx, &root) {
                 "git"
             } else {
                 "script"
@@ -113,7 +113,10 @@ pub(crate) async fn validate(ctx: &Context, tool: &Tool) -> Result<()> {
         .as_deref()
         .and_then(|path| installation_root(ctx, &tool.name, path))
         .ok_or_else(|| Error::Conflict("The manager installation changed.".into()))?;
-    if tool.name == "nvm" && root.join(".git").exists() {
+    if tool.name == "nvm"
+        && root.join(".git").exists()
+        && !super::manager_install::script_nvm(ctx, &root)
+    {
         let mut probe = ctx.command("git", &["config", "--get", "remote.origin.url"])?;
         probe.cwd = Some(root.clone());
         let output = ctx.runner.run(&probe, &ctx.cancel).await?;
@@ -169,15 +172,19 @@ pub(crate) async fn run(
     tool: &Tool,
     command: CommandSpec,
 ) -> Result<crate::process::Output> {
-    let url = url(tool)?;
+    let bytes = download(ctx, &url(tool)?).await?;
+    run_downloaded(ctx, tool, command, &bytes).await
+}
+
+pub(crate) async fn download(ctx: &Context, url: &str) -> Result<Vec<u8>> {
     let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::limited(5))
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|error| Error::Unavailable(error.to_string()))?;
     let fetch = async {
         let mut response = client
-            .get(&url)
+            .get(url)
             .send()
             .await
             .map_err(|error| Error::Unavailable(error.to_string()))?;
@@ -200,7 +207,7 @@ pub(crate) async fn run(
             }
             bytes.extend_from_slice(&chunk);
         }
-        if !bytes.starts_with(b"#!/") {
+        if !url.ends_with(".ps1") && !bytes.starts_with(b"#!/") {
             return Err(Error::Unavailable(
                 "The download is not an installer script.".into(),
             ));
@@ -208,7 +215,7 @@ pub(crate) async fn run(
         Ok(bytes)
     };
     let bytes = tokio::select! { result = fetch => result?, _ = ctx.cancel.cancelled() => return Err(Error::Cancelled) };
-    run_downloaded(ctx, tool, command, &bytes).await
+    Ok(bytes)
 }
 
 async fn run_downloaded(

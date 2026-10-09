@@ -36,7 +36,13 @@ fn standalone(ctx: &Context, tool: &Tool) -> bool {
         let mut receipts = vec![
             ctx.home.join(".config/uv/uv-receipt.json"),
             ctx.data.join("uv/uv-receipt.json"),
+            ctx.home.join("AppData/Local/uv/uv-receipt.json"),
         ];
+        if cfg!(windows)
+            && let Some(root) = std::env::var_os("LOCALAPPDATA")
+        {
+            receipts.push(PathBuf::from(root).join("uv/uv-receipt.json"));
+        }
         if let Some(root) = std::env::var_os("XDG_CONFIG_HOME") {
             receipts.insert(0, PathBuf::from(root).join("uv/uv-receipt.json"));
         }
@@ -152,6 +158,10 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
             manager.source = format!("{}-script", manager.name);
             manager.can_update = true;
             manager.note = None;
+        } else if super::manager_remove::winget_owned(ctx, manager) {
+            manager.source = "winget".into();
+            manager.can_update = true;
+            manager.note = None;
         } else if manager.name == "pnpm" && super::js_tooling::pnpm_home(ctx, &binary).is_some() {
             manager.source = "pnpm-self".into();
             manager.can_update = true;
@@ -186,6 +196,9 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
             provider.package_managers.push(manager);
         }
     }
+    for manager in &mut provider.package_managers {
+        manager.can_remove = super::manager_remove::supported(manager);
+    }
     // The same installation belongs on the package-manager tab only.
     provider.tools.retain(|tool| {
         !provider.package_managers.iter().any(|manager| {
@@ -197,7 +210,14 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
 pub(crate) fn handles(tool: &Tool) -> bool {
     matches!(
         tool.source.as_str(),
-        "bun" | "uv-self" | "homebrew" | "corepack" | "pnpm-self" | "fnm-script" | "nvm-script"
+        "bun"
+            | "uv-self"
+            | "homebrew"
+            | "corepack"
+            | "pnpm-self"
+            | "fnm-script"
+            | "nvm-script"
+            | "winget"
     )
 }
 
@@ -238,6 +258,7 @@ pub(crate) async fn validate_owner(ctx: &Context, tool: &Tool) -> Result<()> {
             Some(path) => brew_formula(ctx, path).await.is_some(),
             None => false,
         },
+        "winget" => super::manager_remove::winget_owned(ctx, tool),
         "bun" | "uv-self" => standalone(ctx, tool),
         "corepack" => tool
             .path
@@ -275,6 +296,7 @@ pub(crate) fn command(ctx: &Context, tool: &Tool) -> Result<CommandSpec> {
         .as_ref()
         .ok_or_else(|| Error::Conflict("Missing package manager path.".into()))?;
     let mut spec = match tool.source.as_str() {
+        "winget" => super::manager_remove::winget_command(ctx, tool, false)?,
         "corepack" => super::js_tooling::corepack_command(ctx, tool, true)?,
         "pnpm-self" => {
             let home = super::js_tooling::pnpm_home(ctx, binary)

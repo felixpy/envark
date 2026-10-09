@@ -2,6 +2,8 @@ pub(crate) mod cache_cleanup;
 mod javascript;
 pub(crate) mod js_tooling;
 mod languages;
+pub mod manager_install;
+pub(crate) mod manager_remove;
 pub mod ollama;
 pub(crate) mod package_managers;
 pub mod python;
@@ -68,6 +70,8 @@ impl Context {
             self.home.join(".fnm"),
             self.data.join("fnm"),
             self.home.join("AppData/Local/fnm"),
+            self.home.join("AppData/Local/Microsoft/WinGet/Links"),
+            self.home.join("AppData/Local/Microsoft/WindowsApps"),
             self.home.join("AppData/Local/Programs/Ollama"),
         ];
         if !cfg!(windows) {
@@ -82,6 +86,7 @@ impl Context {
             "pyenv" => Some(("PYENV_ROOT", "bin")),
             "bun" => Some(("BUN_INSTALL", "bin")),
             "fnm" => Some(("FNM_DIR", "")),
+            "uv" | "uvx" => Some(("UV_INSTALL_DIR", "")),
             "java" | "javac" => Some(("JAVA_HOME", "bin")),
             _ => None,
         };

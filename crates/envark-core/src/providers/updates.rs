@@ -15,8 +15,8 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
     let mut requests = vec![];
     for provider in providers.iter() {
         for tool in provider.tools.iter().chain(&provider.package_managers) {
-            if ["fnm-script", "nvm-script"].contains(&tool.source.as_str()) {
-                let repo = if tool.source == "fnm-script" {
+            if ["fnm-script", "nvm-script", "winget"].contains(&tool.source.as_str()) {
+                let repo = if tool.name == "fnm" {
                     "Schniz/fnm"
                 } else {
                     "nvm-sh/nvm"
@@ -153,7 +153,7 @@ pub fn classify(tool: &Tool) -> UpdateStatus {
             )
         }
         "npm" | "pnpm" | "yarn" | "cargo" | "go" | "bun" | "corepack" | "pnpm-self"
-        | "fnm-script" | "nvm-script" => {
+        | "fnm-script" | "nvm-script" | "winget" => {
             let (Ok(installed), Ok(available)) = (
                 semver::Version::parse(tool.version.trim_start_matches('v')),
                 semver::Version::parse(latest.trim_start_matches('v')),

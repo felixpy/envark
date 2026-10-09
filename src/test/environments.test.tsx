@@ -250,3 +250,90 @@ it.each(['fnm', 'nvm'])(
     )
   },
 )
+
+it.each(['js', 'py'] as const)(
+  'offers first-time manager installation in an empty %s environment without scanning projects',
+  async (id) => {
+    const data = structuredClone(emptySnapshot)
+    data.settings.language = 'en'
+    data.settings.scanOnLaunch = false
+    const name = id === 'js' ? 'fnm' : 'uv'
+    const managerOptions = vi.fn(async () => [
+      { name, source: 'official-installer', installed: false, available: true, reason: null },
+    ])
+    const prepare = vi.fn(async () => ({
+      id: 'install-manager',
+      kind: 'installManager',
+      createdAt: 0,
+      items: [],
+      warnings: [],
+      useTrash: false,
+    }))
+    const refresh = vi.fn()
+    render(
+      <StoreProvider
+        api={{
+          ...backend,
+          native: false,
+          snapshot: async () => data,
+          managerOptions,
+          prepare,
+          refresh,
+        }}
+      >
+        <Environments id={id} />
+      </StoreProvider>,
+      { wrapper: TooltipProvider },
+    )
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Install manager' }))
+    await user.click(await screen.findByRole('button', { name: /^Install$/ }))
+    await waitFor(() =>
+      expect(prepare).toHaveBeenCalledWith(
+        { kind: 'installManager', provider: id, manager: name },
+        expect.any(String),
+      ),
+    )
+    expect(managerOptions).toHaveBeenCalledWith(id)
+    expect(refresh).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  },
+)
+
+it('offers manager uninstall separately from installed Node runtime removal', async () => {
+  const provider = emptyProvider('js')
+  provider.managers = [
+    {
+      name: 'fnm',
+      version: '1.38.1',
+      path: '/example/fnm',
+      supportsInstall: true,
+      supportsDefault: true,
+    },
+  ]
+  provider.packageManagers = [
+    {
+      id: 'fnm',
+      name: 'fnm',
+      version: '1.38.1',
+      source: 'fnm-script',
+      latest: null,
+      updateStatus: 'unknown',
+      runtime: null,
+      path: '/example/fnm',
+      size: null,
+      canUpdate: true,
+      canRemove: true,
+      note: null,
+    },
+  ]
+  const prepare = fixture(provider)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: /^Remove$/ }))
+  await waitFor(() =>
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'removeTool', provider: 'js', id: 'fnm' },
+      expect.any(String),
+    ),
+  )
+})

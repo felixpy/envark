@@ -42,6 +42,10 @@ Package version checks use a dedicated provider-scoped command. They must not di
 
 Corepack-owned pnpm/Yarn updates change the global default only, with project spec lookup and auto-pinning disabled. Standalone pnpm updates run in an isolated empty workspace. Unix fnm/nvm installer updates download the reviewed official release script before execution, preserve the existing installation root, and disable shell-profile changes. Manager updates are separate from runtime installation/removal. Do not treat nvm-windows as nvm-sh.
 
+First-time manager installation is available for fnm, nvm-sh, Bun, uv, pnpm, and Yarn. Resolve the published version before review, show the official source and destination, reject occupied targets, download installers completely before execution, and verify the installed version afterward. On Windows, use winget for fnm and official PowerShell installers for Bun/uv/pnpm; nvm-sh remains Unix-only. Yarn uses Corepack when available, otherwise explicitly offers npm's Yarn Classic. First-time installers may append shell initialization or user PATH entries; manager updates must not rewrite profiles.
+
+Manager removal targets the verified installation owner (npm, Homebrew, Corepack, or winget), or only known standalone executable/initialization files. Retain Node/Python versions, projects, global package data, caches, and shell configuration. Revalidate reviewed files and versions before removal; a native command exiting successfully is insufficient if the installation remains. Preserve retained nvm Git metadata without treating a subsequent script reinstall as a Git-managed checkout. Installation and removal refresh only the affected provider and system disk usage, never project directories.
+
 Global cache cleanup runs inside Envark and refreshes only affected cache measurements and system disk usage:
 
 | Cache                        | Strategy                                                   | Boundary                                                                                                                                          |

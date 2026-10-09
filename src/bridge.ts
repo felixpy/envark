@@ -1,3 +1,4 @@
+import type { ManagerInstallOption } from './domain'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -20,6 +21,7 @@ export interface Backend {
   native: boolean
   snapshot(): Promise<Snapshot>
   refresh(jobId: string): Promise<Snapshot>
+  managerOptions(provider: ProviderId): Promise<ManagerInstallOption[]>
   checkToolUpdates(provider: ProviderId, jobId: string): Promise<Provider>
   saveSettings(settings: Settings): Promise<Snapshot>
   prepare(request: ActionRequest, jobId: string): Promise<Plan>
@@ -54,6 +56,7 @@ const native: Backend = {
   setDisabledShortcuts: (disabled) => invoke('set_disabled_shortcuts', { disabled }),
   snapshot: () => invoke('snapshot'),
   refresh: (jobId) => invoke('refresh', { jobId }),
+  managerOptions: (provider) => invoke('manager_options', { provider }),
   checkToolUpdates: (provider, jobId) => invoke('check_tool_updates', { provider, jobId }),
   saveSettings: (settings) => invoke('save_settings', { settings }),
   prepare: (request, jobId) => invoke('prepare_operation', { request, jobId }),
@@ -85,6 +88,7 @@ function browserBackend(): Backend {
     native: false,
     snapshot: async () => structuredClone(state),
     refresh: unavailable,
+    managerOptions: unavailable,
     checkToolUpdates: unavailable,
     prepare: unavailable,
     execute: unavailable,

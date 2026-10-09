@@ -54,6 +54,8 @@ export function operationLabel(request: ActionRequest | null, t: Translate): str
   if (!request) return ''
   const provider = 'provider' in request ? metadata[request.provider].name : ''
   switch (request.kind) {
+    case 'installManager':
+      return `${t('安装管理器', 'Install manager')} · ${request.manager}`
     case 'installRuntime':
       return `${t('安装版本', 'Install runtime')} · ${provider} · ${request.version}`
     case 'removeRuntime':

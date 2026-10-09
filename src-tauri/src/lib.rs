@@ -116,6 +116,17 @@ async fn refresh(
 }
 
 #[tauri::command]
+async fn manager_options(
+    engine: State<'_, Engine>,
+    provider: ProviderId,
+) -> NativeResult<Vec<envark_core::providers::manager_install::OptionView>> {
+    engine
+        .manager_options(provider)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn check_tool_updates(
     app: tauri::AppHandle,
     engine: State<'_, Engine>,
@@ -227,6 +238,7 @@ pub fn run() {
             save_settings,
             refresh,
             check_tool_updates,
+            manager_options,
             cancel,
             prepare_operation,
             refresh_disks,
