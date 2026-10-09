@@ -1,6 +1,6 @@
 import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
-import { AlertTriangle, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, Check, ShieldCheck, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes, type Plan } from '@/domain'
 import { Button } from './ui/button'
@@ -271,8 +271,10 @@ export function OperationDialog() {
               >
                 {changedCount > 0 && !discardChanges && removeCount === 0 ? (
                   <ShieldCheck />
-                ) : (
+                ) : changedCount > 0 ? (
                   <Trash2 />
+                ) : (
+                  <Check />
                 )}
                 {changedCount > 0
                   ? discardChanges
