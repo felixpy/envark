@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/felixpy/envark/compare/v0.3.4...v0.4.0) (2026-10-09)
+
+
+### Features
+
+* **environments:** manage tool lifecycle and scoped cleanup in app ([#35](https://github.com/felixpy/envark/issues/35)) ([fe4d7a6](https://github.com/felixpy/envark/commit/fe4d7a677cdc5f8b5c7930caa744df3fb68ec4c4))
+
 ## [0.3.4](https://github.com/felixpy/envark/compare/v0.3.3...v0.3.4) (2026-10-09)
 
 
