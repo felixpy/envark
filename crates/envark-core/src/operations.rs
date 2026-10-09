@@ -73,6 +73,10 @@ pub enum ActionRequest {
         provider: ProviderId,
         name: String,
     },
+    ServiceAction {
+        provider: ProviderId,
+        action: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +120,7 @@ pub struct PlanView {
 
 #[derive(Debug, Clone)]
 enum Step {
+    Native(Box<providers::native_lifecycle::Plan>),
     Worktree {
         worktree: Worktree,
         removal: Option<crate::worktree_removal::Removal>,
@@ -186,6 +191,7 @@ pub(crate) enum RefreshTarget {
     Cache(String),
     Caches(Vec<String>),
     Provider(ProviderId),
+    Providers(Vec<ProviderId>),
 }
 
 impl Plan {
@@ -193,6 +199,7 @@ impl Plan {
         self.steps
             .iter()
             .map(|step| match step {
+                Step::Native(plan) => Some(RefreshTarget::Providers(plan.providers())),
                 Step::Project {
                     project, artifact, ..
                 } => Some(RefreshTarget::Artifact {
@@ -301,6 +308,60 @@ pub async fn prepare_with_progress(
         total: None,
         message: String::new(),
     });
+    if let Some(native) =
+        providers::native_lifecycle::prepare(ctx, request.clone(), inventory, settings).await?
+    {
+        let mut plan = native_plan(native, settings);
+        if let ActionRequest::RemoveRuntime { provider, id } = &request
+            && let Some(runtime) = inventory
+                .providers
+                .iter()
+                .find(|p| p.id == *provider)
+                .and_then(|p| p.runtimes.iter().find(|r| r.id == *id))
+        {
+            plan.view.runtime_dependents =
+                crate::runtime_pins::dependents(&inventory.projects, *provider, runtime);
+        }
+        return Ok(plan);
+    }
+    if let ActionRequest::UpdateTools { provider, ids } = &request {
+        if ids.is_empty() || ids.len() > 500 {
+            return Err(Error::InvalidInput(
+                "Select between 1 and 500 tools.".into(),
+            ));
+        }
+        let mut combined: Option<Plan> = None;
+        let mut seen = HashSet::new();
+        for id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            let action = ActionRequest::UpdateTool {
+                provider: *provider,
+                id: id.clone(),
+            };
+            let mut next = if let Some(native) =
+                providers::native_lifecycle::prepare(ctx, action.clone(), inventory, settings)
+                    .await?
+            {
+                native_plan(native, settings)
+            } else {
+                prepare_steps(action, inventory, settings, ctx)?
+            };
+            if let Some(plan) = &mut combined {
+                plan.view.items.append(&mut next.view.items);
+                plan.view.warnings.append(&mut next.view.warnings);
+                plan.steps.append(&mut next.steps);
+            } else {
+                combined = Some(next);
+            }
+        }
+        if let Some(plan) = &mut combined {
+            plan.refresh_provider = Some(*provider);
+            plan.view.kind = "update".into();
+        }
+        return combined.ok_or_else(|| Error::InvalidInput("Select a tool to update.".into()));
+    }
     let (worker_inventory, worker_settings, worker) =
         (inventory.clone(), settings.clone(), ctx.clone());
     let mut plan = tokio::task::spawn_blocking(move || {
@@ -423,6 +484,23 @@ pub async fn prepare_with_progress(
         }
     }
     Ok(plan)
+}
+
+fn native_plan(native: providers::native_lifecycle::Plan, settings: &Settings) -> Plan {
+    Plan {
+        view: PlanView {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: native.kind().into(),
+            created_at: now(),
+            items: vec![native.item()],
+            warnings: native.warnings(),
+            use_trash: settings.use_trash,
+            worktree_changes: vec![],
+            runtime_dependents: vec![],
+        },
+        steps: vec![Step::Native(Box::new(native))],
+        refresh_provider: None,
+    }
 }
 
 fn prepare_steps(
@@ -879,6 +957,11 @@ fn prepare_steps(
                 &mut steps,
             );
         }
+        ActionRequest::ServiceAction { .. } => {
+            return Err(Error::InvalidInput(
+                "This environment does not support the requested action.".into(),
+            ));
+        }
         ActionRequest::DownloadAsset { .. } => {
             return Err(Error::Unavailable(
                 "Install browsers through the package version used by a selected project.".into(),
@@ -1249,6 +1332,7 @@ pub async fn execute(
                 remove,
                 command,
             } => run_tool(&ctx, tool, remove, command).await,
+            Step::Native(native) => native.execute(&ctx, settings.use_trash).await,
             Step::ManagerInstall { installation, .. } => match installation {
                 Some(installation) => {
                     providers::manager_install::execute(&ctx, *installation).await

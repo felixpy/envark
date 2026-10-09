@@ -144,7 +144,9 @@ export default function Environments({ id }: { id: ProviderId }) {
             {t(meta.description[0], meta.description[1])}
           </p>
         </div>
-        {(id === 'js' || id === 'py') && <ManagerInstallDialog key={id} provider={id} />}
+        {['js', 'py', 'go', 'jvm', 'rust', 'ollama'].includes(id) && (
+          <ManagerInstallDialog key={id} provider={id} />
+        )}
         {provider.service && (
           <div className="rounded-lg border px-3 py-2 text-xs">
             <span
@@ -154,6 +156,31 @@ export default function Environments({ id }: { id: ProviderId }) {
               ? t('服务运行中', 'Service running')
               : t('服务已停止', 'Service stopped')}
             <p className="mt-1 font-mono text-muted-foreground">{provider.service.endpoint}</p>
+            {(!provider.service.running || provider.service.owned) && (
+              <Button
+                className="mt-2"
+                size="sm"
+                variant="outline"
+                reason={
+                  busyReason ||
+                  (!provider.service.running &&
+                  !provider.tools.some((tool) => tool.name === 'ollama' && tool.canUpdate)
+                    ? t('请先安装 Ollama。', 'Install Ollama first.')
+                    : null)
+                }
+                onClick={() =>
+                  void s.prepare({
+                    kind: 'serviceAction',
+                    provider: id,
+                    action: provider.service!.running ? 'stop' : 'start',
+                  })
+                }
+              >
+                {provider.service.running
+                  ? t('停止服务', 'Stop service')
+                  : t('启动服务', 'Start service')}
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -187,7 +214,18 @@ export default function Environments({ id }: { id: ProviderId }) {
           onRemove={(item) => operation('removeTool', item.id)}
         />
       )}
-      {tab === 'runtime' && (
+      {tab === 'runtime' && id === 'ollama' && (
+        <Tools
+          providerId={id}
+          items={provider.tools}
+          global={false}
+          program
+          onUpdate={(item) => operation('updateTool', item.id)}
+          onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
+          onRemove={(item) => operation('removeTool', item.id)}
+        />
+      )}
+      {tab === 'runtime' && id !== 'ollama' && (
         <Card className="shadow-none">
           <CardHeader>
             <CardTitle>
@@ -202,7 +240,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                 reason={
                   busyReason ||
                   (!provider.managers.some((m) => m.supportsInstall)
-                    ? id === 'js' || id === 'py'
+                    ? ['js', 'py', 'go', 'jvm', 'rust'].includes(id)
                       ? t(
                           '请通过上方“安装管理器”添加版本管理器，安装后会自动刷新。',
                           'Use Install manager above; the environment refreshes automatically afterward.',
@@ -355,7 +393,9 @@ export default function Environments({ id }: { id: ProviderId }) {
           providerId={id}
           items={
             tab === 'pm'
-              ? provider.packageManagers.filter((tool) => !['fnm', 'nvm'].includes(tool.name))
+              ? provider.packageManagers.filter(
+                  (tool) => !provider.managers.some((manager) => manager.name === tool.name),
+                )
               : provider.tools
           }
           global={tab === 'global'}
@@ -385,10 +425,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                   reason={
                     busyReason ||
                     (!provider.service?.running
-                      ? t(
-                          '请先启动 Ollama 服务，然后刷新。',
-                          'Start the Ollama service, then refresh.',
-                        )
+                      ? t('请先点击上方“启动服务”。', 'Click Start service above first.')
                       : null)
                   }
                   onClick={() => setDownload(true)}
@@ -689,6 +726,7 @@ export default function Environments({ id }: { id: ProviderId }) {
 }
 
 function Tools({
+  program = false,
   runtimeManagers = false,
   providerId,
   items,
@@ -697,6 +735,7 @@ function Tools({
   onBatch,
   onRemove,
 }: {
+  program?: boolean
   runtimeManagers?: boolean
   providerId: ProviderId
   items: Tool[]
@@ -729,27 +768,34 @@ function Tools({
     <Card className="shadow-none">
       <CardHeader>
         <CardTitle>
-          {runtimeManagers
-            ? t('版本管理器', 'Version managers')
-            : global
-              ? t('全局工具', 'Global tools')
-              : t('包管理器与构建工具', 'Package managers & build tools')}
+          {program
+            ? t('Ollama 程序', 'Ollama application')
+            : runtimeManagers
+              ? t('版本管理器', 'Version managers')
+              : global
+                ? t('全局工具', 'Global tools')
+                : t('包管理器与构建工具', 'Package managers & build tools')}
         </CardTitle>
         <CardDescription>
-          {runtimeManagers
+          {program
             ? t(
-                '更新或卸载管理器本身；已安装的 Node/Python 版本会保留。',
-                'Update or remove the manager itself while keeping installed Node/Python versions.',
+                '管理程序本身，已下载的模型和配置会保留。',
+                'Manage the application while keeping downloaded models and configuration.',
               )
-            : global
+            : runtimeManagers
               ? t(
-                  '显示安装来源、绑定运行时和可用操作。',
-                  'Inspect installation owners, runtime bindings, and available actions.',
+                  '更新或卸载管理器本身；已安装的运行时版本会保留。',
+                  'Update or remove the manager itself while keeping installed runtimes.',
                 )
-              : t(
-                  '查看包管理器版本，并在应用内检查和安装更新。',
-                  'Inspect package manager versions, check for updates, and install them here.',
-                )}
+              : global
+                ? t(
+                    '显示安装来源、绑定运行时和可用操作。',
+                    'Inspect installation owners, runtime bindings, and available actions.',
+                  )
+                : t(
+                    '查看包管理器版本，并在应用内检查和安装更新。',
+                    'Inspect package manager versions, check for updates, and install them here.',
+                  )}
         </CardDescription>
         <CardAction className="flex items-center gap-2">
           {selection.chosen.length > 0 && (
@@ -896,6 +942,12 @@ function Tools({
                       'pnpm-self': 'pnpm',
                       'fnm-script': t('官方安装脚本', 'Official installer'),
                       'nvm-script': t('官方安装脚本', 'Official installer'),
+                      'rustup-self': 'rustup',
+                      'sdkman-self': 'SDKMAN!',
+                      'mise-self': 'mise',
+                      'mise-winget': 'winget',
+                      'ollama-official': t('官方发行包', 'Official release'),
+                      'ollama-homebrew': 'Homebrew',
                     } as Record<string, string>
                   )[item.source] ?? item.source}
                   <span className="mt-1 block font-mono">

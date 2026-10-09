@@ -60,6 +60,7 @@ pub(crate) async fn refresh(
         .filter_map(|(target, _)| target)
         .flat_map(|target| match target {
             RefreshTarget::Caches(ids) => ids.into_iter().map(RefreshTarget::Cache).collect(),
+            RefreshTarget::Providers(ids) => ids.into_iter().map(RefreshTarget::Provider).collect(),
             target => vec![target],
         })
         .collect();
@@ -180,7 +181,9 @@ pub(crate) async fn refresh(
                         };
                     }
                 }
-                RefreshTarget::Provider(_) | RefreshTarget::Caches(_) => {}
+                RefreshTarget::Provider(_)
+                | RefreshTarget::Caches(_)
+                | RefreshTarget::Providers(_) => {}
             }
         }
         for id in worktrees {

@@ -1,10 +1,13 @@
 pub(crate) mod cache_cleanup;
 mod javascript;
 pub(crate) mod js_tooling;
+pub(crate) mod language_lifecycle;
 mod languages;
 pub mod manager_install;
 pub(crate) mod manager_remove;
+pub(crate) mod native_lifecycle;
 pub mod ollama;
+pub(crate) mod ollama_lifecycle;
 pub(crate) mod package_managers;
 pub mod python;
 mod resources;
@@ -107,6 +110,15 @@ impl Context {
             if let Some(root) = std::env::var_os("ProgramFiles") {
                 candidates.push(PathBuf::from(root).join("nodejs"));
             }
+        }
+        if name == "ollama" {
+            candidates.push(if cfg!(target_os = "macos") {
+                self.home.join("Applications/Ollama.app/Contents/Resources")
+            } else if cfg!(windows) {
+                self.data.join("envark/ollama/program")
+            } else {
+                self.data.join("envark/ollama/program/bin")
+            });
         }
         if name == "go" {
             if let Some(root) = std::env::var_os("GOROOT").filter(|root| !root.is_empty()) {
@@ -291,6 +303,8 @@ pub(crate) async fn discover_selected(
                 _ => resources::discover(&ctx, &mut provider).await,
             };
             package_managers::resolve(&ctx, &mut provider).await;
+            language_lifecycle::discover(&ctx, &mut provider).await;
+            ollama_lifecycle::discover(&ctx, &mut provider).await;
             provider.detected = !provider.runtimes.is_empty()
                 || !provider.managers.is_empty()
                 || !provider.package_managers.is_empty()

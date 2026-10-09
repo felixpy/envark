@@ -196,6 +196,7 @@ export type ActionRequest =
   | { kind: 'removeWorktrees'; ids: string[] }
   | { kind: 'cleanProjects'; artifactIds: string[] }
   | { kind: 'cleanCaches'; ids: string[] }
+  | { kind: 'serviceAction'; provider: ProviderId; action: 'start' | 'stop' }
   | { kind: 'installManager'; provider: ProviderId; manager: string }
   | { kind: 'installRuntime'; provider: ProviderId; manager: string; version: string }
   | {

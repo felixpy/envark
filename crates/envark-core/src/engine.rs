@@ -222,9 +222,14 @@ impl Engine {
     ) -> Result<Vec<crate::providers::manager_install::OptionView>> {
         let inventory = self.snapshot().await.inventory;
         let ctx = Context::new(CancellationToken::new())?;
-        Ok(crate::providers::manager_install::options(
+        let mut options = crate::providers::manager_install::options(&ctx, &inventory, provider);
+        options.extend(crate::providers::language_lifecycle::options(
             &ctx, &inventory, provider,
-        ))
+        ));
+        options.extend(crate::providers::ollama_lifecycle::options(
+            &ctx, &inventory, provider,
+        ));
+        Ok(options)
     }
 
     pub async fn check_tool_updates(

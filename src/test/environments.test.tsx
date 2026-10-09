@@ -251,13 +251,20 @@ it.each(['fnm', 'nvm'])(
   },
 )
 
-it.each(['js', 'py'] as const)(
+it.each(['js', 'py', 'go', 'jvm', 'rust', 'ollama'] as const)(
   'offers first-time manager installation in an empty %s environment without scanning projects',
   async (id) => {
     const data = structuredClone(emptySnapshot)
     data.settings.language = 'en'
     data.settings.scanOnLaunch = false
-    const name = id === 'js' ? 'fnm' : 'uv'
+    const name = {
+      js: 'fnm',
+      py: 'uv',
+      go: 'mise',
+      jvm: 'SDKMAN!',
+      rust: 'rustup',
+      ollama: 'ollama',
+    }[id]
     const managerOptions = vi.fn(async () => [
       { name, source: 'official-installer', installed: false, available: true, reason: null },
     ])
@@ -286,7 +293,11 @@ it.each(['js', 'py'] as const)(
       { wrapper: TooltipProvider },
     )
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: 'Install manager' }))
+    await user.click(
+      await screen.findByRole('button', {
+        name: id === 'ollama' ? 'Install Ollama' : 'Install manager',
+      }),
+    )
     await user.click(await screen.findByRole('button', { name: /^Install$/ }))
     await waitFor(() =>
       expect(prepare).toHaveBeenCalledWith(
@@ -337,3 +348,55 @@ it('offers manager uninstall separately from installed Node runtime removal', as
     ),
   )
 })
+
+for (const running of [false, true]) {
+  it(`reviews Ollama service ${running ? 'stop' : 'start'} independently from models`, async () => {
+    const provider = emptyProvider('ollama')
+    provider.service = { running, owned: running, endpoint: 'http://127.0.0.1:11434' }
+    provider.tools = [
+      {
+        id: 'ollama',
+        name: 'ollama',
+        version: '0.13.0',
+        latest: '0.14.0',
+        updateStatus: 'minor',
+        source: 'ollama-official',
+        runtime: null,
+        path: '/example/ollama',
+        size: null,
+        canUpdate: true,
+        canRemove: true,
+        note: null,
+      },
+    ]
+    const prepare = fixture(provider)
+    const user = userEvent.setup()
+    await user.click(
+      await screen.findByRole('button', { name: running ? 'Stop service' : 'Start service' }),
+    )
+    await waitFor(() =>
+      expect(prepare).toHaveBeenCalledWith(
+        { kind: 'serviceAction', provider: 'ollama', action: running ? 'stop' : 'start' },
+        expect.any(String),
+      ),
+    )
+    expect(screen.getByText('Ollama application')).toBeTruthy()
+  })
+}
+
+it('does not offer stopping an Ollama service owned by another application', async () => {
+  const provider = emptyProvider('ollama')
+  provider.service = { running: true, owned: false, endpoint: 'http://127.0.0.1:11434' }
+  fixture(provider)
+  await screen.findByText('Service running')
+  expect(screen.queryByRole('button', { name: 'Stop service' })).toBeNull()
+})
+
+it.each(['playwright', 'puppeteer'] as const)(
+  'keeps %s focused on existing browser resources without installation actions',
+  async (id) => {
+    fixture(emptyProvider(id))
+    await screen.findByText('Browser downloads')
+    expect(screen.queryByRole('button', { name: /Install|Download browsers/ })).toBeNull()
+  },
+)

@@ -197,7 +197,9 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
         }
     }
     for manager in &mut provider.package_managers {
-        manager.can_remove = super::manager_remove::supported(manager);
+        if !super::native_lifecycle::owns_tool(manager) {
+            manager.can_remove = super::manager_remove::supported(manager);
+        }
     }
     // The same installation belongs on the package-manager tab only.
     provider.tools.retain(|tool| {

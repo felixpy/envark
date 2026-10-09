@@ -54,8 +54,12 @@ export function operationLabel(request: ActionRequest | null, t: Translate): str
   if (!request) return ''
   const provider = 'provider' in request ? metadata[request.provider].name : ''
   switch (request.kind) {
+    case 'serviceAction':
+      return `${request.action === 'start' ? t('启动服务', 'Start service') : t('停止服务', 'Stop service')} · ${provider}`
     case 'installManager':
-      return `${t('安装管理器', 'Install manager')} · ${request.manager}`
+      return request.provider === 'ollama'
+        ? t('安装 Ollama', 'Install Ollama')
+        : `${t('安装管理器', 'Install manager')} · ${request.manager}`
     case 'installRuntime':
       return `${t('安装版本', 'Install runtime')} · ${provider} · ${request.version}`
     case 'removeRuntime':

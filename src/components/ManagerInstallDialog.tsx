@@ -9,6 +9,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 export function ManagerInstallDialog({ provider }: { provider: ProviderId }) {
   const s = useStore()
   const { t } = s
+  const title =
+    provider === 'ollama' ? t('安装 Ollama', 'Install Ollama') : t('安装管理器', 'Install manager')
   const [open, setOpen] = useState(false)
   const [options, setOptions] = useState<ManagerInstallOption[]>([])
   const [loading, setLoading] = useState(false)
@@ -36,17 +38,22 @@ export function ManagerInstallDialog({ provider }: { provider: ProviderId }) {
         onClick={() => void load()}
       >
         <Plus />
-        {t('安装管理器', 'Install manager')}
+        {title}
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>{t('安装管理器', 'Install manager')}</DialogTitle>
+            <DialogTitle>{title}</DialogTitle>
             <DialogDescription>
-              {t(
-                '选择管理器，查看版本、安装来源和路径后执行。已有运行时和项目会保留。',
-                'Choose a manager, then review its version, source, and installation path. Existing runtimes and projects are kept.',
-              )}
+              {provider === 'ollama'
+                ? t(
+                    '审阅程序版本、安装来源和路径后执行，已有模型和配置会保留。',
+                    'Review the application version, source, and destination. Existing models and configuration are kept.',
+                  )
+                : t(
+                    '选择管理器，查看版本、安装来源和路径后执行。已有运行时和项目会保留。',
+                    'Choose a manager, then review its version, source, and installation path. Existing runtimes and projects are kept.',
+                  )}
             </DialogDescription>
           </DialogHeader>
           {loading ? (

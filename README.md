@@ -12,10 +12,10 @@ Envark brings runtimes, global tools, project artifacts, and caches into one des
 
 ## What you can do
 
-- **🧰 Get your tools in order.** Inspect Node.js, Python, Java, Rust, and Go runtimes alongside their global tools. Use supported installation, update, and removal actions through the managers you already have.
+- **🧰 Get your tools in order.** Inspect Node.js, Python, Java, Rust, and Go runtimes alongside their global tools. Install supported managers from their official sources, then manage runtime versions and tools in the app.
 - **🌳 Make room between projects.** Scan Git repositories and their linked worktrees, sort by activity or artifact size, and find generated dependencies and build outputs left behind by inactive workspaces.
 - **🧹 Understand your caches.** Review global caches and their reported sizes before using each tool's supported cleanup command. Shared caches stay under their owner's control.
-- **🤖 See the bigger downloads.** Inspect Ollama models and Puppeteer / Playwright browser downloads alongside your language ecosystems.
+- **🤖 See the bigger downloads.** Install and update Ollama, start its local service, and manage downloaded models. Inspect and clean existing Puppeteer / Playwright browser caches.
 - **🛡️ Review before you act.** Preview cleanup targets, protect projects, and send eligible artifacts to the system trash by default. Edit tool configuration with backups and revisit operation results in local activity history.
 
 Available actions depend on the detected tool manager and installation ownership. Online package checks are opt-in; unknown versions and sizes are shown explicitly.

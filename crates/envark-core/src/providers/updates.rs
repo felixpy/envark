@@ -15,6 +15,9 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
     let mut requests = vec![];
     for provider in providers.iter() {
         for tool in provider.tools.iter().chain(&provider.package_managers) {
+            if super::native_lifecycle::owns_tool(tool) {
+                continue;
+            }
             if ["fnm-script", "nvm-script", "winget"].contains(&tool.source.as_str()) {
                 let repo = if tool.name == "fnm" {
                     "Schniz/fnm"
@@ -62,10 +65,24 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
     }
     let mut updates = std::collections::HashMap::new();
     if let Ok(ctx) = super::Context::new(cancel.clone()) {
+        let native_tools: Vec<Tool> = providers
+            .iter()
+            .flat_map(|provider| provider.package_managers.iter().chain(&provider.tools))
+            .filter(|tool| super::native_lifecycle::owns_tool(tool))
+            .cloned()
+            .collect();
+        for tool in native_tools {
+            if cancel.is_cancelled() {
+                return;
+            }
+            if let Ok(version) = super::native_lifecycle::latest(&ctx, &tool).await {
+                updates.insert(tool.id.clone(), version);
+            }
+        }
         for tool in providers
             .iter()
             .flat_map(|provider| &provider.package_managers)
-            .filter(|tool| tool.source == "homebrew")
+            .filter(|tool| tool.source == "homebrew" && !super::native_lifecycle::owns_tool(tool))
         {
             if cancel.is_cancelled() {
                 return;
@@ -128,7 +145,7 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
             .iter_mut()
             .chain(&mut provider.package_managers)
         {
-            tool.latest = updates.remove(&tool.id);
+            tool.latest = updates.get(&tool.id).cloned();
             tool.update_status = classify(tool);
         }
     }
@@ -138,7 +155,12 @@ pub fn classify(tool: &Tool) -> UpdateStatus {
     let Some(latest) = &tool.latest else {
         return UpdateStatus::Unknown;
     };
-    let (order, major) = match tool.source.as_str() {
+    let source = if super::native_lifecycle::owns_tool(tool) {
+        "npm"
+    } else {
+        &tool.source
+    };
+    let (order, major) = match source {
         "uv" | "pipx" | "uv-self" | "homebrew" => {
             let (Ok(installed), Ok(available)) = (
                 tool.version.parse::<pep440_rs::Version>(),
