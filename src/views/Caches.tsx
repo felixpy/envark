@@ -21,7 +21,10 @@ export default function Caches() {
   const s = useStore()
   const { t } = s
   const caches = s.data.inventory.caches
-  const selection = useSelection(caches.filter((c) => c.canClean).map((c) => c.id))
+  const selection = useSelection(
+    caches.filter((c) => c.canClean).map((c) => c.id),
+    s.completedSelectionIds,
+  )
   const chosen = caches.filter((c) => selection.chosen.includes(c.id))
   const busyReason = s.busy
     ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
@@ -31,14 +34,15 @@ export default function Caches() {
       <PageHeader
         title={t('全局缓存', 'Global caches')}
         description={t(
-          '共享缓存由原工具负责清理。清理后再次使用时可能需要重新下载。',
-          'Shared caches are cleaned by their owning tools. Future builds may need to download dependencies again.',
+          '在此清理共享缓存，自动调用对应工具或移至回收站。再次使用时可能需要重新下载。',
+          'Clean shared caches here using their native tools or the Trash. Future builds may need to download dependencies again.',
         )}
       />
       <div className="flex items-center gap-3 rounded-xl border p-4">
         <Database className="size-5 text-muted-foreground" />
         <div>
           <p className="text-xl font-semibold tabular-nums">
+            {caches.some((cache) => !cache.size.complete) && '≈ '}
             {formatBytes(caches.reduce((sum, cache) => sum + cache.size.bytes, 0))}
           </p>
           <p className="text-xs text-muted-foreground">
@@ -65,7 +69,9 @@ export default function Caches() {
         return (
           <section key={String(canClean)} className="space-y-3">
             <h2 className="text-sm font-medium">
-              {canClean ? t('可清理', 'Available for cleanup') : t('由原工具管理', 'Owner-managed')}
+              {canClean
+                ? t('可清理', 'Available for cleanup')
+                : t('暂不可清理', 'Cleanup unavailable')}
               <span className="ml-2 font-normal text-muted-foreground">
                 {group.length} ·{' '}
                 {formatBytes(group.reduce((sum, cache) => sum + cache.size.bytes, 0))}
@@ -74,8 +80,8 @@ export default function Caches() {
             {!canClean && (
               <p className="text-xs text-muted-foreground">
                 {t(
-                  '以下缓存仅展示占用，请通过原工具管理。',
-                  'These caches are shown for storage visibility. Manage them with their owning tools.',
+                  '以下目录需要保留，具体原因见清理方式说明。',
+                  'These directories are preserved. See the cleanup details for the specific reason.',
                 )}
               </p>
             )}
@@ -123,8 +129,8 @@ export default function Caches() {
                                 (!cache.canClean
                                   ? cache.warning ||
                                     t(
-                                      '尚不支持此缓存的原生清理，请使用原工具管理。',
-                                      'Native cleanup is unavailable. Use the owning tool to manage this cache.',
+                                      '此目录尚无可用的清理策略。',
+                                      'No cleanup strategy is available for this directory.',
                                     )
                                   : null)
                               }
@@ -159,20 +165,51 @@ export default function Caches() {
                                 tabIndex={0}
                               >
                                 {cache.canClean
-                                  ? t('工具原生清理', 'Native cleanup')
-                                  : t('由原工具管理', 'Owner-managed')}
+                                  ? cache.strategy.startsWith('cargo-')
+                                    ? s.data.settings.useTrash
+                                      ? t('移至回收站', 'Move to Trash')
+                                      : t('删除下载缓存', 'Remove downloaded cache')
+                                    : cache.strategy.startsWith('gradle-')
+                                      ? t('整理过期缓存', 'Prune expired caches')
+                                      : t('工具原生清理', 'Native cleanup')
+                                  : t('暂不可清理', 'Cleanup unavailable')}
                               </Badge>
                             </TooltipTrigger>
                             <TooltipContent
                               sideOffset={6}
                               className="max-w-72 text-left leading-relaxed"
                             >
-                              {cache.warning || cache.strategy}
+                              {cache.strategy === 'maven-repository'
+                                ? t(
+                                    '可能包含无法重新下载的本地发布产物，暂不执行整库清理。',
+                                    'May contain locally published artifacts that cannot be downloaded again; whole-repository cleanup is disabled.',
+                                  )
+                                : cache.strategy.startsWith('gradle-')
+                                  ? t(
+                                      '同时整理 Gradle 缓存和发行包，按保留策略保留仍在使用或近期使用的内容，不会全部清空。',
+                                      'Prunes Gradle caches and distributions together, retaining entries required by its retention policy. This does not empty every cache.',
+                                    )
+                                  : cache.strategy.startsWith('cargo-')
+                                    ? t(
+                                        '取得 Cargo 缓存锁后清理，保留已安装工具与配置；有本地修改的 Git 缓存不会删除。',
+                                        'Cleans downloaded dependencies while holding Cargo cache locks; installed tools, configuration, and modified Git checkouts are preserved.',
+                                      )
+                                    : cache.warning || cache.strategy}
                             </TooltipContent>
                           </Tooltip>
                         </TableCell>
-                        <TableCell className="text-right font-mono text-xs">
-                          {!cache.size.complete && '≥ '}
+                        <TableCell
+                          className="text-right font-mono text-xs"
+                          title={
+                            !cache.size.complete
+                              ? t(
+                                  '大小尚未确认，可能是上次测量值。请刷新。',
+                                  'Size is unconfirmed and may be a previous measurement. Refresh to confirm.',
+                                )
+                              : undefined
+                          }
+                        >
+                          {!cache.size.complete && '≈ '}
                           {formatBytes(cache.size.bytes)}
                         </TableCell>
                       </TableRow>

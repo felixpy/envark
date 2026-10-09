@@ -48,7 +48,9 @@ it('selects every eligible cache, shows a mixed state, and explains read-only ro
   const external = screen.getByText('external').closest('section')!
   expect(within(external).queryByRole('checkbox')).toBeNull()
   expect(screen.queryByText('Cache owner is unavailable.')).toBeNull()
-  await user.hover(within(screen.getByText('external').closest('tr')!).getByText('Owner-managed'))
+  await user.hover(
+    within(screen.getByText('external').closest('tr')!).getByText('Cleanup unavailable'),
+  )
   expect((await screen.findByRole('tooltip')).textContent).toBe('Cache owner is unavailable.')
   await user.click(screen.getByRole('button', { name: 'Review cleanup (2)' }))
   await waitFor(() =>
@@ -57,4 +59,56 @@ it('selects every eligible cache, shows a mixed state, and explains read-only ro
       expect.any(String),
     ),
   )
+})
+
+it('offers pip, Cargo and Gradle cleanup in the app with accurate strategies', async () => {
+  const data = structuredClone(emptySnapshot)
+  data.settings.language = 'en'
+  data.settings.scanOnLaunch = false
+  data.settings.useTrash = true
+  data.inventory.caches = [
+    { id: 'pip', name: 'pip', strategy: 'pip-purge', provider: 'py' as const },
+    { id: 'cargo', name: 'Cargo registry', strategy: 'cargo-registry', provider: 'rust' as const },
+    { id: 'gradle', name: 'Gradle caches', strategy: 'gradle-caches', provider: 'jvm' as const },
+    {
+      id: 'dists',
+      name: 'Gradle distributions',
+      strategy: 'gradle-dists',
+      provider: 'jvm' as const,
+    },
+  ].map((cache) => ({
+    ...cache,
+    path: `/cache/${cache.id}`,
+    size: { bytes: 42, files: 1, skipped: 0, complete: true },
+    canClean: true,
+    warning: '',
+  }))
+  const prepare = vi.fn(async () => ({
+    id: 'plan',
+    kind: 'clean',
+    createdAt: 0,
+    items: [],
+    warnings: [],
+    useTrash: true,
+  }))
+  const refresh = vi.fn()
+  render(
+    <StoreProvider api={{ ...backend, snapshot: async () => data, prepare, refresh }}>
+      <Caches />
+    </StoreProvider>,
+    { wrapper: TooltipProvider },
+  )
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('checkbox', { name: 'Select all eligible caches' }))
+  expect(screen.getByText('Move to Trash')).toBeTruthy()
+  expect(screen.getAllByText('Prune expired caches')).toHaveLength(2)
+  expect(screen.queryByText('Owner-managed')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Review cleanup (4)' }))
+  await waitFor(() =>
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'cleanCaches', ids: ['pip', 'cargo', 'gradle', 'dists'] },
+      expect.any(String),
+    ),
+  )
+  expect(refresh).not.toHaveBeenCalled()
 })

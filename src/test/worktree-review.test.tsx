@@ -56,6 +56,10 @@ function fixture(onlyChanged = false) {
   }))
   if (onlyChanged) plan.items = plan.items.filter((item) => item.path === '/projects/dirty')
   const api: Backend = {
+    managerOptions: async () => [],
+    checkToolUpdates: async () => {
+      throw new Error('Unexpected update check')
+    },
     native: false,
     snapshot: async () => data,
     refresh: async () => data,

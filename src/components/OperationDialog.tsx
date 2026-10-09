@@ -1,6 +1,6 @@
 import { displayPath } from '@/lib/paths'
 import { useState } from 'react'
-import { AlertTriangle, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, Check, ShieldCheck, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes, type Plan } from '@/domain'
 import { Button } from './ui/button'
@@ -67,7 +67,7 @@ function WorktreeChangeList({
 
 export function OperationDialog() {
   const s = useStore()
-  const { plan, result, t } = s
+  const { plan, result, operationError, t } = s
   const [discardPlanId, setDiscardPlanId] = useState<string | null>(null)
   const discardChanges = !!plan && discardPlanId === plan.id
   const changes = plan?.worktreeChanges ?? []
@@ -83,19 +83,41 @@ export function OperationDialog() {
       <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl">
         <DialogHeader className="shrink-0">
           <DialogTitle>
-            {result ? t('操作结果', 'Operation results') : t('审阅操作', 'Review operation')}
+            {result
+              ? t('操作结果', 'Operation results')
+              : operationError
+                ? t('需要重新审阅', 'Review required')
+                : t('审阅操作', 'Review operation')}
           </DialogTitle>
           <DialogDescription>
             {result
               ? t('每一项显示实际执行结果。', 'Each item shows its actual result.')
-              : t(
-                  '核对路径、影响和恢复方式后执行。',
-                  'Check the paths, impact, and recovery instructions before proceeding.',
-                )}
+              : operationError
+                ? t(
+                    '重新检查当前状态后再执行。',
+                    'Check the current state again before proceeding.',
+                  )
+                : t(
+                    '核对路径、影响和恢复方式后执行。',
+                    'Check the paths, impact, and recovery instructions before proceeding.',
+                  )}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto pr-1" data-slot="operation-scroll">
-          {result ? (
+          {operationError ? (
+            <div className="space-y-3">
+              <p role="alert" className="whitespace-pre-wrap break-all text-sm text-destructive">
+                {operationError}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {t(
+                  '此计划无法继续执行。请重新审阅当前状态，或关闭窗口。',
+                  'This plan can no longer be executed. Review the current state again, or close this dialog.',
+                )}
+              </p>
+              {s.busy && <TaskProgress />}
+            </div>
+          ) : result ? (
             <OperationResults result={result} />
           ) : (
             <div className="space-y-4">
@@ -228,6 +250,13 @@ export function OperationDialog() {
             </Button>
           ) : result ? (
             <Button onClick={s.closePlan}>{t('完成', 'Done')}</Button>
+          ) : operationError ? (
+            <>
+              <Button variant="outline" onClick={s.closePlan}>
+                {t('关闭', 'Close')}
+              </Button>
+              <Button onClick={() => void s.reviewAgain()}>{t('重新审阅', 'Review again')}</Button>
+            </>
           ) : (
             <>
               <Button variant="outline" onClick={s.closePlan}>
@@ -242,8 +271,10 @@ export function OperationDialog() {
               >
                 {changedCount > 0 && !discardChanges && removeCount === 0 ? (
                   <ShieldCheck />
-                ) : (
+                ) : changedCount > 0 ? (
                   <Trash2 />
+                ) : (
+                  <Check />
                 )}
                 {changedCount > 0
                   ? discardChanges

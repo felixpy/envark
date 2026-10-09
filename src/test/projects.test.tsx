@@ -57,6 +57,10 @@ function fixture(configure?: (data: Snapshot) => void) {
     useTrash: true,
   }))
   const api: Backend = {
+    managerOptions: async () => [],
+    checkToolUpdates: async () => {
+      throw new Error('Unexpected update check')
+    },
     native: false,
     snapshot: async () => data,
     refresh: async () => data,
@@ -369,4 +373,30 @@ it('bulk reviews worktrees without selecting artifacts, locked trees, or the mai
     },
     expect.any(String),
   )
+})
+
+it('cancels worktree selection without clearing selections in artifact mode', async () => {
+  fixture((data) => {
+    withWorktrees(data)
+    data.inventory.worktrees.forEach((w) => {
+      w.size = { bytes: 2048, files: 2, skipped: 0, complete: true }
+    })
+  })
+  const user = userEvent.setup()
+  await screen.findByText('repository')
+  await user.click(screen.getByRole('checkbox', { name: 'Select old-branch' }))
+  await user.click(screen.getByRole('tab', { name: 'Worktrees' }))
+  await user.click(screen.getByRole('checkbox', { name: 'Select all eligible worktrees' }))
+  await user.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(screen.queryByRole('button', { name: 'Review worktree removal' })).toBeNull()
+  expect(
+    screen
+      .getByRole('checkbox', { name: 'Select all eligible worktrees' })
+      .getAttribute('aria-checked'),
+  ).toBe('false')
+  await user.click(screen.getByRole('tab', { name: 'Artifacts & dependencies' }))
+  expect(
+    screen.getByRole('checkbox', { name: 'Select old-branch' }).getAttribute('aria-checked'),
+  ).toBe('true')
+  expect(screen.getByRole('button', { name: 'Review cleanup' })).toBeTruthy()
 })

@@ -23,6 +23,10 @@ function fixture(release: AppRelease = { version: '0.3.0', available: true, inst
   const restart = vi.fn(async () => {})
   const check = vi.fn(async () => release)
   const api: Backend = {
+    managerOptions: async () => [],
+    checkToolUpdates: async () => {
+      throw new Error('Unexpected update check')
+    },
     native: true,
     snapshot: async () => snapshot,
     refresh: vi.fn(),

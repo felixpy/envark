@@ -58,6 +58,11 @@ pub(crate) async fn refresh(
         .zip(&result.items)
         .filter(|(_, item)| item.status != "skipped")
         .filter_map(|(target, _)| target)
+        .flat_map(|target| match target {
+            RefreshTarget::Caches(ids) => ids.into_iter().map(RefreshTarget::Cache).collect(),
+            RefreshTarget::Providers(ids) => ids.into_iter().map(RefreshTarget::Provider).collect(),
+            target => vec![target],
+        })
         .collect();
     let mut selected = vec![];
     for target in &targets {
@@ -67,7 +72,7 @@ pub(crate) async fn refresh(
             selected.push(*id);
         }
     }
-    if !selected.is_empty() && !ctx.cancel.is_cancelled() {
+    if !selected.is_empty() {
         progress(Progress {
             job_id: job_id.clone(),
             stage: "refresh-environments".into(),
@@ -75,23 +80,85 @@ pub(crate) async fn refresh(
             total: None,
             message: String::new(),
         });
-        let found = providers::discover_selected(ctx.clone(), &selected).await?;
-        inventory.providers.retain(|p| !selected.contains(&p.id));
-        inventory.providers.extend(found.providers);
-        // Discovery has no cache-size scan. Preserve known measurements for
-        // unchanged caches; cache cleanup itself is reconciled below.
-        let mut caches = found.caches;
-        for cache in &mut caches {
-            if let Some(old) = inventory
-                .caches
-                .iter()
-                .find(|c| c.id == cache.id && c.path == cache.path)
+        // Cancelling a mutation must not cancel reconciliation of changes that
+        // already happened. Bound this independent, provider-only refresh so
+        // cancelling cannot leave the dialog waiting on slow CLIs indefinitely.
+        let mut refresh_context = ctx.clone();
+        refresh_context.cancel = tokio_util::sync::CancellationToken::new();
+        let token = refresh_context.cancel.clone();
+        let discovery = tokio::time::timeout(
+            Duration::from_secs(10),
+            providers::discover_selected(refresh_context, &selected),
+        )
+        .await;
+        token.cancel();
+        let discovery = match discovery {
+            Ok(result) => result,
+            Err(_) => Err(Error::Unavailable(
+                "Affected environment refresh exceeded 10 seconds.".into(),
+            )),
+        };
+        if let Ok(mut found) = discovery {
+            for provider in &mut found.providers {
+                if let Some(previous) = inventory.providers.iter().find(|old| old.id == provider.id)
+                {
+                    for tool in provider
+                        .tools
+                        .iter_mut()
+                        .chain(&mut provider.package_managers)
+                    {
+                        if let Some(old) = previous
+                            .tools
+                            .iter()
+                            .chain(&previous.package_managers)
+                            .find(|old| old.id == tool.id && old.source == tool.source)
+                        {
+                            tool.latest = old.latest.clone();
+                            tool.update_status = providers::updates::classify(tool);
+                        }
+                    }
+                }
+            }
+            inventory.providers.retain(|p| !selected.contains(&p.id));
+            inventory.providers.extend(found.providers);
+            // Discovery has no cache-size scan. Preserve known measurements for
+            // unchanged caches; cache cleanup itself is reconciled below.
+            let mut caches = found.caches;
+            for cache in &mut caches {
+                if let Some(old) = inventory
+                    .caches
+                    .iter()
+                    .find(|c| c.id == cache.id && c.path == cache.path)
+                {
+                    cache.size = old.size.clone();
+                }
+            }
+            inventory.caches.retain(|c| !selected.contains(&c.provider));
+            inventory.caches.extend(caches);
+        } else if let Err(error) = discovery {
+            let message = format!(
+                "Environment state could not be confirmed after the operation: {error} Refresh this environment before acting again."
+            );
+            inventory.issues.push(message.clone());
+            for provider in inventory
+                .providers
+                .iter_mut()
+                .filter(|p| selected.contains(&p.id))
             {
-                cache.size = old.size.clone();
+                provider.issues.push(message.clone());
+                for tool in provider
+                    .tools
+                    .iter_mut()
+                    .chain(&mut provider.package_managers)
+                {
+                    tool.update_status = crate::model::UpdateStatus::Unknown;
+                    tool.latest = None;
+                    tool.can_update = false;
+                    tool.can_remove = false;
+                    tool.note = Some(message.clone());
+                }
             }
         }
-        inventory.caches.retain(|c| !selected.contains(&c.provider));
-        inventory.caches.extend(caches);
     }
     tokio::task::spawn_blocking(move || {
         let mut worktrees = HashSet::new();
@@ -152,12 +219,25 @@ pub(crate) async fn refresh(
                                 complete: true,
                                 ..Default::default()
                             },
-                            _ => measure_changed(&cache.path, &ctx, &progress, &job_id)
-                                .unwrap_or_default(),
+                            _ => match measure_changed(&cache.path, &ctx, &progress, &job_id) {
+                                Ok(size) => size,
+                                Err(error) => {
+                                    // Cancellation or an unreadable directory is not evidence
+                                    // that cleanup emptied it. Preserve the last known size.
+                                    let mut size = cache.size.clone();
+                                    size.complete = false;
+                                    size.fingerprint = None;
+                                    cache.can_clean = false;
+                                    cache.warning = format!("Cache size could not be refreshed: {error} Refresh the inventory before cleaning again.");
+                                    size
+                                }
+                            },
                         };
                     }
                 }
-                RefreshTarget::Provider(_) => {}
+                RefreshTarget::Provider(_)
+                | RefreshTarget::Caches(_)
+                | RefreshTarget::Providers(_) => {}
             }
         }
         for id in worktrees {
@@ -254,6 +334,7 @@ mod tests {
         std::fs::remove_dir_all(&unaffected.path).unwrap();
         let result = OperationResult {
             items: vec![ItemResult {
+                target_ids: vec![],
                 title: "cleanup".into(),
                 status: "success".into(),
                 message: String::new(),
@@ -311,6 +392,7 @@ mod tests {
     #[tokio::test]
     async fn environment_refresh_preserves_projects_and_other_providers() {
         let ctx = Context::new(CancellationToken::new()).unwrap();
+        ctx.cancel.cancel();
         let mut sentinel = crate::model::Provider::empty(crate::model::ProviderId::Rust);
         sentinel.issues.push("untouched".into());
         let inventory = Inventory {
@@ -320,12 +402,13 @@ mod tests {
         };
         let result = OperationResult {
             items: vec![ItemResult {
+                target_ids: vec![],
                 title: "install".into(),
                 status: "success".into(),
                 message: String::new(),
                 removed_bytes: 0,
             }],
-            cancelled: false,
+            cancelled: true,
             removed_bytes: 0,
             reclaimed_bytes: None,
         };
@@ -350,5 +433,80 @@ mod tests {
             vec!["untouched"]
         );
         assert!(invalidated.is_empty());
+        // A cancelled mutation still synchronizes the environment it changed.
+        assert!(
+            updated
+                .providers
+                .iter()
+                .any(|p| p.id == crate::model::ProviderId::Go)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_cache_measurement_preserves_last_known_size_without_claiming_zero() {
+        use crate::model::{Cache, ProviderId};
+        let root = tempfile::tempdir().unwrap();
+        let remaining = root.path().join("remaining");
+        std::fs::create_dir_all(&remaining).unwrap();
+        std::fs::write(remaining.join("payload"), "still cached").unwrap();
+        let cache = |id: &str, path: PathBuf| Cache {
+            id: id.into(),
+            provider: ProviderId::Js,
+            name: id.into(),
+            path,
+            size: Measurement {
+                bytes: 4096,
+                complete: true,
+                fingerprint: Some("previous".into()),
+                ..Default::default()
+            },
+            strategy: "npm".into(),
+            warning: String::new(),
+            can_clean: true,
+        };
+        let inventory = Inventory {
+            caches: vec![
+                cache("remaining", remaining),
+                cache("removed", root.path().join("removed")),
+            ],
+            ..Default::default()
+        };
+        let result = OperationResult {
+            items: ["remaining", "removed"]
+                .into_iter()
+                .map(|title| ItemResult {
+                    target_ids: vec![],
+                    title: title.into(),
+                    status: "cancelled".into(),
+                    message: String::new(),
+                    removed_bytes: 0,
+                })
+                .collect(),
+            cancelled: true,
+            removed_bytes: 0,
+            reclaimed_bytes: None,
+        };
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        ctx.cancel.cancel();
+        let (updated, _) = refresh(
+            inventory,
+            vec![
+                Some(RefreshTarget::Cache("remaining".into())),
+                Some(RefreshTarget::Cache("removed".into())),
+            ],
+            &result,
+            ctx,
+            silent_progress(),
+            "cancelled".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.caches[0].size.bytes, 4096);
+        assert!(!updated.caches[0].size.complete);
+        assert!(updated.caches[0].size.fingerprint.is_none());
+        assert!(!updated.caches[0].can_clean);
+        assert!(updated.caches[0].warning.contains("Refresh the inventory"));
+        assert_eq!(updated.caches[1].size.bytes, 0);
+        assert!(updated.caches[1].size.complete);
     }
 }

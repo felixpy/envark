@@ -30,9 +30,12 @@ export default function Overview() {
   const inactive = inventory.projects.filter((p) => idle(p, settings.idleDays) && !p.protected)
   const idleSize = inactive.reduce((sum, p) => sum + projectBytes(p), 0)
   const cacheSize = inventory.caches.reduce((sum, c) => sum + c.size.bytes, 0)
-  const updates = inventory.providers
-    .flatMap((p) => [...p.tools, ...p.packageManagers])
-    .filter((tool) => ['major', 'minor'].includes(updateKind(tool)))
+  const updates = new Set(
+    inventory.providers
+      .flatMap((p) => [...p.tools, ...p.packageManagers])
+      .filter((tool) => ['major', 'minor'].includes(updateKind(tool)))
+      .map((tool) => tool.id),
+  )
   const stats = [
     {
       label: t('可审阅空间', 'Space to review'),
@@ -59,7 +62,7 @@ export default function Overview() {
     },
     {
       label: t('可用更新', 'Available updates'),
-      value: settings.checkUpdates ? updates.length : '—',
+      value: settings.checkUpdates ? updates.size : '—',
       hint: settings.checkUpdates
         ? t('包管理器与全局工具', 'Package managers and global tools')
         : t('联网检查尚未开启', 'Online checks are turned off'),

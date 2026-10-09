@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     filesystem::{measure, modified},
-    model::{Asset, Runtime, ServiceStatus},
+    model::{Asset, ServiceStatus},
 };
 
 pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
@@ -14,22 +14,8 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
 }
 
 async fn ollama(ctx: &Context, provider: &mut Provider) {
-    if let Ok(version) = ctx.read("ollama", &["--version"]).await
-        && let Some(path) = ctx.executable("ollama")
-    {
-        provider.runtimes.push(Runtime {
-            selector: None,
-            active_known: true,
-            id: id_for("runtime", &path),
-            version: version.trim().into(),
-            manager: "system".into(),
-            path,
-            active: true,
-            managed: false,
-            size: None,
-            note: Some("Use the Ollama installer to update the application.".into()),
-        });
-    }
+    // Program discovery runs separately and probes the client without contacting
+    // a server. Model discovery must work even when no local CLI is installed.
     let models_root = std::env::var_os("OLLAMA_MODELS")
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.home.join(".ollama/models"));
@@ -55,7 +41,7 @@ async fn ollama(ctx: &Context, provider: &mut Provider) {
                     last_used: None,
                     modified: None,
                     used_by: vec![],
-                    can_remove: ctx.executable("ollama").is_some(),
+                    can_remove: true,
                     note: Some(format!(
                         "Local service: {}. Model layers may be shared; size is logical.",
                         super::ollama::ENDPOINT

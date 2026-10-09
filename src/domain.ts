@@ -183,11 +183,21 @@ export interface Progress {
   total: number | null
   message: string
 }
+export interface ManagerInstallOption {
+  name: string
+  source: string
+  installed: boolean
+  available: boolean
+  reason: string | null
+}
+
 export type ActionRequest =
   | { kind: 'removeWorktree'; id: string }
   | { kind: 'removeWorktrees'; ids: string[] }
   | { kind: 'cleanProjects'; artifactIds: string[] }
   | { kind: 'cleanCaches'; ids: string[] }
+  | { kind: 'serviceAction'; provider: ProviderId; action: 'start' | 'stop' }
+  | { kind: 'installManager'; provider: ProviderId; manager: string }
   | { kind: 'installRuntime'; provider: ProviderId; manager: string; version: string }
   | {
       kind: 'setDefault' | 'removeRuntime' | 'updateTool' | 'removeTool'
@@ -217,7 +227,13 @@ export interface Plan {
   }[]
 }
 export interface OperationResult {
-  items: { title: string; status: string; message: string; removedBytes: number }[]
+  items: {
+    title: string
+    status: string
+    message: string
+    removedBytes: number
+    targetIds?: string[]
+  }[]
   cancelled: boolean
   removedBytes: number
   reclaimedBytes: number | null

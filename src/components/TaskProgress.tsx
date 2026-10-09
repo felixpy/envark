@@ -16,8 +16,8 @@ export function TaskProgress() {
   if (!task) return null
   const status = progressLabel(
     progress ??
-      (task.kind === 'prepare'
-        ? { stage: 'prepare', jobId: '', completed: 0, total: null, message: '' }
+      (['prepare', 'updates'].includes(task.kind)
+        ? { stage: task.kind, jobId: '', completed: 0, total: null, message: '' }
         : null),
     t,
     task.kind === 'execute',
@@ -52,7 +52,13 @@ export function TaskProgress() {
       {progress &&
         progress.total === null &&
         progress.completed > 0 &&
-        progress.stage !== 'discover' && (
+        [
+          'prepare',
+          'measure-projects',
+          'measure-worktrees',
+          'measure-caches',
+          'refresh-affected',
+        ].includes(progress.stage) && (
           <p className="text-xs text-muted-foreground">
             {t('已检查', 'Checked')} {progress.completed} {t('个条目', 'entries')}
           </p>

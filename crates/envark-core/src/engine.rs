@@ -216,6 +216,78 @@ impl Engine {
         Ok(self.snapshot().await)
     }
 
+    pub async fn manager_options(
+        &self,
+        provider: ProviderId,
+    ) -> Result<Vec<crate::providers::manager_install::OptionView>> {
+        let inventory = self.snapshot().await.inventory;
+        let ctx = Context::new(CancellationToken::new())?;
+        let mut options = crate::providers::manager_install::options(&ctx, &inventory, provider);
+        options.extend(crate::providers::language_lifecycle::options(
+            &ctx, &inventory, provider,
+        ));
+        options.extend(crate::providers::ollama_lifecycle::options(
+            &ctx, &inventory, provider,
+        ));
+        Ok(options)
+    }
+
+    pub async fn check_tool_updates(
+        &self,
+        provider_id: ProviderId,
+        job_id: String,
+        progress: ProgressSink,
+    ) -> Result<Provider> {
+        let _guard = self
+            .work
+            .try_lock()
+            .map_err(|_| Error::Conflict("An operation is already running.".into()))?;
+        let mut provider = {
+            let state = self.state.read().await;
+            if !state.settings.check_updates {
+                return Err(Error::Conflict(
+                    "Enable update checks in Settings first.".into(),
+                ));
+            }
+            state
+                .inventory
+                .providers
+                .iter()
+                .find(|provider| provider.id == provider_id)
+                .cloned()
+                .ok_or_else(|| Error::InvalidInput("Unknown environment.".into()))?
+        };
+        let token = CancellationToken::new();
+        let ctx = Context::new(token.clone())?;
+        self.jobs.lock().await.insert(job_id.clone(), token.clone());
+        progress(Progress {
+            job_id: job_id.clone(),
+            stage: "updates".into(),
+            completed: 0,
+            total: None,
+            message: "Checking public package registries".into(),
+        });
+        providers::package_managers::resolve(&ctx, &mut provider).await;
+        providers::updates::check(std::slice::from_mut(&mut provider), &token).await;
+        self.jobs.lock().await.remove(&job_id);
+        if token.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        // Merge into the current inventory to retain independent disk refreshes.
+        let mut state = self.state.write().await;
+        let mut inventory = state.inventory.clone();
+        if let Some(current) = inventory
+            .providers
+            .iter_mut()
+            .find(|item| item.id == provider_id)
+        {
+            *current = provider.clone();
+        }
+        self.storage.save_inventory(&inventory)?;
+        state.inventory = inventory;
+        Ok(provider)
+    }
+
     async fn refresh_inner(
         &self,
         job_id: &str,
@@ -505,6 +577,88 @@ mod tests {
         );
     }
     use super::*;
+
+    #[tokio::test]
+    async fn tool_update_checks_preserve_unrelated_inventory_and_release_the_job() {
+        for id in ProviderId::ALL {
+            let root = tempfile::tempdir().unwrap();
+            let engine = Arc::new(Engine::new(root.path().into()).unwrap());
+            {
+                let mut state = engine.state.write().await;
+                state.settings.roots = vec![root.path().join("must-not-scan")];
+                state.inventory.scanned_at = Some(123);
+                state.inventory.issues = vec!["preserve this scan diagnostic".into()];
+                state.inventory.providers =
+                    ProviderId::ALL.into_iter().map(Provider::empty).collect();
+                let tool = serde_json::from_value::<Tool>(serde_json::json!({
+                    "id": "fixture", "name": "fixture", "version": "1.0.0", "source": "unsupported",
+                    "latest": null, "updateStatus": "unknown", "runtime": null, "path": null,
+                    "size": null, "canUpdate": false, "canRemove": false, "note": null
+                }))
+                .unwrap();
+                state
+                    .inventory
+                    .providers
+                    .iter_mut()
+                    .find(|p| p.id == id)
+                    .unwrap()
+                    .tools
+                    .push(tool);
+            }
+            let before = engine.snapshot().await;
+            let events = Arc::new(std::sync::Mutex::new(vec![]));
+            let sink = events.clone();
+            let result = engine
+                .check_tool_updates(
+                    id,
+                    "updates".into(),
+                    Arc::new(move |event| sink.lock().unwrap().push(event.stage)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.id, id);
+            let after = engine.snapshot().await;
+            assert_eq!(
+                serde_json::to_value(&before).unwrap(),
+                serde_json::to_value(&after).unwrap()
+            );
+            assert_eq!(*events.lock().unwrap(), vec!["updates"]);
+            assert!(engine.jobs.lock().await.is_empty());
+            assert!(engine.reserve_work().is_ok());
+            assert_eq!(
+                serde_json::to_value(engine.storage.inventory().unwrap()).unwrap(),
+                serde_json::to_value(after.inventory).unwrap()
+            );
+
+            let cancelling_engine = engine.clone();
+            let cancelled = engine
+                .check_tool_updates(
+                    id,
+                    "cancel".into(),
+                    Arc::new(move |_| {
+                        cancelling_engine
+                            .jobs
+                            .try_lock()
+                            .unwrap()
+                            .get("cancel")
+                            .unwrap()
+                            .cancel();
+                    }),
+                )
+                .await;
+            assert!(matches!(cancelled, Err(Error::Cancelled)));
+            assert!(engine.jobs.lock().await.is_empty());
+            assert!(engine.reserve_work().is_ok());
+            engine.state.write().await.settings.check_updates = false;
+            assert!(
+                engine
+                    .check_tool_updates(id, "disabled".into(), silent_progress())
+                    .await
+                    .is_err()
+            );
+            assert!(engine.jobs.lock().await.is_empty());
+        }
+    }
 
     #[tokio::test]
     async fn damaged_inventory_and_activity_do_not_prevent_startup() {

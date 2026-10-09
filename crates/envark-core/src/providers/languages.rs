@@ -81,14 +81,9 @@ async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     {
         caches.push(item);
     }
-    let pip_path = if cfg!(windows) {
-        ctx.home.join("AppData/Local/pip/Cache")
-    } else if cfg!(target_os = "macos") {
-        ctx.home.join("Library/Caches/pip")
-    } else {
-        ctx.cache.join("pip")
-    };
-    if let Some(item) = cache(ProviderId::Py, "pip", pip_path, "owner-managed", false) {
+    if let Some(path) = super::cache_cleanup::pip_path(ctx).await
+        && let Some(item) = cache(ProviderId::Py, "pip", path, "pip-purge", true)
+    {
         caches.push(item);
     }
     config(provider, ctx.home.join(".config/uv/uv.toml"), "toml", true);
@@ -188,15 +183,15 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             ProviderId::Rust,
             "Cargo registry",
             cargo_root.join("registry"),
-            "owner-managed",
-            false,
+            "cargo-registry",
+            true,
         ),
         cache(
             ProviderId::Rust,
             "Cargo Git checkouts",
             cargo_root.join("git"),
-            "owner-managed",
-            false,
+            "cargo-git",
+            true,
         ),
     ]
     .into_iter()
@@ -415,11 +410,7 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         if let Ok(version) = ctx.read(name, &["--version"]).await {
             provider.package_managers.push(basic_tool(
                 name,
-                version
-                    .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("unknown")
-                    .into(),
+                super::package_managers::version(&version).unwrap_or_else(|| "unknown".into()),
                 "PATH",
                 ctx.executable(name),
             ));
@@ -438,22 +429,22 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             ProviderId::Jvm,
             "Maven repository",
             ctx.home.join(".m2/repository"),
-            "owner-managed",
+            "maven-repository",
             false,
         ),
         cache(
             ProviderId::Jvm,
             "Gradle caches",
-            ctx.home.join(".gradle/caches"),
-            "owner-managed",
-            false,
+            super::cache_cleanup::gradle_home(ctx).join("caches"),
+            "gradle-caches",
+            true,
         ),
         cache(
             ProviderId::Jvm,
             "Gradle distributions",
-            ctx.home.join(".gradle/wrapper/dists"),
-            "owner-managed",
-            false,
+            super::cache_cleanup::gradle_home(ctx).join("wrapper/dists"),
+            "gradle-dists",
+            true,
         ),
     ]
     .into_iter()

@@ -36,6 +36,10 @@ pub enum ActionRequest {
     CleanCaches {
         ids: Vec<String>,
     },
+    InstallManager {
+        provider: ProviderId,
+        manager: String,
+    },
     InstallRuntime {
         provider: ProviderId,
         manager: String,
@@ -68,6 +72,10 @@ pub enum ActionRequest {
     DownloadAsset {
         provider: ProviderId,
         name: String,
+    },
+    ServiceAction {
+        provider: ProviderId,
+        action: String,
     },
 }
 
@@ -104,6 +112,7 @@ pub struct PlanView {
     pub created_at: u64,
     pub items: Vec<PlanItem>,
     pub warnings: Vec<String>,
+    // Snapshot of the reviewed setting; native commands may not use Trash.
     pub use_trash: bool,
     pub worktree_changes: Vec<WorktreeChanges>,
     pub runtime_dependents: Vec<crate::runtime_pins::RuntimeDependent>,
@@ -111,6 +120,10 @@ pub struct PlanView {
 
 #[derive(Debug, Clone)]
 enum Step {
+    Native {
+        plan: Box<providers::native_lifecycle::Plan>,
+        target_ids: Vec<String>,
+    },
     Worktree {
         worktree: Worktree,
         removal: Option<crate::worktree_removal::Removal>,
@@ -121,14 +134,30 @@ enum Step {
         modified: Option<u64>,
     },
     Asset {
+        id: String,
         root: PathBuf,
         path: PathBuf,
         size: Measurement,
         modified: Option<u64>,
     },
+    CacheFiles {
+        cache: Cache,
+        size: Measurement,
+        modified: Option<u64>,
+    },
     Cache {
         cache: Cache,
+        related: Vec<Cache>,
         command: CommandSpec,
+    },
+    ManagerInstall {
+        provider: ProviderId,
+        name: String,
+        installation: Option<Box<providers::manager_install::Installation>>,
+    },
+    ManagerRemove {
+        tool: crate::model::Tool,
+        removal: Option<Box<providers::manager_remove::Removal>>,
     },
     Command(CommandSpec),
     Runtime {
@@ -137,16 +166,36 @@ enum Step {
         command: CommandSpec,
     },
     Ollama {
+        asset_id: Option<String>,
         endpoint: String,
         name: String,
-        digest: String,
-        command: CommandSpec,
+        digest: Option<String>,
     },
     Tool {
         tool: crate::model::Tool,
         remove: bool,
         command: CommandSpec,
     },
+}
+
+impl Step {
+    fn target_ids(&self) -> Vec<String> {
+        match self {
+            Self::Native { target_ids, .. } => target_ids.clone(),
+            Self::Worktree { worktree, .. } => vec![worktree.id.clone()],
+            Self::Project { artifact, .. } => vec![artifact.id.clone()],
+            Self::Asset { id, .. } => vec![id.clone()],
+            Self::CacheFiles { cache, .. } => vec![cache.id.clone()],
+            Self::Cache { cache, related, .. } => std::iter::once(cache)
+                .chain(related)
+                .map(|cache| cache.id.clone())
+                .collect(),
+            Self::ManagerRemove { tool, .. } | Self::Tool { tool, .. } => vec![tool.id.clone()],
+            Self::Runtime { runtime, .. } => vec![runtime.id.clone()],
+            Self::Ollama { asset_id, .. } => asset_id.iter().cloned().collect(),
+            Self::ManagerInstall { .. } | Self::Command(_) => vec![],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -164,7 +213,9 @@ pub(crate) enum RefreshTarget {
     },
     Worktree(String),
     Cache(String),
+    Caches(Vec<String>),
     Provider(ProviderId),
+    Providers(Vec<ProviderId>),
 }
 
 impl Plan {
@@ -172,6 +223,7 @@ impl Plan {
         self.steps
             .iter()
             .map(|step| match step {
+                Step::Native { plan, .. } => Some(RefreshTarget::Providers(plan.providers())),
                 Step::Project {
                     project, artifact, ..
                 } => Some(RefreshTarget::Artifact {
@@ -181,7 +233,13 @@ impl Plan {
                 Step::Worktree { worktree, .. } => {
                     Some(RefreshTarget::Worktree(worktree.id.clone()))
                 }
-                Step::Cache { cache, .. } => Some(RefreshTarget::Cache(cache.id.clone())),
+                Step::Cache { cache, related, .. } => Some(RefreshTarget::Caches(
+                    std::iter::once(cache)
+                        .chain(related)
+                        .map(|c| c.id.clone())
+                        .collect(),
+                )),
+                Step::CacheFiles { cache, .. } => Some(RefreshTarget::Cache(cache.id.clone())),
                 _ => self.refresh_provider.map(RefreshTarget::Provider),
             })
             .collect()
@@ -191,6 +249,8 @@ impl Plan {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemResult {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub target_ids: Vec<String>,
     pub title: String,
     pub status: String,
     pub message: String,
@@ -274,9 +334,64 @@ pub async fn prepare_with_progress(
         total: None,
         message: String::new(),
     });
-    let (inventory, worker_settings, worker) = (inventory.clone(), settings.clone(), ctx.clone());
+    if let Some(native) =
+        providers::native_lifecycle::prepare(ctx, request.clone(), inventory, settings).await?
+    {
+        let mut plan = native_plan(native, settings, &request);
+        if let ActionRequest::RemoveRuntime { provider, id } = &request
+            && let Some(runtime) = inventory
+                .providers
+                .iter()
+                .find(|p| p.id == *provider)
+                .and_then(|p| p.runtimes.iter().find(|r| r.id == *id))
+        {
+            plan.view.runtime_dependents =
+                crate::runtime_pins::dependents(&inventory.projects, *provider, runtime);
+        }
+        return Ok(plan);
+    }
+    if let ActionRequest::UpdateTools { provider, ids } = &request {
+        if ids.is_empty() || ids.len() > 500 {
+            return Err(Error::InvalidInput(
+                "Select between 1 and 500 tools.".into(),
+            ));
+        }
+        let mut combined: Option<Plan> = None;
+        let mut seen = HashSet::new();
+        for id in ids {
+            if !seen.insert(id) {
+                continue;
+            }
+            let action = ActionRequest::UpdateTool {
+                provider: *provider,
+                id: id.clone(),
+            };
+            let mut next = if let Some(native) =
+                providers::native_lifecycle::prepare(ctx, action.clone(), inventory, settings)
+                    .await?
+            {
+                native_plan(native, settings, &action)
+            } else {
+                prepare_steps(action, inventory, settings, ctx)?
+            };
+            if let Some(plan) = &mut combined {
+                plan.view.items.append(&mut next.view.items);
+                plan.view.warnings.append(&mut next.view.warnings);
+                plan.steps.append(&mut next.steps);
+            } else {
+                combined = Some(next);
+            }
+        }
+        if let Some(plan) = &mut combined {
+            plan.refresh_provider = Some(*provider);
+            plan.view.kind = "update".into();
+        }
+        return combined.ok_or_else(|| Error::InvalidInput("Select a tool to update.".into()));
+    }
+    let (worker_inventory, worker_settings, worker) =
+        (inventory.clone(), settings.clone(), ctx.clone());
     let mut plan = tokio::task::spawn_blocking(move || {
-        prepare_steps(request, &inventory, &worker_settings, &worker)
+        prepare_steps(request, &worker_inventory, &worker_settings, &worker)
     })
     .await
     .map_err(|e| Error::Unavailable(e.to_string()))??;
@@ -314,6 +429,57 @@ pub async fn prepare_with_progress(
             }
             *removal = Some(reviewed);
         }
+        if let Step::ManagerInstall {
+            provider,
+            name,
+            installation,
+        } = step
+        {
+            let prepared =
+                providers::manager_install::prepare(ctx, inventory, *provider, name).await?;
+            let item = &mut plan.view.items[index];
+            item.title = format!("Install {} {}", name, prepared.version);
+            item.path = Some(prepared.target.clone());
+            item.command = Some(
+                prepared
+                    .commands
+                    .iter()
+                    .map(CommandSpec::display)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            if let Some(url) = &prepared.script {
+                item.command = Some(format!(
+                    "Download: {url}\nRun: {}",
+                    item.command
+                        .as_ref()
+                        .unwrap()
+                        .replace(url, "<downloaded official installer>")
+                ));
+            }
+            if let Some(profile) = &prepared.profile {
+                plan.view.warnings.push(format!("The official installer may add shell initialization to {}. Existing configuration and runtime installations are kept.", profile.display()));
+            } else if prepared.script.is_some() {
+                plan.view.warnings.push("The official installer may add its executable directory to your user PATH. Existing runtime installations are kept.".into());
+            }
+            *installation = Some(Box::new(prepared));
+        }
+        if let Step::ManagerRemove { tool, removal } = step {
+            let prepared = providers::manager_remove::prepare(ctx, tool).await?;
+            let item = &mut plan.view.items[index];
+            item.bytes = prepared.bytes();
+            item.command = prepared.command.as_ref().map(CommandSpec::display);
+            if prepared.command.is_none() && plan.view.use_trash {
+                plan.view.warnings.push("Manager files will move to the system Trash. They continue to occupy disk space until the Trash is emptied.".into());
+            }
+            item.restore =
+                Some("Reinstall this manager in Envark to manage retained runtimes again.".into());
+            plan.view.warnings.push("Only the selected manager installation will be removed. Installed runtimes, project files, caches, and shell configuration are kept. Commands using this manager will be unavailable until it is reinstalled.".into());
+            *removal = Some(Box::new(prepared));
+        }
+        if let Step::CacheFiles { cache, .. } = step {
+            providers::cache_cleanup::validate_cargo_checkouts(ctx, cache).await?;
+        }
         if let Step::Runtime {
             runtime,
             remove: true,
@@ -340,10 +506,48 @@ pub async fn prepare_with_progress(
             ..
         } = step
         {
-            providers::ollama::verify(ctx, endpoint, name, digest).await?;
+            if let Some(digest) = digest {
+                providers::ollama::verify(ctx, endpoint, name, digest).await?;
+            } else {
+                providers::ollama::models(endpoint, &ctx.cancel).await?;
+            }
         }
     }
     Ok(plan)
+}
+
+fn native_target_ids(request: &ActionRequest) -> Vec<String> {
+    match request {
+        ActionRequest::UpdateTool { id, .. }
+        | ActionRequest::RemoveTool { id, .. }
+        | ActionRequest::SetDefault { id, .. }
+        | ActionRequest::RemoveRuntime { id, .. } => vec![id.clone()],
+        _ => vec![],
+    }
+}
+
+fn native_plan(
+    native: providers::native_lifecycle::Plan,
+    settings: &Settings,
+    request: &ActionRequest,
+) -> Plan {
+    Plan {
+        view: PlanView {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: native.kind().into(),
+            created_at: now(),
+            items: vec![native.item()],
+            warnings: native.warnings(),
+            use_trash: settings.use_trash,
+            worktree_changes: vec![],
+            runtime_dependents: vec![],
+        },
+        steps: vec![Step::Native {
+            plan: Box::new(native),
+            target_ids: native_target_ids(request),
+        }],
+        refresh_provider: None,
+    }
 }
 
 fn prepare_steps(
@@ -364,7 +568,8 @@ fn prepare_steps(
     };
     let mut steps = vec![];
     let refresh_provider = match &request {
-        ActionRequest::InstallRuntime { provider, .. }
+        ActionRequest::InstallManager { provider, .. }
+        | ActionRequest::InstallRuntime { provider, .. }
         | ActionRequest::SetDefault { provider, .. }
         | ActionRequest::RemoveRuntime { provider, .. }
         | ActionRequest::UpdateTool { provider, .. }
@@ -492,32 +697,102 @@ fn prepare_steps(
         }
         ActionRequest::CleanCaches { ids } => {
             view.kind = "clean".into();
-            for id in ids.into_iter().collect::<HashSet<_>>() {
+            let mut planned = HashSet::new();
+            for id in ids {
+                if !planned.insert(id.clone()) {
+                    continue;
+                }
                 let cache = inventory
                     .caches
                     .iter()
                     .find(|c| c.id == id)
                     .ok_or_else(|| Error::Conflict("Cache no longer exists.".into()))?;
                 if !cache.can_clean {
-                    return Err(Error::Unavailable(
-                        "The cache owner does not support automatic cleanup.".into(),
-                    ));
+                    return Err(Error::Unavailable(cache.warning.clone()));
                 }
                 reject_links(&cache.path)?;
+                if ["cargo-registry", "cargo-git"].contains(&cache.strategy.as_str()) {
+                    providers::cache_cleanup::cargo_root(ctx, cache)?;
+                    let size = measure(&cache.path, &ctx.cancel)?;
+                    if !size.complete {
+                        return Err(Error::Conflict(
+                            "The cache cannot be measured completely.".into(),
+                        ));
+                    }
+                    view.items.push(PlanItem {
+                        title: cache.name.clone(),
+                        path: Some(cache.path.clone()),
+                        command: None,
+                        bytes: size.bytes,
+                        restore: Some(
+                            "Cargo will download these dependencies again when needed.".into(),
+                        ),
+                    });
+                    steps.push(Step::CacheFiles {
+                        cache: cache.clone(),
+                        size,
+                        modified: modified(&cache.path),
+                    });
+                    view.warnings.push(if settings.use_trash { "Cargo cache contents will move to Trash after acquiring Cargo's cache locks. Installed tools and configuration are kept." } else { "Cargo cache contents will be removed after acquiring Cargo's cache locks. Installed tools and configuration are kept." }.into());
+                    continue;
+                }
+                let related: Vec<Cache> = if cache.strategy.starts_with("gradle-") {
+                    inventory
+                        .caches
+                        .iter()
+                        .filter(|c| c.id != cache.id && c.strategy.starts_with("gradle-"))
+                        .cloned()
+                        .collect()
+                } else {
+                    vec![]
+                };
+                planned.extend(related.iter().map(|c| c.id.clone()));
+                if cache.strategy.starts_with("gradle-") {
+                    view.warnings.push("Gradle will run its native cleanup in a temporary empty project. It applies the configured retention policy to Gradle caches and distributions, keeping entries it still needs; no user project is built.".into());
+                }
                 let command = providers::cache_command(ctx, cache)?;
                 view.items.push(PlanItem {
-                    title: cache.name.clone(),
+                    title: std::iter::once(cache)
+                        .chain(&related)
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" + "),
                     path: Some(cache.path.clone()),
                     command: Some(command.display()),
-                    bytes: cache.size.bytes,
+                    bytes: std::iter::once(cache)
+                        .chain(&related)
+                        .map(|c| c.size.bytes)
+                        .sum(),
                     restore: None,
                 });
                 steps.push(Step::Cache {
                     cache: cache.clone(),
+                    related,
                     command,
                 });
             }
-            view.warnings.push("Native cache cleanup can permanently remove entries. The displayed size is an upper bound, not a promise of reclaimed space.".into());
+            view.use_trash = settings.use_trash
+                && steps
+                    .iter()
+                    .any(|step| matches!(step, Step::CacheFiles { .. }));
+            if steps.iter().any(|s| matches!(s, Step::Cache { .. })) {
+                view.warnings.push("Native cache cleanup can permanently remove entries. The displayed size is an upper bound, not a promise of reclaimed space.".into());
+            }
+        }
+        ActionRequest::InstallManager { provider, manager } => {
+            view.kind = "installManager".into();
+            view.items.push(PlanItem {
+                title: format!("Install {manager}"),
+                path: None,
+                command: None,
+                bytes: 0,
+                restore: None,
+            });
+            steps.push(Step::ManagerInstall {
+                provider,
+                name: manager,
+                installation: None,
+            });
         }
         ActionRequest::InstallRuntime {
             provider,
@@ -608,11 +883,48 @@ fn prepare_steps(
                     "This installation must be managed with its original installer.".into(),
                 ));
             }
-            let command = providers::tool_command(ctx, tool, remove)?;
-            view.items.push(command_description(
+            if remove && providers::manager_remove::supported(tool) {
+                view.kind = "removeManager".into();
+                view.items.push(PlanItem {
+                    title: format!("Uninstall {} (keep runtimes)", tool.name),
+                    path: tool.path.clone(),
+                    command: None,
+                    bytes: 0,
+                    restore: None,
+                });
+                steps.push(Step::ManagerRemove {
+                    tool: tool.clone(),
+                    removal: None,
+                });
+                return Ok(Plan {
+                    view,
+                    steps,
+                    refresh_provider,
+                });
+            }
+            let command = if !remove && providers::package_managers::handles(tool) {
+                providers::updates::require_upgrade(tool)?;
+                providers::package_managers::command(ctx, tool)?
+            } else {
+                providers::tool_command(ctx, tool, remove)?
+            };
+            let mut item = command_description(
                 format!("{} {}", if remove { "Remove" } else { "Update" }, tool.name),
                 &command,
-            ));
+            );
+            if providers::script_installers::handles(tool) {
+                let url = providers::script_installers::url(tool)?;
+                item.path = tool
+                    .path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .map(Path::to_path_buf);
+                item.command = Some(format!(
+                    "Download: {url}\nRun: {}",
+                    command.display().replace(&url, "<downloaded install.sh>")
+                ));
+            }
+            view.items.push(item);
             steps.push(Step::Tool {
                 tool: tool.clone(),
                 remove,
@@ -650,16 +962,22 @@ fn prepare_steps(
                                 "Refresh the local Ollama service before removing models.".into(),
                             )
                         })?;
-                    let command = providers::ollama::command(ctx, &endpoint, "rm", &asset.name)?;
-                    view.items.push(command_description(
-                        format!("Remove {} at {endpoint}", asset.name),
-                        &command,
-                    ));
+                    providers::ollama::validate(&endpoint, &asset.name)?;
+                    view.items.push(PlanItem {
+                        title: format!("Remove {} at {endpoint}", asset.name),
+                        path: None,
+                        command: Some(format!(
+                            "DELETE {endpoint}/api/delete (model: {})",
+                            asset.name
+                        )),
+                        bytes: 0,
+                        restore: Some("Download this model again from the Models tab.".into()),
+                    });
                     steps.push(Step::Ollama {
+                        asset_id: Some(asset.id.clone()),
                         endpoint,
                         name: asset.name.clone(),
-                        digest: asset.version.clone(),
-                        command,
+                        digest: Some(asset.version.clone()),
                     });
                 } else {
                     let root = asset
@@ -670,6 +988,7 @@ fn prepare_steps(
                     contained_directory(&root, &asset.path)?;
                     view.items.push(PlanItem { title: format!("{} {}", asset.name, asset.version), path: Some(asset.path.clone()), command: None, bytes: asset.size.bytes, restore: Some("Reinstall the browser with the owning project's browser automation CLI.".into()) });
                     steps.push(Step::Asset {
+                        id: asset.id.clone(),
                         root,
                         path: asset.path.clone(),
                         size: asset.size.clone(),
@@ -684,13 +1003,27 @@ fn prepare_steps(
             name,
         } => {
             let endpoint = providers::ollama::ENDPOINT;
-            let command = providers::ollama::command(ctx, endpoint, "pull", &name)?;
-            command_item(
-                format!("Download {name} at {endpoint}"),
-                command,
-                &mut view,
-                &mut steps,
-            );
+            providers::ollama::validate(endpoint, &name)?;
+            view.items.push(PlanItem {
+                title: format!("Download {name} at {endpoint}"),
+                path: None,
+                command: Some(format!("POST {endpoint}/api/pull (model: {name})")),
+                bytes: 0,
+                restore: Some(
+                    "Remove this model from the Models tab if it is no longer needed.".into(),
+                ),
+            });
+            steps.push(Step::Ollama {
+                asset_id: None,
+                endpoint: endpoint.into(),
+                name,
+                digest: None,
+            });
+        }
+        ActionRequest::ServiceAction { .. } => {
+            return Err(Error::InvalidInput(
+                "This environment does not support the requested action.".into(),
+            ));
         }
         ActionRequest::DownloadAsset { .. } => {
             return Err(Error::Unavailable(
@@ -801,7 +1134,12 @@ async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<u64> 
     }).await.map_err(|e| Error::Unavailable(e.to_string()))?
 }
 
-async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Result<(u64, String)> {
+async fn clean_cache(
+    ctx: &Context,
+    cache: Cache,
+    related: Vec<Cache>,
+    command: CommandSpec,
+) -> Result<(u64, String)> {
     reject_links(&cache.path)?;
     let approved = std::fs::canonicalize(&cache.path)?;
     if let Some(probe) = providers::cache_probe(&cache, &command) {
@@ -817,20 +1155,40 @@ async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Resul
             return Err(Error::Conflict("The tool resolved a different cache directory. Refresh the inventory before cleaning.".into()));
         }
     }
-    let before = measured_bytes(cache.path.clone(), ctx.cancel.clone()).await?;
+    let mut before = measured_bytes(cache.path.clone(), ctx.cancel.clone()).await?;
+    for item in &related {
+        before += measured_bytes(item.path.clone(), ctx.cancel.clone()).await?;
+    }
     reject_links(&cache.path)?;
     if std::fs::canonicalize(&cache.path)? != approved {
         return Err(Error::Conflict("The cache moved after review.".into()));
     }
-    let output = ctx.runner.run(&command, &ctx.cancel).await?;
-    let after = if cache.path.try_exists()? {
+    let output = if cache.strategy.starts_with("gradle-") {
+        providers::cache_cleanup::run_gradle(ctx, &cache, command).await?
+    } else {
+        ctx.runner.run(&command, &ctx.cancel).await?
+    };
+    let mut after = if cache.path.try_exists()? {
         measured_bytes(cache.path, ctx.cancel.clone()).await?
     } else {
         0
     };
+    for item in related {
+        if item.path.try_exists()? {
+            after += measured_bytes(item.path, ctx.cancel.clone()).await?;
+        }
+    }
     Ok((
         before.saturating_sub(after),
-        output.stdout.trim().chars().take(4000).collect(),
+        if cache.strategy.starts_with("gradle-") {
+            if before > after {
+                "Gradle finished pruning expired caches and distributions. Entries required by its retention policy were kept.".into()
+            } else {
+                "Gradle finished checking caches and distributions. No net reduction was measured; retained entries are still within its retention policy.".into()
+            }
+        } else {
+            output.stdout.trim().chars().take(4000).collect()
+        },
     ))
 }
 
@@ -863,10 +1221,21 @@ async fn run_tool(
     ctx: &Context,
     tool: crate::model::Tool,
     remove: bool,
-    command: CommandSpec,
+    mut command: CommandSpec,
 ) -> Result<(u64, String)> {
     if !remove {
         providers::updates::verify_installed(ctx, &tool).await?;
+    }
+    if !remove && providers::package_managers::handles(&tool) {
+        let current = providers::package_managers::command(ctx, &tool)?;
+        if current.program != command.program
+            || current.args != command.args
+            || current.env != command.env
+        {
+            return Err(Error::Conflict(
+                "The package manager changed after review. Create a new plan.".into(),
+            ));
+        }
     }
     if tool.source == "pnpm" {
         let path = tool.path.as_ref().ok_or_else(|| {
@@ -898,7 +1267,45 @@ async fn run_tool(
             ));
         }
     }
-    let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    let scratch = (tool.source == "pnpm-self")
+        .then(providers::js_tooling::isolated_directory)
+        .transpose()?;
+    if let Some(scratch) = &scratch {
+        command.cwd = Some(scratch.path().into());
+    }
+    let output = if providers::script_installers::handles(&tool) {
+        providers::script_installers::run(ctx, &tool, command).await?
+    } else {
+        ctx.runner.run(&command, &ctx.cancel).await?
+    };
+    if !remove && providers::package_managers::handles(&tool) {
+        let installed = providers::package_managers::installed_version(ctx, &tool).await?;
+        let mut verified = tool.clone();
+        verified.latest = Some(installed.clone());
+        if !providers::updates::classify(&verified).is_upgrade() {
+            return Err(Error::Conflict(format!(
+                "The update command finished, but {} is still at version {}.",
+                tool.name, installed
+            )));
+        }
+        verified.version = tool.latest.clone().expect("verified upgrade");
+        if matches!(
+            providers::updates::classify(&verified),
+            crate::model::UpdateStatus::Ahead | crate::model::UpdateStatus::Unknown
+        ) {
+            return Err(Error::Conflict(format!(
+                "{} is now at version {}, but the reviewed version {} was not installed.",
+                tool.name, installed, verified.version
+            )));
+        }
+        return Ok((
+            0,
+            format!(
+                "{} updated from {} to {}.",
+                tool.name, tool.version, installed
+            ),
+        ));
+    }
     Ok((0, output.stdout.trim().chars().take(4000).collect()))
 }
 
@@ -927,6 +1334,7 @@ pub async fn execute(
             break;
         }
         let title = plan.view.items[index].title.clone();
+        let target_ids = step.target_ids();
         progress(Progress {
             job_id: job_id.clone(),
             stage: "execute".into(),
@@ -942,6 +1350,7 @@ pub async fn execute(
             && !discard_worktree_changes
         {
             result.items.push(ItemResult {
+                target_ids,
                 title,
                 status: "skipped".into(),
                 message: "Worktree kept with its uncommitted and untracked files. No changes were discarded.".into(),
@@ -974,27 +1383,84 @@ pub async fn execute(
                 endpoint,
                 name,
                 digest,
-                command,
-            } => match providers::ollama::verify(&ctx, &endpoint, &name, &digest).await {
-                Ok(()) => ctx
-                    .runner
-                    .run(&command, &ctx.cancel)
-                    .await
-                    .map(|output| (0, output.stdout.trim().chars().take(4000).collect())),
-                Err(error) => Err(error),
-            },
+                ..
+            } => {
+                providers::ollama::execute_model(
+                    &ctx,
+                    &endpoint,
+                    &name,
+                    digest.as_deref(),
+                    &progress,
+                    &job_id,
+                )
+                .await
+            }
             Step::Tool {
                 tool,
                 remove,
                 command,
             } => run_tool(&ctx, tool, remove, command).await,
+            Step::Native { plan, .. } => plan.execute(&ctx, settings.use_trash).await,
+            Step::ManagerInstall { installation, .. } => match installation {
+                Some(installation) => {
+                    providers::manager_install::execute(&ctx, *installation).await
+                }
+                None => Err(Error::Conflict(
+                    "Review the manager installation again.".into(),
+                )),
+            },
+            Step::ManagerRemove { removal, .. } => match removal {
+                Some(removal) => {
+                    providers::manager_remove::execute(&ctx, *removal, settings.use_trash).await
+                }
+                None => Err(Error::Conflict("Review the manager removal again.".into())),
+            },
             Step::Command(command) => ctx.runner.run(&command, &ctx.cancel).await.map(|output| {
                 (
                     0,
                     output.stdout.trim().chars().take(4000).collect::<String>(),
                 )
             }),
-            Step::Cache { cache, command } => clean_cache(&ctx, cache, command).await,
+            Step::CacheFiles {
+                cache,
+                size,
+                modified,
+            } => {
+                async {
+                    let (ctx, use_trash) = (ctx.clone(), settings.use_trash);
+                    let root = providers::cache_cleanup::cargo_root(&ctx, &cache)?;
+                    let locks = providers::cache_cleanup::lock_cargo(&root)?;
+                    providers::cache_cleanup::validate_cargo_checkouts(&ctx, &cache).await?;
+                    tokio::task::spawn_blocking(move || {
+                        let _locks = locks;
+                        let bytes = remove_directory(
+                            &root,
+                            &cache.path,
+                            &size,
+                            modified,
+                            use_trash,
+                            &ctx.cancel,
+                        )?;
+                        Ok((
+                            bytes,
+                            if use_trash {
+                                "Moved cache to Trash."
+                            } else {
+                                "Removed cached dependencies."
+                            }
+                            .into(),
+                        ))
+                    })
+                    .await
+                    .map_err(|error| Error::Unavailable(error.to_string()))?
+                }
+                .await
+            }
+            Step::Cache {
+                cache,
+                related,
+                command,
+            } => clean_cache(&ctx, cache, related, command).await,
             Step::Project {
                 project,
                 artifact,
@@ -1005,6 +1471,7 @@ pub async fn execute(
                 path,
                 size,
                 modified,
+                ..
             } => {
                 let token = ctx.cancel.clone();
                 let use_trash = settings.use_trash;
@@ -1030,6 +1497,7 @@ pub async fn execute(
             Ok((bytes, message)) => {
                 result.removed_bytes += bytes;
                 result.items.push(ItemResult {
+                    target_ids,
                     title,
                     status: "success".into(),
                     message,
@@ -1039,6 +1507,7 @@ pub async fn execute(
             Err(Error::Cancelled) => {
                 result.cancelled = true;
                 result.items.push(ItemResult {
+                    target_ids,
                     title,
                     status: "cancelled".into(),
                     message: "Cancellation requested; inspect the inventory for partial changes."
@@ -1048,6 +1517,7 @@ pub async fn execute(
                 break;
             }
             Err(e) => result.items.push(ItemResult {
+                target_ids,
                 title,
                 status: "failed".into(),
                 message: e.to_string(),
@@ -1061,6 +1531,120 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_model_paths_keep_distinct_semantic_target_ids() {
+        let mut owner = crate::model::Provider::empty(ProviderId::Ollama);
+        owner.service = Some(crate::model::ServiceStatus {
+            running: true,
+            owned: false,
+            endpoint: providers::ollama::ENDPOINT.into(),
+        });
+        for name in ["model-a", "model-b"] {
+            owner.assets.push(crate::model::Asset {
+                id: format!("asset-{name}"),
+                name: name.into(),
+                version: "digest".into(),
+                path: PathBuf::from("/shared/models"),
+                size: Default::default(),
+                last_used: None,
+                modified: None,
+                used_by: vec![],
+                can_remove: true,
+                note: None,
+            });
+        }
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        let plan = prepare_steps(
+            ActionRequest::RemoveAssets {
+                provider: ProviderId::Ollama,
+                ids: vec!["asset-model-b".into(), "asset-model-a".into()],
+            },
+            &Inventory {
+                providers: vec![owner],
+                ..Default::default()
+            },
+            &Settings::default(),
+            &ctx,
+        )
+        .unwrap();
+        for step in &plan.steps {
+            let Step::Ollama { name, .. } = step else {
+                panic!("expected a model step")
+            };
+            assert_eq!(step.target_ids(), vec![format!("asset-{name}")]);
+        }
+    }
+
+    #[test]
+    fn grouped_caches_and_both_tool_execution_routes_preserve_target_ids() {
+        let cache = |id: &str| Cache {
+            id: id.into(),
+            provider: ProviderId::Jvm,
+            name: id.into(),
+            path: PathBuf::from("/cache").join(id),
+            size: Default::default(),
+            strategy: "gradle-caches".into(),
+            warning: String::new(),
+            can_clean: true,
+        };
+        let step = Step::Cache {
+            cache: cache("gradle-cache"),
+            related: vec![cache("gradle-distributions")],
+            command: CommandSpec::new("unused", ["--version"]),
+        };
+        assert_eq!(
+            step.target_ids(),
+            vec!["gradle-cache", "gradle-distributions"]
+        );
+        let tool = providers::basic_tool("formatter", "1.0.0".into(), "npm", None);
+        let id = tool.id.clone();
+        let step = Step::Tool {
+            tool,
+            remove: false,
+            command: CommandSpec::new("unused", ["--version"]),
+        };
+        assert_eq!(step.target_ids(), vec![id]);
+        assert_eq!(
+            native_target_ids(&ActionRequest::UpdateTool {
+                provider: ProviderId::Go,
+                id: "native-sdk-tool".into()
+            }),
+            vec!["native-sdk-tool"]
+        );
+        assert!(
+            native_target_ids(&ActionRequest::InstallRuntime {
+                provider: ProviderId::Go,
+                manager: "go".into(),
+                version: "1.26.0".into()
+            })
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn manager_installation_retains_the_reviewed_cleanup_policy() {
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        for use_trash in [true, false] {
+            let settings = Settings {
+                use_trash,
+                ..Default::default()
+            };
+            let plan = prepare_steps(
+                ActionRequest::InstallManager {
+                    provider: ProviderId::Js,
+                    manager: "fnm".into(),
+                },
+                &Inventory::default(),
+                &settings,
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(plan.view.use_trash, settings.use_trash);
+            assert_eq!(plan.view.kind, "installManager");
+        }
+    }
+
     use crate::{model::silent_progress, scanner};
 
     #[tokio::test]
@@ -1153,6 +1737,7 @@ mod tests {
                 runtime_dependents: vec![],
             },
             steps: vec![Step::Asset {
+                id: "fixture-asset".into(),
                 root: root_path,
                 modified: modified(&path),
                 path,
@@ -1173,6 +1758,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.items[0].status, "success");
+        assert_eq!(result.items[0].target_ids, vec!["fixture-asset"]);
         assert_eq!(result.removed_bytes, 2 * 1024 * 1024);
         assert_eq!(result.reclaimed_bytes, None);
         assert_eq!(
