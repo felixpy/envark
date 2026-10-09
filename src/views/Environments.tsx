@@ -202,10 +202,15 @@ export default function Environments({ id }: { id: ProviderId }) {
                 reason={
                   busyReason ||
                   (!provider.managers.some((m) => m.supportsInstall)
-                    ? t(
-                        '请先安装支持的版本管理器，再刷新环境。',
-                        'Use Install manager above to add a version manager.',
-                      )
+                    ? id === 'js' || id === 'py'
+                      ? t(
+                          '请通过上方“安装管理器”添加版本管理器，安装后会自动刷新。',
+                          'Use Install manager above; the environment refreshes automatically afterward.',
+                        )
+                      : t(
+                          '此操作需要已检测到的受支持版本管理器。',
+                          'This action requires a detected, supported version manager.',
+                        )
                     : null)
                 }
                 onClick={() => {
