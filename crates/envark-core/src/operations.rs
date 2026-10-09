@@ -608,7 +608,12 @@ fn prepare_steps(
                     "This installation must be managed with its original installer.".into(),
                 ));
             }
-            let command = providers::tool_command(ctx, tool, remove)?;
+            let command = if !remove && providers::package_managers::handles(tool) {
+                providers::updates::require_upgrade(tool)?;
+                providers::package_managers::command(ctx, tool)?
+            } else {
+                providers::tool_command(ctx, tool, remove)?
+            };
             view.items.push(command_description(
                 format!("{} {}", if remove { "Remove" } else { "Update" }, tool.name),
                 &command,
@@ -868,6 +873,17 @@ async fn run_tool(
     if !remove {
         providers::updates::verify_installed(ctx, &tool).await?;
     }
+    if !remove && providers::package_managers::handles(&tool) {
+        let current = providers::package_managers::command(ctx, &tool)?;
+        if current.program != command.program
+            || current.args != command.args
+            || current.env != command.env
+        {
+            return Err(Error::Conflict(
+                "The package manager changed after review. Create a new plan.".into(),
+            ));
+        }
+    }
     if tool.source == "pnpm" {
         let path = tool.path.as_ref().ok_or_else(|| {
             Error::Conflict("The tool no longer has an installation path.".into())
@@ -899,6 +915,34 @@ async fn run_tool(
         }
     }
     let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    if !remove && providers::package_managers::handles(&tool) {
+        let installed = providers::package_managers::installed_version(ctx, &tool).await?;
+        let mut verified = tool.clone();
+        verified.latest = Some(installed.clone());
+        if !providers::updates::classify(&verified).is_upgrade() {
+            return Err(Error::Conflict(format!(
+                "The update command finished, but {} is still at version {}.",
+                tool.name, installed
+            )));
+        }
+        verified.version = tool.latest.clone().expect("verified upgrade");
+        if matches!(
+            providers::updates::classify(&verified),
+            crate::model::UpdateStatus::Ahead | crate::model::UpdateStatus::Unknown
+        ) {
+            return Err(Error::Conflict(format!(
+                "{} is now at version {}, but the reviewed version {} was not installed.",
+                tool.name, installed, verified.version
+            )));
+        }
+        return Ok((
+            0,
+            format!(
+                "{} updated from {} to {}.",
+                tool.name, tool.version, installed
+            ),
+        ));
+    }
     Ok((0, output.stdout.trim().chars().take(4000).collect()))
 }
 

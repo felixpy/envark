@@ -27,13 +27,14 @@ interface Store {
   go(view: View, provider?: ProviderId | null, focus?: NavigationFocus): void
   busy: boolean
   task: {
-    kind: 'scan' | 'prepare' | 'execute'
+    kind: 'scan' | 'updates' | 'prepare' | 'execute'
     startedAt: number
     request: ActionRequest | null
   } | null
   progress: Progress | null
   cancel(): Promise<void>
   refresh(): Promise<void>
+  checkToolUpdates(provider: ProviderId): Promise<void>
   saveSettings(settings: Settings): Promise<boolean>
   setTheme(theme: Settings['theme']): Promise<void>
   setDisabledShortcuts(disabled: Settings['disabledShortcuts']): Promise<void>
@@ -221,6 +222,26 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       setNavigationKey((key) => key + 1)
     },
     refresh,
+    checkToolUpdates: async (provider) => {
+      if (running.current) return
+      const id = begin('updates')
+      try {
+        const updated = await api.checkToolUpdates(provider, id)
+        setData((current) => ({
+          ...current,
+          inventory: {
+            ...current.inventory,
+            providers: current.inventory.providers.map((item) =>
+              item.id === updated.id ? updated : item,
+            ),
+          },
+        }))
+      } catch (cause) {
+        fail(cause)
+      } finally {
+        finish()
+      }
+    },
     saveSettings,
     setTheme: async (theme) => {
       try {

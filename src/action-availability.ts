@@ -63,21 +63,18 @@ export function toolUpdateReason(tool: Tool, checkUpdates: boolean, t: Translate
     return (
       tool.note ||
       t(
-        '无法通过原安装来源更新，请使用原工具管理。',
-        'Updates through the original installer are unavailable. Manage this tool with its owner.',
+        '尚未识别此工具的更新方式。',
+        'The update method for this installation has not been identified.',
       )
     )
   switch (updateKind(tool)) {
     case 'unknown':
       return checkUpdates
         ? t(
-            '尚未获取更新结果，请重新扫描；失败原因见扫描提示。',
-            'No update result yet. Rescan and check any scan notices.',
+            '尚未获取版本信息，请点击“重新检查更新”。',
+            'No version information yet. Click Check updates again.',
           )
-        : t(
-            '更新检查未开启，请在设置中开启后重新扫描。',
-            'Enable update checks in Settings, then rescan.',
-          )
+        : t('更新检查未开启，请先在设置中开启。', 'Enable update checks in Settings first.')
     case 'latest':
       return t('已是最新版本，无需更新。', 'Already up to date.')
     case 'ahead':

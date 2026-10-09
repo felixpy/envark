@@ -75,7 +75,26 @@ pub(crate) async fn refresh(
             total: None,
             message: String::new(),
         });
-        let found = providers::discover_selected(ctx.clone(), &selected).await?;
+        let mut found = providers::discover_selected(ctx.clone(), &selected).await?;
+        for provider in &mut found.providers {
+            if let Some(previous) = inventory.providers.iter().find(|old| old.id == provider.id) {
+                for tool in provider
+                    .tools
+                    .iter_mut()
+                    .chain(&mut provider.package_managers)
+                {
+                    if let Some(old) = previous
+                        .tools
+                        .iter()
+                        .chain(&previous.package_managers)
+                        .find(|old| old.id == tool.id && old.source == tool.source)
+                    {
+                        tool.latest = old.latest.clone();
+                        tool.update_status = providers::updates::classify(tool);
+                    }
+                }
+            }
+        }
         inventory.providers.retain(|p| !selected.contains(&p.id));
         inventory.providers.extend(found.providers);
         // Discovery has no cache-size scan. Preserve known measurements for

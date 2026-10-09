@@ -415,11 +415,7 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         if let Ok(version) = ctx.read(name, &["--version"]).await {
             provider.package_managers.push(basic_tool(
                 name,
-                version
-                    .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("unknown")
-                    .into(),
+                super::package_managers::version(&version).unwrap_or_else(|| "unknown".into()),
                 "PATH",
                 ctx.executable(name),
             ));

@@ -57,6 +57,9 @@ function fixture(configure?: (data: Snapshot) => void) {
     useTrash: true,
   }))
   const api: Backend = {
+    checkToolUpdates: async () => {
+      throw new Error('Unexpected update check')
+    },
     native: false,
     snapshot: async () => data,
     refresh: async () => data,

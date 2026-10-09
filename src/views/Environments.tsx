@@ -331,6 +331,7 @@ export default function Environments({ id }: { id: ProviderId }) {
       {(tab === 'pm' || tab === 'global') && (
         <Tools
           key={tab}
+          providerId={id}
           items={tab === 'pm' ? provider.packageManagers : provider.tools}
           global={tab === 'global'}
           onUpdate={(item) => operation('updateTool', item.id)}
@@ -663,12 +664,14 @@ export default function Environments({ id }: { id: ProviderId }) {
 }
 
 function Tools({
+  providerId,
   items,
   global,
   onUpdate,
   onBatch,
   onRemove,
 }: {
+  providerId: ProviderId
   items: Tool[]
   global: boolean
   onUpdate(item: Tool): void
@@ -710,8 +713,8 @@ function Tools({
                 'Inspect installation owners, runtime bindings, and available actions.',
               )
             : t(
-                '负责依赖解析与构建，更新方式取决于原始安装来源。',
-                'Dependency and build tooling, managed by its original installer.',
+                '查看包管理器版本，并在应用内检查和安装更新。',
+                'Inspect package manager versions, check for updates, and install them here.',
               )}
         </CardDescription>
         <CardAction className="flex items-center gap-2">
@@ -725,7 +728,9 @@ function Tools({
             variant="outline"
             size="sm"
             reason={busyReason}
-            onClick={() => (s.data.settings.checkUpdates ? void s.refresh() : s.go('settings'))}
+            onClick={() =>
+              s.data.settings.checkUpdates ? void s.checkToolUpdates(providerId) : s.go('settings')
+            }
           >
             {s.data.settings.checkUpdates
               ? t('重新检查更新', 'Check updates again')
@@ -831,6 +836,11 @@ function Tools({
                   {['major', 'minor'].includes(updateKind(item)) && (
                     <span className="block text-emerald-600">→ {item.latest}</span>
                   )}
+                  {updateKind(item) === 'latest' && (
+                    <span className="block text-muted-foreground">
+                      {t('已是最新版本', 'Up to date')}
+                    </span>
+                  )}
                   {updateKind(item) === 'ahead' && (
                     <span className="block text-muted-foreground">
                       {t('高于已发布版本', 'Ahead of published version')}
@@ -843,7 +853,9 @@ function Tools({
                   )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
-                  {item.source}
+                  {(
+                    { homebrew: 'Homebrew', bun: 'Bun', 'uv-self': 'uv' } as Record<string, string>
+                  )[item.source] ?? item.source}
                   <span className="mt-1 block font-mono">
                     {item.runtime ?? t('独立安装', 'Standalone')}
                   </span>

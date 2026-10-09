@@ -1,7 +1,7 @@
 use envark_core::{
     config::ConfigContent,
     engine::{Engine, Snapshot},
-    model::{Progress, ProgressSink, Settings, Shortcut},
+    model::{Progress, ProgressSink, Provider, ProviderId, Settings, Shortcut},
     operations::{ActionRequest, OperationResult, PlanView},
 };
 use std::{collections::BTreeSet, sync::Arc};
@@ -116,6 +116,19 @@ async fn refresh(
 }
 
 #[tauri::command]
+async fn check_tool_updates(
+    app: tauri::AppHandle,
+    engine: State<'_, Engine>,
+    provider: ProviderId,
+    job_id: String,
+) -> NativeResult<Provider> {
+    engine
+        .check_tool_updates(provider, job_id, progress(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn cancel(engine: State<'_, Engine>, job_id: String) -> NativeResult<()> {
     engine.cancel(&job_id).await;
     Ok(())
@@ -213,6 +226,7 @@ pub fn run() {
             snapshot,
             save_settings,
             refresh,
+            check_tool_updates,
             cancel,
             prepare_operation,
             refresh_disks,

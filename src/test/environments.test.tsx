@@ -1,9 +1,10 @@
 import { expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { backend } from '@/bridge'
-import { emptyProvider, emptySnapshot, type Provider, type Tool } from '@/domain'
+import { backend, type Backend } from '@/bridge'
+import { emptyProvider, emptySnapshot, type Provider, type ProviderId, type Tool } from '@/domain'
 import { StoreProvider } from '@/store'
+import { TaskProgress } from '@/components/TaskProgress'
 import Environments from '@/views/Environments'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -129,4 +130,80 @@ it('does not mistake an inherited active runtime for the manager default', async
     ),
   )
   expect(screen.getByRole('button', { name: 'Remove' }).getAttribute('aria-disabled')).toBe('true')
+})
+
+for (const id of ['js', 'py', 'jvm', 'rust', 'go'] as ProviderId[]) {
+  for (const tab of ['Global tools', 'Package managers']) {
+    it(`${id} ${tab} checks versions without refreshing projects or environments`, async () => {
+      const provider = emptyProvider(id)
+      const data = structuredClone(emptySnapshot)
+      data.settings.language = 'en'
+      data.settings.scanOnLaunch = false
+      data.settings.checkUpdates = true
+      data.inventory.providers = [provider]
+      const refresh = vi.fn(async () => data)
+      let complete!: (provider: Provider) => void
+      const checkToolUpdates = vi.fn(
+        () =>
+          new Promise<Provider>((resolve) => {
+            complete = resolve
+          }),
+      )
+      const cancel = vi.fn(async () => {})
+      const api: Backend = {
+        ...backend,
+        native: false,
+        snapshot: async () => data,
+        refresh,
+        checkToolUpdates,
+        cancel,
+      }
+      render(
+        <StoreProvider api={api}>
+          <TaskProgress />
+          <Environments id={id} />
+        </StoreProvider>,
+        { wrapper: TooltipProvider },
+      )
+      const user = userEvent.setup()
+      await user.click(await screen.findByRole('tab', { name: tab }))
+      await user.click(screen.getByRole('button', { name: 'Check updates again' }))
+      expect(checkToolUpdates).toHaveBeenCalledWith(id, expect.any(String))
+      expect(screen.getByRole('status').textContent).toContain('Checking tool updates')
+      expect(screen.queryByText(/Scanning/)).toBeNull()
+      await user.click(screen.getByRole('button', { name: 'Check updates again' }))
+      expect(checkToolUpdates).toHaveBeenCalledTimes(1)
+      complete(provider)
+      await waitFor(() => expect(screen.queryByRole('status')).toBeNull())
+      expect(refresh).not.toHaveBeenCalled()
+    })
+  }
+}
+
+it('a discovered Bun update can be reviewed from the package manager tab', async () => {
+  const provider = emptyProvider('js')
+  provider.packageManagers = [
+    {
+      id: 'bun',
+      name: 'bun',
+      version: '1.3.0',
+      latest: '1.4.0',
+      updateStatus: 'minor',
+      source: 'bun',
+      runtime: null,
+      path: '/example/.bun/bin/bun',
+      size: null,
+      canUpdate: true,
+      canRemove: false,
+      note: null,
+    },
+  ]
+  const prepare = fixture(provider)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('tab', { name: 'Package managers' }))
+  await user.click(screen.getByRole('button', { name: 'Update' }))
+  expect(prepare).toHaveBeenCalledWith(
+    { kind: 'updateTool', provider: 'js', id: 'bun' },
+    expect.any(String),
+  )
 })

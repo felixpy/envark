@@ -1,6 +1,7 @@
 mod javascript;
 mod languages;
 pub mod ollama;
+pub(crate) mod package_managers;
 pub mod python;
 mod resources;
 mod shell_managers;
@@ -244,6 +245,7 @@ pub(crate) async fn discover_selected(
                 }
                 _ => resources::discover(&ctx, &mut provider).await,
             };
+            package_managers::resolve(&ctx, &mut provider).await;
             provider.detected = !provider.runtimes.is_empty()
                 || !provider.managers.is_empty()
                 || !provider.package_managers.is_empty()

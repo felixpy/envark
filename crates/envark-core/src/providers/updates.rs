@@ -16,8 +16,10 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
     for provider in providers.iter() {
         for tool in provider.tools.iter().chain(&provider.package_managers) {
             let (base, suffix, field) = match tool.source.as_str() {
-                "npm" | "pnpm" | "yarn" => ("https://registry.npmjs.org", "/latest", "version"),
-                "uv" | "pipx" => ("https://pypi.org/pypi", "/json", "info.version"),
+                "npm" | "pnpm" | "yarn" | "bun" => {
+                    ("https://registry.npmjs.org", "/latest", "version")
+                }
+                "uv" | "pipx" | "uv-self" => ("https://pypi.org/pypi", "/json", "info.version"),
                 "cargo" => (
                     "https://crates.io/api/v1/crates",
                     "",
@@ -39,6 +41,26 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
         }
     }
     let mut updates = std::collections::HashMap::new();
+    if let Ok(ctx) = super::Context::new(cancel.clone()) {
+        for tool in providers
+            .iter()
+            .flat_map(|provider| &provider.package_managers)
+            .filter(|tool| tool.source == "homebrew")
+        {
+            if cancel.is_cancelled() {
+                return;
+            }
+            if let Some(path) = &tool.path
+                && let Some(formula) = super::package_managers::brew_formula(&ctx, path).await
+                && let Ok(output) = ctx.read("brew", &["info", "--json=v2", &formula]).await
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&output)
+                && let Some(version) = json["formulae"][0]["versions"]["stable"].as_str()
+                && json["formulae"][0]["pinned"].as_bool() != Some(true)
+            {
+                updates.insert(tool.id.clone(), version.to_owned());
+            }
+        }
+    }
     for batch in requests.chunks(4) {
         if cancel.is_cancelled() {
             break;
@@ -97,7 +119,7 @@ pub fn classify(tool: &Tool) -> UpdateStatus {
         return UpdateStatus::Unknown;
     };
     let (order, major) = match tool.source.as_str() {
-        "uv" | "pipx" => {
+        "uv" | "pipx" | "uv-self" | "homebrew" => {
             let (Ok(installed), Ok(available)) = (
                 tool.version.parse::<pep440_rs::Version>(),
                 latest.parse::<pep440_rs::Version>(),
@@ -110,7 +132,7 @@ pub fn classify(tool: &Tool) -> UpdateStatus {
                     || available.release()[0] > installed.release()[0],
             )
         }
-        "npm" | "pnpm" | "yarn" | "cargo" | "go" => {
+        "npm" | "pnpm" | "yarn" | "cargo" | "go" | "bun" => {
             let (Ok(installed), Ok(available)) = (
                 semver::Version::parse(tool.version.trim_start_matches('v')),
                 semver::Version::parse(latest.trim_start_matches('v')),
@@ -140,6 +162,15 @@ pub fn require_upgrade(tool: &Tool) -> Result<()> {
 }
 
 pub async fn verify_installed(ctx: &super::Context, tool: &Tool) -> Result<()> {
+    if super::package_managers::handles(tool) {
+        super::package_managers::validate_owner(ctx, tool).await?;
+        if super::package_managers::installed_version(ctx, tool).await? != tool.version {
+            return Err(Error::Conflict(
+                "The package manager version changed after review. Check updates again.".into(),
+            ));
+        }
+        return require_upgrade(tool);
+    }
     let version = match tool.source.as_str() {
         "npm" | "pnpm" => {
             let path = tool
@@ -211,6 +242,9 @@ mod tests {
     #[test]
     fn version_ordering_respects_each_package_ecosystem() {
         for (source, installed, latest, expected) in [
+            ("bun", "1.3.0", "1.4.0", UpdateStatus::Minor),
+            ("uv-self", "0.10.0", "0.11.0", UpdateStatus::Minor),
+            ("homebrew", "8.10", "8.11", UpdateStatus::Minor),
             ("npm", "2.3.0", "2.2.0", UpdateStatus::Ahead),
             ("npm", "10.0.0", "9.0.0", UpdateStatus::Ahead),
             (
