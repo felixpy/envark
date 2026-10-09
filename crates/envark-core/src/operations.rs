@@ -108,6 +108,7 @@ pub struct PlanView {
     pub created_at: u64,
     pub items: Vec<PlanItem>,
     pub warnings: Vec<String>,
+    // Snapshot of the reviewed setting; native commands may not use Trash.
     pub use_trash: bool,
     pub worktree_changes: Vec<WorktreeChanges>,
     pub runtime_dependents: Vec<crate::runtime_pins::RuntimeDependent>,
@@ -381,9 +382,7 @@ pub async fn prepare_with_progress(
             let item = &mut plan.view.items[index];
             item.bytes = prepared.bytes();
             item.command = prepared.command.as_ref().map(CommandSpec::display);
-            if prepared.command.is_some() {
-                plan.view.use_trash = false;
-            } else if plan.view.use_trash {
+            if prepared.command.is_none() && plan.view.use_trash {
                 plan.view.warnings.push("Manager files will move to the system Trash. They continue to occupy disk space until the Trash is emptied.".into());
             }
             item.restore =
@@ -657,7 +656,6 @@ fn prepare_steps(
         }
         ActionRequest::InstallManager { provider, manager } => {
             view.kind = "installManager".into();
-            view.use_trash = false;
             view.items.push(PlanItem {
                 title: format!("Install {manager}"),
                 path: None,
@@ -1377,6 +1375,30 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manager_installation_retains_the_reviewed_cleanup_policy() {
+        let ctx = Context::new(CancellationToken::new()).unwrap();
+        for use_trash in [true, false] {
+            let settings = Settings {
+                use_trash,
+                ..Default::default()
+            };
+            let plan = prepare_steps(
+                ActionRequest::InstallManager {
+                    provider: ProviderId::Js,
+                    manager: "fnm".into(),
+                },
+                &Inventory::default(),
+                &settings,
+                &ctx,
+            )
+            .unwrap();
+            assert_eq!(plan.view.use_trash, settings.use_trash);
+            assert_eq!(plan.view.kind, "installManager");
+        }
+    }
+
     use crate::{model::silent_progress, scanner};
 
     #[tokio::test]

@@ -318,6 +318,46 @@ mod tests {
             .unwrap();
             let tool = basic_tool(name, "1.0.0".into(), "npm", Some(path.clone()));
             let removal = prepare(&ctx, &tool).await.unwrap();
+            let mut provider = Provider::empty(ProviderId::Js);
+            let mut removable = tool.clone();
+            removable.can_remove = true;
+            provider.package_managers.push(removable);
+            let inventory = crate::model::Inventory {
+                providers: vec![provider],
+                ..Default::default()
+            };
+            for use_trash in [true, false] {
+                let settings = crate::model::Settings {
+                    use_trash,
+                    ..Default::default()
+                };
+                let plan = crate::operations::prepare(
+                    crate::operations::ActionRequest::RemoveTool {
+                        provider: ProviderId::Js,
+                        id: tool.id.clone(),
+                    },
+                    &inventory,
+                    &settings,
+                    &ctx,
+                )
+                .await
+                .unwrap();
+                assert_eq!(plan.view.use_trash, settings.use_trash);
+                assert!(
+                    plan.view.items[0]
+                        .command
+                        .as_ref()
+                        .unwrap()
+                        .contains("uninstall")
+                );
+                assert!(
+                    !plan
+                        .view
+                        .warnings
+                        .iter()
+                        .any(|w| w.contains("will move to the system Trash"))
+                );
+            }
             let command = removal.command.unwrap();
             assert_eq!(command.program, node);
             assert_eq!(
