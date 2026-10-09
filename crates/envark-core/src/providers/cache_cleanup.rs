@@ -90,17 +90,22 @@ pub(crate) async fn validate_cargo_checkouts(ctx: &Context, cache: &Cache) -> Re
     for repository in directories(&cache.path.join("checkouts")) {
         for checkout in directories(&repository) {
             reject_links(&checkout)?;
-            let mut spec =
-                ctx.command("git", &["status", "--porcelain", "--untracked-files=all"])?;
+            let mut spec = ctx.command(
+                "git",
+                &["status", "--porcelain", "-z", "--untracked-files=all"],
+            )?;
             spec.cwd = Some(checkout.clone());
             ctx.apply_read_policy(&mut spec);
-            if !ctx
-                .runner
-                .run(&spec, &ctx.cancel)
-                .await?
+            let output = ctx.runner.run(&spec, &ctx.cancel).await?;
+            // Cargo creates this empty completion marker outside Git. It is not
+            // user work; every other untracked or modified entry is protected.
+            let marker = std::fs::symlink_metadata(checkout.join(".cargo-ok"))
+                .is_ok_and(|meta| meta.is_file() && meta.len() == 0);
+            if output
                 .stdout
-                .trim()
-                .is_empty()
+                .split('\0')
+                .filter(|entry| !entry.is_empty())
+                .any(|entry| entry != "?? .cargo-ok" || !marker)
             {
                 return Err(Error::Conflict(format!(
                     "{} has local changes. This cached checkout is kept to preserve your work.",
@@ -403,6 +408,12 @@ mod tests {
         )
         .unwrap();
         assert!(validate_cargo_checkouts(&ctx, &git_cache).await.is_err());
+        std::fs::remove_file(checkout.join("local-work")).unwrap();
+        std::fs::write(checkout.join(".cargo-ok"), "").unwrap();
+        validate_cargo_checkouts(&ctx, &git_cache).await.unwrap();
+        std::fs::write(checkout.join(".cargo-ok"), "local user data").unwrap();
+        assert!(validate_cargo_checkouts(&ctx, &git_cache).await.is_err());
+
         std::os::unix::fs::symlink(&root, cargo.join("registry")).unwrap();
         assert!(cargo_root(&ctx, &registry).is_err());
 
