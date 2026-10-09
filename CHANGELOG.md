@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/felixpy/envark/compare/v0.3.3...v0.3.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* **operations:** scope refreshes and improve runtime and cleanup flows ([#33](https://github.com/felixpy/envark/issues/33)) ([928f616](https://github.com/felixpy/envark/commit/928f61640ad321385249558b2fa75ce87e3fa1c6))
+
 ## [0.3.3](https://github.com/felixpy/envark/compare/v0.3.2...v0.3.3) (2026-10-08)
 
 
