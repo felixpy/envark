@@ -28,13 +28,12 @@ pub(crate) fn cargo_root(ctx: &Context, cache: &Cache) -> Result<PathBuf> {
 }
 
 pub(crate) fn lock_cargo(root: &Path) -> Result<Vec<std::fs::File>> {
+    reject_links(root)?;
     let mut guards = vec![];
     // Match Cargo's MutateExclusive protocol: mutate lock, then download lock.
     for name in [".package-cache-mutate", ".package-cache"] {
         let path = root.join(name);
-        if path.exists() {
-            reject_links(&path)?;
-        }
+        reject_links(&path)?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -254,10 +253,22 @@ mod tests {
     #[test]
     fn cargo_cleanup_requires_both_cache_locks() {
         let root = tempfile::tempdir().unwrap();
-        let first = lock_cargo(root.path()).unwrap();
-        assert!(lock_cargo(root.path()).is_err());
+        let path = root.path().canonicalize().unwrap();
+        let first = lock_cargo(&path).unwrap();
+        assert!(lock_cargo(&path).is_err());
         drop(first);
-        assert!(lock_cargo(root.path()).is_ok());
+        lock_cargo(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_lock_files_cannot_escape_through_dangling_links() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().canonicalize().unwrap();
+        let target = path.join("outside");
+        std::os::unix::fs::symlink(&target, path.join(".package-cache-mutate")).unwrap();
+        assert!(lock_cargo(&path).is_err());
+        assert!(!target.exists());
     }
 
     #[cfg(unix)]

@@ -132,7 +132,7 @@ pub(crate) async fn validate(ctx: &Context, tool: &Tool) -> Result<()> {
         probe.args = vec![
             "status".into(),
             "--porcelain".into(),
-            "--untracked-files=no".into(),
+            "--untracked-files=all".into(),
         ];
         if !ctx
             .runner
@@ -344,5 +344,43 @@ mod tests {
                     .is_err()
             );
         }
+
+        let install = root.join(".nvm");
+        std::fs::write(install.join(".gitignore"), "versions/\naliases/\nversion\n").unwrap();
+        for args in [
+            vec!["init"],
+            vec![
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/nvm-sh/nvm.git",
+            ],
+            vec!["add", "nvm.sh", ".gitignore"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let mut spec = ctx.command("git", &args).unwrap();
+            spec.cwd = Some(install.clone());
+            ctx.runner.run(&spec, &ctx.cancel).await.unwrap();
+        }
+        let tool = basic_tool(
+            "nvm",
+            "2.0.0".into(),
+            "nvm-script",
+            Some(install.join("nvm.sh")),
+        );
+        validate(&ctx, &tool).await.unwrap();
+        std::fs::write(install.join("local-manager-extension"), "keep local work").unwrap();
+        assert!(validate(&ctx, &tool).await.is_err());
+        std::fs::remove_file(install.join("local-manager-extension")).unwrap();
+        std::fs::write(install.join("nvm.sh"), "local modification").unwrap();
+        assert!(validate(&ctx, &tool).await.is_err());
     }
 }

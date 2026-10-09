@@ -227,7 +227,10 @@ mod tests {
             );
             tool.latest = Some("4.0.0".into());
             let spec = corepack_command(&ctx, &tool, true).unwrap();
-            assert_eq!(spec.program, node);
+            assert_eq!(
+                std::fs::canonicalize(&spec.program).unwrap(),
+                std::fs::canonicalize(&node).unwrap()
+            );
             assert_eq!(
                 &spec.args[1..],
                 &["install", "--global", &format!("{name}@4.0.0")]
@@ -261,7 +264,10 @@ mod tests {
         .unwrap();
         let ctx = Context::new(CancellationToken::new()).unwrap();
         let spec = cli_command(&ctx, &wrapper, "pnpm", &["--version"]).unwrap();
-        assert_eq!(spec.program, node);
+        assert_eq!(
+            std::fs::canonicalize(&spec.program).unwrap(),
+            std::fs::canonicalize(&node).unwrap()
+        );
         assert_eq!(
             std::fs::canonicalize(&spec.args[0]).unwrap(),
             std::fs::canonicalize(root.join("dist/pnpm.js")).unwrap()
