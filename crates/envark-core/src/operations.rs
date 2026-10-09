@@ -730,11 +730,6 @@ fn remove_directory(
         || expected.fingerprint.is_none()
         || current.fingerprint != expected.fingerprint
     {
-        #[cfg(test)]
-        eprintln!(
-            "Measurement changed for {}: expected {expected:#?}, actual {current:#?}",
-            path.display()
-        );
         return Err(Error::Conflict(
             "The contents changed after review. Scan again before cleaning.".into(),
         ));

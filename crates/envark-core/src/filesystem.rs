@@ -102,7 +102,13 @@ pub(crate) fn measure_with(
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        match entry.and_then(|e| e.metadata().map(|m| (e, m))) {
+        // WalkDir caches directory-entry metadata on Windows. Read it through
+        // the same filesystem API for every pass so NTFS enumeration snapshots
+        // cannot produce a stale size or a different cleanup fingerprint.
+        match entry
+            .map_err(std::io::Error::from)
+            .and_then(|e| fs::symlink_metadata(e.path()).map(|m| (e, m)))
+        {
             Ok((entry, meta)) => {
                 inspect(entry.path(), &meta)?;
                 let relative = entry.path().strip_prefix(path).unwrap_or(entry.path());
@@ -285,6 +291,32 @@ mod tests {
         assert_ne!(
             measured.fingerprint,
             measure(&canonical_root, &CancellationToken::new())
+                .unwrap()
+                .fingerprint
+        );
+    }
+    #[test]
+    fn measurement_reads_current_metadata_after_directory_entries_are_buffered() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("a-trigger"), "a").unwrap();
+        let target = root.join("z-target");
+        fs::write(&target, "old").unwrap();
+        let measured = measure_with(&root, &CancellationToken::new(), |path, _| {
+            // Sorted traversal has already buffered both entries here. Windows
+            // DirEntry metadata must not hide a later update to the second file.
+            if path.file_name().is_some_and(|name| name == "a-trigger") {
+                fs::write(&target, "new contents")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert!(measured.complete);
+        assert_eq!(measured.files, 2);
+        assert_eq!(measured.bytes, 13);
+        assert_eq!(
+            measured.fingerprint,
+            measure(&root, &CancellationToken::new())
                 .unwrap()
                 .fingerprint
         );
