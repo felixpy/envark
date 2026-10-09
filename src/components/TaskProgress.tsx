@@ -52,7 +52,13 @@ export function TaskProgress() {
       {progress &&
         progress.total === null &&
         progress.completed > 0 &&
-        progress.stage !== 'discover' && (
+        [
+          'prepare',
+          'measure-projects',
+          'measure-worktrees',
+          'measure-caches',
+          'refresh-affected',
+        ].includes(progress.stage) && (
           <p className="text-xs text-muted-foreground">
             {t('已检查', 'Checked')} {progress.completed} {t('个条目', 'entries')}
           </p>

@@ -55,6 +55,29 @@ async function fixture(overrides: Partial<Backend> = {}) {
 
 afterEach(() => vi.useRealTimers())
 
+it('reports model download bytes without describing them as scanned entries', async () => {
+  let resolve!: (value: Plan) => void
+  const prepare = vi.fn(
+    () =>
+      new Promise<Plan>((done) => {
+        resolve = done
+      }),
+  )
+  const f = await fixture({ prepare })
+  let pending!: Promise<void>
+  act(() => {
+    pending = f.state().prepare({ kind: 'downloadAsset', provider: 'ollama', name: 'tiny' })
+  })
+  const jobId = (prepare.mock.calls[0] as unknown as [unknown, string])[1]
+  f.emit({ jobId, stage: 'download-model', completed: 1048576, total: null, message: '' })
+  expect(screen.getByRole('status').textContent).toContain('Downloading model · 1.0 MB')
+  expect(screen.getByRole('status').textContent).not.toContain('Checked')
+  await act(async () => {
+    resolve(plan)
+    await pending
+  })
+})
+
 it('makes preparation visible, prevents competing tasks, filters stale progress, and cancels the correct job', async () => {
   let reject!: (error: Error) => void
   const prepare = vi.fn(
