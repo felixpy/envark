@@ -58,6 +58,10 @@ pub(crate) async fn refresh(
         .zip(&result.items)
         .filter(|(_, item)| item.status != "skipped")
         .filter_map(|(target, _)| target)
+        .flat_map(|target| match target {
+            RefreshTarget::Caches(ids) => ids.into_iter().map(RefreshTarget::Cache).collect(),
+            target => vec![target],
+        })
         .collect();
     let mut selected = vec![];
     for target in &targets {
@@ -176,7 +180,7 @@ pub(crate) async fn refresh(
                         };
                     }
                 }
-                RefreshTarget::Provider(_) => {}
+                RefreshTarget::Provider(_) | RefreshTarget::Caches(_) => {}
             }
         }
         for id in worktrees {

@@ -1,9 +1,12 @@
+pub(crate) mod cache_cleanup;
 mod javascript;
+pub(crate) mod js_tooling;
 mod languages;
 pub mod ollama;
 pub(crate) mod package_managers;
 pub mod python;
 mod resources;
+pub(crate) mod script_installers;
 mod shell_managers;
 mod tool_commands;
 pub use tool_commands::tool_command;
@@ -62,6 +65,7 @@ impl Context {
             self.home.join(".bun/bin"),
             self.home.join(".pyenv/bin"),
             self.home.join(".local/share/fnm"),
+            self.home.join(".fnm"),
             self.data.join("fnm"),
             self.home.join("AppData/Local/fnm"),
             self.home.join("AppData/Local/Programs/Ollama"),
@@ -111,7 +115,30 @@ impl Context {
                 candidates.push(PathBuf::from("/usr/local/go/bin"));
             }
         }
-        candidates.into_iter().map(|dir| dir.join(&file)).collect()
+        if name == "pnpm" {
+            let mut homes = vec![
+                self.data.join("pnpm"),
+                self.home.join("Library/pnpm"),
+                self.home.join("AppData/Local/pnpm"),
+            ];
+            if let Some(home) = std::env::var_os("PNPM_HOME") {
+                homes.insert(0, home.into());
+            }
+            for home in homes {
+                candidates.push(home.join("bin"));
+                candidates.push(home);
+            }
+        }
+        candidates
+            .into_iter()
+            .flat_map(|dir| {
+                let mut paths = vec![dir.join(&file)];
+                if cfg!(windows) && ["npm", "pnpm", "yarn", "corepack"].contains(&name) {
+                    paths.push(dir.join(format!("{name}.cmd")));
+                }
+                paths
+            })
+            .collect()
     }
 
     pub fn command(&self, name: &str, args: &[&str]) -> Result<CommandSpec> {
@@ -123,6 +150,11 @@ impl Context {
                 "{name} is not installed or cannot be found in PATH."
             ))
         })?;
+        if ["npm", "pnpm", "yarn", "corepack"].contains(&name)
+            && let Some(spec) = js_tooling::cli_command(self, &program, name, args)
+        {
+            return Ok(spec);
+        }
         // Use Node directly for npm, avoiding cmd.exe and shell metacharacters on Windows.
         if name == "npm"
             && let Some(node) = self.executable("node")
@@ -164,6 +196,14 @@ impl Context {
 
     fn apply_read_policy(&self, spec: &mut CommandSpec) {
         spec.cwd = Some(self.home.clone());
+        spec.env
+            .insert("COREPACK_ENABLE_PROJECT_SPEC".into(), "0".into());
+        spec.env
+            .insert("COREPACK_ENABLE_AUTO_PIN".into(), "0".into());
+        spec.env
+            .insert("COREPACK_DEFAULT_TO_LATEST".into(), "0".into());
+        spec.env
+            .insert("COREPACK_ENABLE_NETWORK".into(), "0".into());
         spec.env
             .insert("UV_PYTHON_DOWNLOADS".into(), "never".into());
         spec.env.insert("GOTOOLCHAIN".into(), "local".into());
@@ -293,7 +333,12 @@ pub(super) fn cache(
     if !path.is_dir() {
         return None;
     }
-    Some(Cache { id: id_for("cache", &path), provider, name: name.into(), path, size: Default::default(), strategy: strategy.into(), can_clean, warning: "Cache size is an upper bound; native pruning may retain entries that are still referenced. Offline builds may need to download dependencies again.".into() })
+    Some(Cache { id: id_for("cache", &path), provider, name: name.into(), path, size: Default::default(), strategy: strategy.into(), can_clean, warning: match strategy {
+        "maven-repository" => "This repository can contain locally published artifacts that cannot be downloaded again. Blanket cache cleanup is disabled to preserve them.",
+        "cargo-registry" | "cargo-git" => "Downloaded dependencies are removed while holding Cargo cache locks. Installed tools and configuration are preserved. Dependencies will be downloaded again when needed.",
+        "gradle-caches" | "gradle-dists" => "Gradle applies its retention policy to both caches and distributions. Recently used entries are retained; this does not empty every cache.",
+        _ => "Cache size is an upper bound; native pruning may retain entries that are still referenced. Offline builds may need to download dependencies again.",
+    }.into() })
 }
 
 pub(super) fn basic_tool(name: &str, version: String, source: &str, path: Option<PathBuf>) -> Tool {
@@ -429,6 +474,8 @@ pub fn runtime_command(
 
 pub fn cache_command(ctx: &Context, cache: &Cache) -> Result<CommandSpec> {
     let mut spec = match cache.strategy.as_str() {
+        "pip-purge" => cache_cleanup::pip_command(ctx, &cache.path),
+        "gradle-caches" | "gradle-dists" => cache_cleanup::gradle_command(ctx, cache),
         "npm-verify" => ctx.command("npm", &["cache", "verify"]),
         "pnpm-prune" => ctx.command("pnpm", &["store", "prune"]),
         "yarn-clean" => ctx.command("yarn", &["cache", "clean"]),
@@ -436,11 +483,12 @@ pub fn cache_command(ctx: &Context, cache: &Cache) -> Result<CommandSpec> {
         "go-build" => ctx.command("go", &["clean", "-cache"]),
         "go-modules" => ctx.command("go", &["clean", "-modcache"]),
         _ => Err(Error::Unavailable(
-            "This cache must be managed by its owning tool.".into(),
+            "No cleanup strategy is registered for this cache.".into(),
         )),
     }?;
     let path = cache.path.to_string_lossy().into_owned();
     match cache.strategy.as_str() {
+        "pip-purge" | "gradle-caches" | "gradle-dists" => {}
         "npm-verify" => spec.args.extend(["--cache".into(), path]),
         "pnpm-prune" | "yarn-clean" => {
             let versioned = cache
@@ -485,6 +533,7 @@ pub fn cache_probe(cache: &Cache, command: &CommandSpec) -> Option<CommandSpec> 
     let (action, replacement) = match cache.strategy.as_str() {
         "pnpm-prune" => ("prune", "path"),
         "yarn-clean" => ("clean", "dir"),
+        "pip-purge" => ("purge", "dir"),
         _ => return None,
     };
     let mut probe = command.clone();

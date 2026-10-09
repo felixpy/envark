@@ -40,6 +40,19 @@ Worktree removal reviews staged, unstaged, and untracked paths before execution.
 
 Package version checks use a dedicated provider-scoped command. They must not discover projects, measure artifacts or caches, or rediscover unrelated environments. Keep cancellation and progress tied to the check's job ID. Package managers use their verified installation owner: npm packages retain their owning runtime prefix, Homebrew packages require a matching Cellar and install receipt, Bun standalone installs use `bun upgrade`, and uv standalone installs require a matching installer receipt before `uv self update`. Revalidate ownership and the installed version before execution, then read the installed version again to verify the update actually happened. Do not report a successful update from a zero exit status alone.
 
+Corepack-owned pnpm/Yarn updates change the global default only, with project spec lookup and auto-pinning disabled. Standalone pnpm updates run in an isolated empty workspace. Unix fnm/nvm installer updates download the reviewed official release script before execution, preserve the existing installation root, and disable shell-profile changes. Manager updates are separate from runtime installation/removal. Do not treat nvm-windows as nvm-sh.
+
+Global cache cleanup runs inside Envark and refreshes only affected cache measurements and system disk usage:
+
+| Cache                        | Strategy                                                   | Boundary                                                                                                                                          |
+| ---------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| pip                          | `pip cache purge` (or `python -m pip`)                     | Resolve the configured cache directory; pin and re-probe it before cleanup.                                                                       |
+| Gradle caches/distributions  | Gradle 8+ native retention cleanup                         | Use an installed distribution and Java in a temporary empty project, offline; review both directories together and retain current/recent entries. |
+| Cargo registry/Git downloads | Trash by default, or the reviewed permanent-delete setting | Acquire Cargo's mutate and download locks, revalidate contents, preserve installed tools/configuration, reject modified Git checkouts.            |
+| Maven local repository       | Preserve                                                   | Local publications may be irreplaceable; do not label this as a safely disposable download cache.                                                 |
+
+Native cleanup is not a promise to remove the entire displayed size. A Gradle run may retain all entries or create small metadata files; report the measured net change. Never substitute project-level `gradle clean` or `cargo clean` for global cache cleanup.
+
 Never commit credentials, personal paths, local inventory snapshots, or downloaded toolchains. Use synthetic fixtures in tests and screenshots.
 
 ## Pull requests

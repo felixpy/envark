@@ -126,8 +126,14 @@ enum Step {
         size: Measurement,
         modified: Option<u64>,
     },
+    CacheFiles {
+        cache: Cache,
+        size: Measurement,
+        modified: Option<u64>,
+    },
     Cache {
         cache: Cache,
+        related: Vec<Cache>,
         command: CommandSpec,
     },
     Command(CommandSpec),
@@ -164,6 +170,7 @@ pub(crate) enum RefreshTarget {
     },
     Worktree(String),
     Cache(String),
+    Caches(Vec<String>),
     Provider(ProviderId),
 }
 
@@ -181,7 +188,13 @@ impl Plan {
                 Step::Worktree { worktree, .. } => {
                     Some(RefreshTarget::Worktree(worktree.id.clone()))
                 }
-                Step::Cache { cache, .. } => Some(RefreshTarget::Cache(cache.id.clone())),
+                Step::Cache { cache, related, .. } => Some(RefreshTarget::Caches(
+                    std::iter::once(cache)
+                        .chain(related)
+                        .map(|c| c.id.clone())
+                        .collect(),
+                )),
+                Step::CacheFiles { cache, .. } => Some(RefreshTarget::Cache(cache.id.clone())),
                 _ => self.refresh_provider.map(RefreshTarget::Provider),
             })
             .collect()
@@ -313,6 +326,9 @@ pub async fn prepare_with_progress(
                 plan.view.warnings.push(format!("{} contains ignored files. If this worktree is removed, they will also be permanently removed and cannot be restored from Git.", worktree.path.display()));
             }
             *removal = Some(reviewed);
+        }
+        if let Step::CacheFiles { cache, .. } = step {
+            providers::cache_cleanup::validate_cargo_checkouts(ctx, cache).await?;
         }
         if let Step::Runtime {
             runtime,
@@ -492,7 +508,11 @@ fn prepare_steps(
         }
         ActionRequest::CleanCaches { ids } => {
             view.kind = "clean".into();
-            for id in ids.into_iter().collect::<HashSet<_>>() {
+            let mut planned = HashSet::new();
+            for id in ids {
+                if !planned.insert(id.clone()) {
+                    continue;
+                }
                 let cache = inventory
                     .caches
                     .iter()
@@ -504,20 +524,69 @@ fn prepare_steps(
                     ));
                 }
                 reject_links(&cache.path)?;
+                if ["cargo-registry", "cargo-git"].contains(&cache.strategy.as_str()) {
+                    providers::cache_cleanup::cargo_root(ctx, cache)?;
+                    let size = measure(&cache.path, &ctx.cancel)?;
+                    if !size.complete {
+                        return Err(Error::Conflict(
+                            "The cache cannot be measured completely.".into(),
+                        ));
+                    }
+                    view.items.push(PlanItem {
+                        title: cache.name.clone(),
+                        path: Some(cache.path.clone()),
+                        command: None,
+                        bytes: size.bytes,
+                        restore: Some(
+                            "Cargo will download these dependencies again when needed.".into(),
+                        ),
+                    });
+                    steps.push(Step::CacheFiles {
+                        cache: cache.clone(),
+                        size,
+                        modified: modified(&cache.path),
+                    });
+                    view.warnings.push(if settings.use_trash { "Cargo cache contents will move to Trash after acquiring Cargo's cache locks. Installed tools and configuration are kept." } else { "Cargo cache contents will be removed after acquiring Cargo's cache locks. Installed tools and configuration are kept." }.into());
+                    continue;
+                }
+                let related: Vec<Cache> = if cache.strategy.starts_with("gradle-") {
+                    inventory
+                        .caches
+                        .iter()
+                        .filter(|c| c.id != cache.id && c.strategy.starts_with("gradle-"))
+                        .cloned()
+                        .collect()
+                } else {
+                    vec![]
+                };
+                planned.extend(related.iter().map(|c| c.id.clone()));
+                if cache.strategy.starts_with("gradle-") {
+                    view.warnings.push("Gradle will run its native cleanup in a temporary empty project. It applies the configured retention policy to Gradle caches and distributions, keeping entries it still needs; no user project is built.".into());
+                }
                 let command = providers::cache_command(ctx, cache)?;
                 view.items.push(PlanItem {
-                    title: cache.name.clone(),
+                    title: std::iter::once(cache)
+                        .chain(&related)
+                        .map(|c| c.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" + "),
                     path: Some(cache.path.clone()),
                     command: Some(command.display()),
-                    bytes: cache.size.bytes,
+                    bytes: std::iter::once(cache)
+                        .chain(&related)
+                        .map(|c| c.size.bytes)
+                        .sum(),
                     restore: None,
                 });
                 steps.push(Step::Cache {
                     cache: cache.clone(),
+                    related,
                     command,
                 });
             }
-            view.warnings.push("Native cache cleanup can permanently remove entries. The displayed size is an upper bound, not a promise of reclaimed space.".into());
+            if steps.iter().any(|s| matches!(s, Step::Cache { .. })) {
+                view.warnings.push("Native cache cleanup can permanently remove entries. The displayed size is an upper bound, not a promise of reclaimed space.".into());
+            }
         }
         ActionRequest::InstallRuntime {
             provider,
@@ -614,10 +683,23 @@ fn prepare_steps(
             } else {
                 providers::tool_command(ctx, tool, remove)?
             };
-            view.items.push(command_description(
+            let mut item = command_description(
                 format!("{} {}", if remove { "Remove" } else { "Update" }, tool.name),
                 &command,
-            ));
+            );
+            if providers::script_installers::handles(tool) {
+                let url = providers::script_installers::url(tool)?;
+                item.path = tool
+                    .path
+                    .as_ref()
+                    .and_then(|path| path.parent())
+                    .map(Path::to_path_buf);
+                item.command = Some(format!(
+                    "Download: {url}\nRun: {}",
+                    command.display().replace(&url, "<downloaded install.sh>")
+                ));
+            }
+            view.items.push(item);
             steps.push(Step::Tool {
                 tool: tool.clone(),
                 remove,
@@ -806,7 +888,12 @@ async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<u64> 
     }).await.map_err(|e| Error::Unavailable(e.to_string()))?
 }
 
-async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Result<(u64, String)> {
+async fn clean_cache(
+    ctx: &Context,
+    cache: Cache,
+    related: Vec<Cache>,
+    command: CommandSpec,
+) -> Result<(u64, String)> {
     reject_links(&cache.path)?;
     let approved = std::fs::canonicalize(&cache.path)?;
     if let Some(probe) = providers::cache_probe(&cache, &command) {
@@ -822,20 +909,40 @@ async fn clean_cache(ctx: &Context, cache: Cache, command: CommandSpec) -> Resul
             return Err(Error::Conflict("The tool resolved a different cache directory. Refresh the inventory before cleaning.".into()));
         }
     }
-    let before = measured_bytes(cache.path.clone(), ctx.cancel.clone()).await?;
+    let mut before = measured_bytes(cache.path.clone(), ctx.cancel.clone()).await?;
+    for item in &related {
+        before += measured_bytes(item.path.clone(), ctx.cancel.clone()).await?;
+    }
     reject_links(&cache.path)?;
     if std::fs::canonicalize(&cache.path)? != approved {
         return Err(Error::Conflict("The cache moved after review.".into()));
     }
-    let output = ctx.runner.run(&command, &ctx.cancel).await?;
-    let after = if cache.path.try_exists()? {
+    let output = if cache.strategy.starts_with("gradle-") {
+        providers::cache_cleanup::run_gradle(ctx, &cache, command).await?
+    } else {
+        ctx.runner.run(&command, &ctx.cancel).await?
+    };
+    let mut after = if cache.path.try_exists()? {
         measured_bytes(cache.path, ctx.cancel.clone()).await?
     } else {
         0
     };
+    for item in related {
+        if item.path.try_exists()? {
+            after += measured_bytes(item.path, ctx.cancel.clone()).await?;
+        }
+    }
     Ok((
         before.saturating_sub(after),
-        output.stdout.trim().chars().take(4000).collect(),
+        if cache.strategy.starts_with("gradle-") {
+            if before > after {
+                "Gradle finished pruning expired caches and distributions. Entries required by its retention policy were kept.".into()
+            } else {
+                "Gradle finished checking caches and distributions. No net reduction was measured; retained entries are still within its retention policy.".into()
+            }
+        } else {
+            output.stdout.trim().chars().take(4000).collect()
+        },
     ))
 }
 
@@ -868,7 +975,7 @@ async fn run_tool(
     ctx: &Context,
     tool: crate::model::Tool,
     remove: bool,
-    command: CommandSpec,
+    mut command: CommandSpec,
 ) -> Result<(u64, String)> {
     if !remove {
         providers::updates::verify_installed(ctx, &tool).await?;
@@ -914,7 +1021,17 @@ async fn run_tool(
             ));
         }
     }
-    let output = ctx.runner.run(&command, &ctx.cancel).await?;
+    let scratch = (tool.source == "pnpm-self")
+        .then(providers::js_tooling::isolated_directory)
+        .transpose()?;
+    if let Some(scratch) = &scratch {
+        command.cwd = Some(scratch.path().into());
+    }
+    let output = if providers::script_installers::handles(&tool) {
+        providers::script_installers::run(ctx, &tool, command).await?
+    } else {
+        ctx.runner.run(&command, &ctx.cancel).await?
+    };
     if !remove && providers::package_managers::handles(&tool) {
         let installed = providers::package_managers::installed_version(ctx, &tool).await?;
         let mut verified = tool.clone();
@@ -1038,7 +1155,46 @@ pub async fn execute(
                     output.stdout.trim().chars().take(4000).collect::<String>(),
                 )
             }),
-            Step::Cache { cache, command } => clean_cache(&ctx, cache, command).await,
+            Step::CacheFiles {
+                cache,
+                size,
+                modified,
+            } => {
+                async {
+                    let (ctx, use_trash) = (ctx.clone(), settings.use_trash);
+                    let root = providers::cache_cleanup::cargo_root(&ctx, &cache)?;
+                    let locks = providers::cache_cleanup::lock_cargo(&root)?;
+                    providers::cache_cleanup::validate_cargo_checkouts(&ctx, &cache).await?;
+                    tokio::task::spawn_blocking(move || {
+                        let _locks = locks;
+                        let bytes = remove_directory(
+                            &root,
+                            &cache.path,
+                            &size,
+                            modified,
+                            use_trash,
+                            &ctx.cancel,
+                        )?;
+                        Ok((
+                            bytes,
+                            if use_trash {
+                                "Moved cache to Trash."
+                            } else {
+                                "Removed cached dependencies."
+                            }
+                            .into(),
+                        ))
+                    })
+                    .await
+                    .map_err(|error| Error::Unavailable(error.to_string()))?
+                }
+                .await
+            }
+            Step::Cache {
+                cache,
+                related,
+                command,
+            } => clean_cache(&ctx, cache, related, command).await,
             Step::Project {
                 project,
                 artifact,

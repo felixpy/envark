@@ -87,6 +87,21 @@ pub(crate) async fn brew_formula(ctx: &Context, path: &Path) -> Option<String> {
 }
 
 pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
+    for manager in &provider.managers {
+        if ["fnm", "nvm"].contains(&manager.name.as_str())
+            && !provider
+                .package_managers
+                .iter()
+                .any(|tool| tool.name == manager.name)
+        {
+            provider.package_managers.push(basic_tool(
+                &manager.name,
+                manager.version.clone(),
+                "PATH",
+                Some(manager.path.clone()),
+            ));
+        }
+    }
     for manager in &mut provider.package_managers {
         if let Some(value) = version(&manager.version) {
             manager.version = value;
@@ -115,7 +130,13 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
             manager.can_remove = false;
             continue;
         }
-        if brew_formula(ctx, &binary).await.is_some_and(|formula| {
+        if ["pnpm", "yarn"].contains(&manager.name.as_str())
+            && super::js_tooling::corepack_root(&binary, &manager.name).is_some()
+        {
+            manager.source = "corepack".into();
+            manager.can_update = true;
+            manager.note = None;
+        } else if brew_formula(ctx, &binary).await.is_some_and(|formula| {
             formula.rsplit('/').next()
                 == Some(if manager.name == "mvn" {
                     "maven"
@@ -124,6 +145,15 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
                 })
         }) {
             manager.source = "homebrew".into();
+            manager.can_update = true;
+            manager.note = None;
+        } else if super::script_installers::installation_root(ctx, &manager.name, &binary).is_some()
+        {
+            manager.source = format!("{}-script", manager.name);
+            manager.can_update = true;
+            manager.note = None;
+        } else if manager.name == "pnpm" && super::js_tooling::pnpm_home(ctx, &binary).is_some() {
+            manager.source = "pnpm-self".into();
             manager.can_update = true;
             manager.note = None;
         } else if standalone(ctx, manager) {
@@ -165,28 +195,60 @@ pub(crate) async fn resolve(ctx: &Context, provider: &mut Provider) {
 }
 
 pub(crate) fn handles(tool: &Tool) -> bool {
-    matches!(tool.source.as_str(), "bun" | "uv-self" | "homebrew")
+    matches!(
+        tool.source.as_str(),
+        "bun" | "uv-self" | "homebrew" | "corepack" | "pnpm-self" | "fnm-script" | "nvm-script"
+    )
 }
 
 pub(crate) async fn installed_version(ctx: &Context, tool: &Tool) -> Result<String> {
+    if super::script_installers::handles(tool) || tool.name == "nvm" {
+        return super::script_installers::installed_version(ctx, tool).await;
+    }
     let path = tool
         .path
         .as_ref()
         .ok_or_else(|| Error::Conflict("The package manager path is unavailable.".into()))?;
-    let mut probe = CommandSpec::new(path, ["--version"]);
-    probe.cwd = Some(ctx.home.clone());
+    let scratch = (tool.source == "pnpm-self")
+        .then(super::js_tooling::isolated_directory)
+        .transpose()?;
+    let mut probe = if tool.source == "corepack" {
+        super::js_tooling::corepack_command(ctx, tool, false)?
+    } else {
+        super::js_tooling::cli_command(ctx, path, &tool.name, &["--version"])
+            .unwrap_or_else(|| CommandSpec::new(path, ["--version"]))
+    };
+    probe.cwd = Some(
+        scratch
+            .as_ref()
+            .map(|dir| dir.path().to_path_buf())
+            .unwrap_or_else(|| ctx.home.clone()),
+    );
     let output = ctx.runner.run(&probe, &ctx.cancel).await?;
     version(&output.stdout)
         .ok_or_else(|| Error::Conflict("Cannot read the installed package manager version.".into()))
 }
 
 pub(crate) async fn validate_owner(ctx: &Context, tool: &Tool) -> Result<()> {
+    if super::script_installers::handles(tool) {
+        return super::script_installers::validate(ctx, tool).await;
+    }
     let owned = match tool.source.as_str() {
         "homebrew" => match &tool.path {
             Some(path) => brew_formula(ctx, path).await.is_some(),
             None => false,
         },
         "bun" | "uv-self" => standalone(ctx, tool),
+        "corepack" => tool
+            .path
+            .as_deref()
+            .and_then(|path| super::js_tooling::corepack_root(path, &tool.name))
+            .is_some(),
+        "pnpm-self" => tool
+            .path
+            .as_deref()
+            .and_then(|path| super::js_tooling::pnpm_home(ctx, path))
+            .is_some(),
         _ => false,
     };
     if !owned {
@@ -200,6 +262,9 @@ pub(crate) async fn validate_owner(ctx: &Context, tool: &Tool) -> Result<()> {
 
 pub(crate) fn command(ctx: &Context, tool: &Tool) -> Result<CommandSpec> {
     super::updates::require_upgrade(tool)?;
+    if super::script_installers::handles(tool) {
+        return super::script_installers::command(ctx, tool);
+    }
     if matches!(tool.source.as_str(), "bun" | "uv-self") && !standalone(ctx, tool) {
         return Err(Error::Conflict(
             "The standalone package manager installation changed.".into(),
@@ -210,6 +275,20 @@ pub(crate) fn command(ctx: &Context, tool: &Tool) -> Result<CommandSpec> {
         .as_ref()
         .ok_or_else(|| Error::Conflict("Missing package manager path.".into()))?;
     let mut spec = match tool.source.as_str() {
+        "corepack" => super::js_tooling::corepack_command(ctx, tool, true)?,
+        "pnpm-self" => {
+            let home = super::js_tooling::pnpm_home(ctx, binary)
+                .ok_or_else(|| Error::Conflict("The pnpm installation changed.".into()))?;
+            let args = [
+                "self-update",
+                tool.latest.as_deref().expect("verified upgrade"),
+            ];
+            let mut spec = super::js_tooling::cli_command(ctx, binary, "pnpm", &args)
+                .unwrap_or_else(|| CommandSpec::new(binary, args));
+            spec.env
+                .insert("PNPM_HOME".into(), home.to_string_lossy().into_owned());
+            spec
+        }
         "bun" => CommandSpec::new(binary, ["upgrade"]),
         "uv-self" => CommandSpec::new(
             binary,
@@ -318,6 +397,7 @@ mod tests {
             .env("ENVARK_MANAGER_FIXTURE", &root)
             .env("PATH", root.join("bin"))
             .env("BUN_INSTALL", root.join(".bun"))
+            .env("PNPM_HOME", root.join("pnpm"))
             .env("XDG_CONFIG_HOME", root.join(".config"))
             .output()
             .unwrap();
@@ -340,11 +420,12 @@ mod tests {
         for (name, relative, source, id) in [
             ("bun", ".bun/bin/bun", "bun", ProviderId::Js),
             ("uv", ".local/bin/uv", "uv-self", ProviderId::Py),
+            ("pnpm", "pnpm/pnpm", "pnpm-self", ProviderId::Js),
         ] {
             let binary = root.join(relative);
             script(
                 &binary,
-                "#!/bin/sh\ncase \"$1\" in\n--version) read -r version < \"$0.version\"; printf '%s\\n' \"$version\";;\nupgrade|self) printf '2.0.0\\n' > \"$0.version\";;\n*) exit 9;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n--version) read -r version < \"$0.version\"; printf '%s\\n' \"$version\";;\nupgrade|self|self-update) printf '2.0.0\\n' > \"$0.version\";;\n*) exit 9;;\nesac\n",
             );
             std::fs::write(binary.with_extension("version"), "1.0.0\n").unwrap();
             if name == "uv" {
@@ -446,7 +527,7 @@ upgrade) formula="${2##*/}"; printf '2.0.0\n' > "$ENVARK_MANAGER_FIXTURE/Cellar/
 esac
 "#,
         );
-        for name in ["bun", "uv", "pnpm", "poetry", "mvn", "gradle"] {
+        for name in ["bun", "uv", "pnpm", "yarn", "poetry", "mvn", "gradle"] {
             let formula = if name == "mvn" { "maven" } else { name };
             let keg = cellar.join(formula).join("1.0.0");
             let binary = keg.join("bin").join(name);

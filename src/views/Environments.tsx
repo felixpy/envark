@@ -65,6 +65,9 @@ export default function Environments({ id }: { id: ProviderId }) {
   const meta = metadata[id]
   const provider = s.data.inventory.providers.find((p) => p.id === id) ?? emptyProvider(id)
   const caps = capabilities(id)
+  const versionManagers = provider.packageManagers.filter((tool) =>
+    provider.managers.some((manager) => manager.name === tool.name),
+  )
   const [tab, setTab] = useState(s.focus.tab ?? caps[0].id)
   const [install, setInstall] = useState(false)
   const preferred =
@@ -171,6 +174,17 @@ export default function Environments({ id }: { id: ProviderId }) {
           ))}
         </TabsList>
       </Tabs>
+      {tab === 'runtime' && versionManagers.length > 0 && (
+        <Tools
+          providerId={id}
+          items={versionManagers}
+          global={false}
+          runtimeManagers
+          onUpdate={(item) => operation('updateTool', item.id)}
+          onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
+          onRemove={(item) => operation('removeTool', item.id)}
+        />
+      )}
       {tab === 'runtime' && (
         <Card className="shadow-none">
           <CardHeader>
@@ -332,7 +346,11 @@ export default function Environments({ id }: { id: ProviderId }) {
         <Tools
           key={tab}
           providerId={id}
-          items={tab === 'pm' ? provider.packageManagers : provider.tools}
+          items={
+            tab === 'pm'
+              ? provider.packageManagers.filter((tool) => !['fnm', 'nvm'].includes(tool.name))
+              : provider.tools
+          }
           global={tab === 'global'}
           onUpdate={(item) => operation('updateTool', item.id)}
           onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
@@ -664,6 +682,7 @@ export default function Environments({ id }: { id: ProviderId }) {
 }
 
 function Tools({
+  runtimeManagers = false,
   providerId,
   items,
   global,
@@ -671,6 +690,7 @@ function Tools({
   onBatch,
   onRemove,
 }: {
+  runtimeManagers?: boolean
   providerId: ProviderId
   items: Tool[]
   global: boolean
@@ -702,20 +722,27 @@ function Tools({
     <Card className="shadow-none">
       <CardHeader>
         <CardTitle>
-          {global
-            ? t('全局工具', 'Global tools')
-            : t('包管理器与构建工具', 'Package managers & build tools')}
+          {runtimeManagers
+            ? t('版本管理器', 'Version managers')
+            : global
+              ? t('全局工具', 'Global tools')
+              : t('包管理器与构建工具', 'Package managers & build tools')}
         </CardTitle>
         <CardDescription>
-          {global
+          {runtimeManagers
             ? t(
-                '显示安装来源、绑定运行时和可用操作。',
-                'Inspect installation owners, runtime bindings, and available actions.',
+                '检查并更新管理器本身；已安装的运行时版本会保留。',
+                'Check and update the manager itself while keeping installed runtimes.',
               )
-            : t(
-                '查看包管理器版本，并在应用内检查和安装更新。',
-                'Inspect package manager versions, check for updates, and install them here.',
-              )}
+            : global
+              ? t(
+                  '显示安装来源、绑定运行时和可用操作。',
+                  'Inspect installation owners, runtime bindings, and available actions.',
+                )
+              : t(
+                  '查看包管理器版本，并在应用内检查和安装更新。',
+                  'Inspect package manager versions, check for updates, and install them here.',
+                )}
         </CardDescription>
         <CardAction className="flex items-center gap-2">
           {selection.chosen.length > 0 && (
@@ -854,10 +881,20 @@ function Tools({
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {(
-                    { homebrew: 'Homebrew', bun: 'Bun', 'uv-self': 'uv' } as Record<string, string>
+                    {
+                      homebrew: 'Homebrew',
+                      bun: 'Bun',
+                      'uv-self': 'uv',
+                      corepack: 'Corepack',
+                      'pnpm-self': 'pnpm',
+                      'fnm-script': t('官方安装脚本', 'Official installer'),
+                      'nvm-script': t('官方安装脚本', 'Official installer'),
+                    } as Record<string, string>
                   )[item.source] ?? item.source}
                   <span className="mt-1 block font-mono">
-                    {item.runtime ?? t('独立安装', 'Standalone')}
+                    {item.source === 'corepack'
+                      ? t('全局默认', 'Global default')
+                      : (item.runtime ?? t('独立安装', 'Standalone'))}
                   </span>
                 </TableCell>
                 <TableCell>

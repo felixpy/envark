@@ -207,3 +207,46 @@ it('a discovered Bun update can be reviewed from the package manager tab', async
     expect.any(String),
   )
 })
+
+it.each(['fnm', 'nvm'])(
+  'updates %s itself from the runtime tab without removing Node versions',
+  async (name) => {
+    const provider = emptyProvider('js')
+    provider.managers = [
+      {
+        name,
+        version: '1.0.0',
+        path: `/managers/${name}`,
+        supportsInstall: true,
+        supportsDefault: true,
+      },
+    ]
+    provider.packageManagers = [
+      {
+        id: name,
+        name,
+        version: '1.0.0',
+        latest: '2.0.0',
+        updateStatus: 'major',
+        source: `${name}-script`,
+        runtime: null,
+        path: `/managers/${name}`,
+        size: null,
+        canUpdate: true,
+        canRemove: false,
+        note: null,
+      },
+    ]
+    const prepare = fixture(provider)
+    const user = userEvent.setup()
+    await screen.findByText('Version managers')
+    expect(screen.getByText('Official installer')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Update' }))
+    await waitFor(() =>
+      expect(prepare).toHaveBeenCalledWith(
+        { kind: 'updateTool', provider: 'js', id: name },
+        expect.any(String),
+      ),
+    )
+  },
+)

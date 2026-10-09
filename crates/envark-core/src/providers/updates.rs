@@ -15,10 +15,22 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
     let mut requests = vec![];
     for provider in providers.iter() {
         for tool in provider.tools.iter().chain(&provider.package_managers) {
+            if ["fnm-script", "nvm-script"].contains(&tool.source.as_str()) {
+                let repo = if tool.source == "fnm-script" {
+                    "Schniz/fnm"
+                } else {
+                    "nvm-sh/nvm"
+                };
+                requests.push((
+                    tool.id.clone(),
+                    format!("https://api.github.com/repos/{repo}/releases/latest"),
+                    "tag_name",
+                ));
+                continue;
+            }
             let (base, suffix, field) = match tool.source.as_str() {
-                "npm" | "pnpm" | "yarn" | "bun" => {
-                    ("https://registry.npmjs.org", "/latest", "version")
-                }
+                "npm" | "pnpm" | "yarn" | "bun" | "corepack" | "pnpm-self" | "fnm-script"
+                | "nvm-script" => ("https://registry.npmjs.org", "/latest", "version"),
                 "uv" | "pipx" | "uv-self" => ("https://pypi.org/pypi", "/json", "info.version"),
                 "cargo" => (
                     "https://crates.io/api/v1/crates",
@@ -34,7 +46,15 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
                 continue;
             };
             if let Ok(mut segments) = url.path_segments_mut() {
-                segments.push(&tool.name);
+                let name = if tool.source == "corepack"
+                    && tool.name == "yarn"
+                    && semver::Version::parse(&tool.version).is_ok_and(|v| v.major >= 2)
+                {
+                    "@yarnpkg/cli-dist"
+                } else {
+                    &tool.name
+                };
+                segments.push(name);
             }
             let url = format!("{}{suffix}", url.as_str().trim_end_matches('/'));
             requests.push((tool.id.clone(), url, field));
@@ -91,7 +111,7 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
                     }
                     let data = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
                     let value = field.split('.').fold(&data, |value, key| &value[key]);
-                    Some((id, value.as_str()?.to_owned()))
+                    Some((id, value.as_str()?.trim_start_matches('v').to_owned()))
                 };
                 tokio::select! { result = request => result, _ = cancel.cancelled() => None }
             });
@@ -132,7 +152,8 @@ pub fn classify(tool: &Tool) -> UpdateStatus {
                     || available.release()[0] > installed.release()[0],
             )
         }
-        "npm" | "pnpm" | "yarn" | "cargo" | "go" | "bun" => {
+        "npm" | "pnpm" | "yarn" | "cargo" | "go" | "bun" | "corepack" | "pnpm-self"
+        | "fnm-script" | "nvm-script" => {
             let (Ok(installed), Ok(available)) = (
                 semver::Version::parse(tool.version.trim_start_matches('v')),
                 semver::Version::parse(latest.trim_start_matches('v')),
