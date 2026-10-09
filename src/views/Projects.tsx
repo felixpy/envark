@@ -245,7 +245,10 @@ export default function Projects() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => selection.toggle([...selection.selected], false)}
+            onClick={() => {
+              const active = mode === 'worktrees' ? worktreeSelection : selection
+              active.toggle([...active.selected], false)
+            }}
           >
             {t('取消', 'Cancel')}
           </Button>
