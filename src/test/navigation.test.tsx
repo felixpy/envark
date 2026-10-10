@@ -102,6 +102,7 @@ async function fixture(native = false) {
   }
   let app = await mount()
   return {
+    api,
     refresh,
     syncViewState,
     openAppLink,
@@ -124,6 +125,35 @@ async function fixture(native = false) {
       ),
   }
 }
+
+it('opens cleanup preparation directly in the dialog without the page operation bar', async () => {
+  const { api } = await fixture()
+  let complete!: () => void
+  api.prepare = () =>
+    new Promise((resolve) => {
+      complete = () =>
+        resolve({
+          id: 'review',
+          kind: 'clean',
+          createdAt: 0,
+          items: [],
+          warnings: [],
+          useTrash: true,
+        })
+    })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Project space' }))
+  await screen.findByRole('heading', { name: 'Project space' })
+  await user.click(screen.getByRole('checkbox', { name: 'Select main-repo' }))
+  await user.click(screen.getByRole('button', { name: 'Review cleanup' }))
+  const dialog = screen.getByRole('dialog', { name: 'Preparing review' })
+  expect(within(dialog).getByRole('status').textContent).toContain('Clean project artifacts')
+  expect(screen.queryByRole('button', { name: 'Cancel current task', hidden: true })).toBeNull()
+  expect(document.querySelectorAll('[role="status"]')).toHaveLength(1)
+  expect(screen.queryByRole('button', { name: 'Confirm operation' })).toBeNull()
+  await act(async () => complete())
+  expect(screen.getByRole('dialog', { name: 'Review operation' })).toBe(dialog)
+})
 
 it('describes the active scan phase independently of the current page', async () => {
   const { refresh, menu, progress } = await fixture(true)

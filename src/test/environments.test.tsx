@@ -171,7 +171,7 @@ for (const id of ['js', 'py', 'jvm', 'rust', 'go'] as ProviderId[]) {
       expect(checkToolUpdates).toHaveBeenCalledWith(id, expect.any(String))
       expect(screen.getByRole('status').textContent).toContain('Checking tool updates')
       expect(screen.queryByText(/Scanning/)).toBeNull()
-      await user.click(screen.getByRole('button', { name: 'Check updates again' }))
+      await user.click(screen.getByRole('button', { name: 'Checking…' }))
       expect(checkToolUpdates).toHaveBeenCalledTimes(1)
       complete(provider)
       await waitFor(() => expect(screen.queryByRole('status')).toBeNull())

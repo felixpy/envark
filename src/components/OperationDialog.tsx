@@ -68,6 +68,8 @@ function WorktreeChangeList({
 export function OperationDialog() {
   const s = useStore()
   const { plan, result, operationError, t } = s
+  const preparing = s.task?.kind === 'prepare'
+  const executing = s.task?.kind === 'execute'
   const [discardPlanId, setDiscardPlanId] = useState<string | null>(null)
   const discardChanges = !!plan && discardPlanId === plan.id
   const changes = plan?.worktreeChanges ?? []
@@ -75,36 +77,55 @@ export function OperationDialog() {
   const removeCount = (plan?.items.length ?? 0) - changedCount
   return (
     <Dialog
-      open={!!plan}
+      open={s.operationOpen}
       onOpenChange={(open) => {
         if (!open) s.closePlan()
       }}
     >
-      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl">
+      <DialogContent
+        className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl"
+        showCloseButton={!s.busy}
+      >
         <DialogHeader className="shrink-0">
           <DialogTitle>
-            {result
-              ? t('操作结果', 'Operation results')
-              : operationError
-                ? t('需要重新审阅', 'Review required')
-                : t('审阅操作', 'Review operation')}
+            {preparing
+              ? t('正在准备审阅', 'Preparing review')
+              : result
+                ? t('操作结果', 'Operation results')
+                : operationError
+                  ? t('需要重新审阅', 'Review required')
+                  : executing
+                    ? t('正在执行操作', 'Executing operation')
+                    : t('审阅操作', 'Review operation')}
           </DialogTitle>
           <DialogDescription>
-            {result
-              ? t('每一项显示实际执行结果。', 'Each item shows its actual result.')
-              : operationError
-                ? t(
-                    '重新检查当前状态后再执行。',
-                    'Check the current state again before proceeding.',
-                  )
-                : t(
-                    '核对路径、影响和恢复方式后执行。',
-                    'Check the paths, impact, and recovery instructions before proceeding.',
-                  )}
+            {preparing
+              ? t(
+                  '正在核对所选项目，准备完成后由你确认执行。',
+                  'Checking selected items. You can confirm the operation when the review is ready.',
+                )
+              : result
+                ? t('每一项显示实际执行结果。', 'Each item shows its actual result.')
+                : operationError
+                  ? t(
+                      '重新检查当前状态后再执行。',
+                      'Check the current state again before proceeding.',
+                    )
+                  : executing
+                    ? t(
+                        '正在处理已确认的项目，请查看下方进度。',
+                        'Processing confirmed items. Follow the progress below.',
+                      )
+                    : t(
+                        '核对路径、影响和恢复方式后执行。',
+                        'Check the paths, impact, and recovery instructions before proceeding.',
+                      )}
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto pr-1" data-slot="operation-scroll">
-          {operationError ? (
+          {preparing ? (
+            <TaskProgress />
+          ) : operationError ? (
             <div className="space-y-3">
               <p role="alert" className="whitespace-pre-wrap break-all text-sm text-destructive">
                 {operationError}

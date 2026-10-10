@@ -208,7 +208,7 @@ function Shell() {
               </Button>
             </div>
           </header>
-          {s.busy && !s.plan && (
+          {s.busy && !s.operationOpen && (
             <div className="flex shrink-0 items-center gap-4 border-b bg-muted/40 px-6 py-3">
               <TaskProgress />
               <Button variant="outline" size="sm" onClick={() => void s.cancel()}>

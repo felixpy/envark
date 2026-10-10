@@ -1,3 +1,4 @@
+import { ToolUpdateStatus } from './ToolUpdateStatus'
 import { ArrowUp, Box, Play, RefreshCw, Square, Trash2 } from 'lucide-react'
 import type { Provider } from '@/domain'
 import { updateKind } from '@/domain'
@@ -141,19 +142,26 @@ export function OllamaProgram({ provider }: { provider: Provider }) {
           <Button
             size="sm"
             variant="ghost"
-            reason={busyReason}
+            reason={
+              s.updateChecks.ollama === 'checking'
+                ? t('正在检查更新…', 'Checking tool updates…')
+                : null
+            }
             onClick={() =>
               s.data.settings.checkUpdates ? void s.checkToolUpdates('ollama') : s.go('settings')
             }
           >
             <RefreshCw />
-            {s.data.settings.checkUpdates
-              ? t('检查更新', 'Check for updates')
-              : t('开启更新检查', 'Enable update checks')}
+            {s.updateChecks.ollama === 'checking'
+              ? t('正在检查…', 'Checking…')
+              : s.data.settings.checkUpdates
+                ? t('检查更新', 'Check for updates')
+                : t('开启更新检查', 'Enable update checks')}
           </Button>
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-4 pb-5">
+        <ToolUpdateStatus provider="ollama" />
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-muted">
@@ -179,7 +187,10 @@ export function OllamaProgram({ provider }: { provider: Provider }) {
               <Button
                 size="sm"
                 variant="outline"
-                reason={busyReason || toolUpdateReason(program, s.data.settings.checkUpdates, t)}
+                reason={
+                  busyReason ||
+                  toolUpdateReason(program, s.data.settings.checkUpdates, t, s.updateChecks.ollama)
+                }
                 onClick={() =>
                   void s.prepare({ kind: 'updateTool', provider: 'ollama', id: program.id })
                 }

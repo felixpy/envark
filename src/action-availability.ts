@@ -1,3 +1,4 @@
+import type { UpdateCheck } from './tool-updates'
 import { updateKind, type Asset, type Manager, type Runtime, type Tool } from './domain'
 
 type Translate = (zh: string, en: string) => string
@@ -58,7 +59,12 @@ export function assetRemovalReason(asset: Asset, t: Translate) {
   return null
 }
 
-export function toolUpdateReason(tool: Tool, checkUpdates: boolean, t: Translate) {
+export function toolUpdateReason(
+  tool: Tool,
+  checkUpdates: boolean,
+  t: Translate,
+  check?: UpdateCheck,
+) {
   if (!tool.canUpdate)
     return (
       tool.note ||
@@ -70,10 +76,12 @@ export function toolUpdateReason(tool: Tool, checkUpdates: boolean, t: Translate
   switch (updateKind(tool)) {
     case 'unknown':
       return checkUpdates
-        ? t(
-            '尚未获取版本信息，请点击“重新检查更新”。',
-            'No version information yet. Click Check updates again.',
-          )
+        ? check === 'checking'
+          ? t('正在查询最新版本…', 'Checking the latest version…')
+          : t(
+              '暂未获取到最新版本，将自动重试，也可手动重试。',
+              'Latest version unavailable. Will retry automatically; you can also retry now.',
+            )
         : t('更新检查未开启，请先在设置中开启。', 'Enable update checks in Settings first.')
     case 'latest':
       return t('已是最新版本，无需更新。', 'Already up to date.')

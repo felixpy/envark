@@ -39,7 +39,7 @@ async function fixture(overrides: Partial<Backend> = {}) {
     return (
       <>
         <span data-testid="loaded">{String(state.loaded)}</span>
-        {!state.plan && <TaskProgress />}
+        {!state.operationOpen && <TaskProgress />}
         <OperationDialog />
       </>
     )
@@ -54,6 +54,89 @@ async function fixture(overrides: Partial<Backend> = {}) {
 }
 
 afterEach(() => vi.useRealTimers())
+
+it('keeps preparation, review, execution, and results in the same dialog', async () => {
+  let prepared!: (value: Plan) => void
+  let executed!: (value: {
+    items: []
+    removedBytes: number
+    reclaimedBytes: null
+    cancelled: boolean
+  }) => void
+  const f = await fixture({
+    prepare: () =>
+      new Promise((resolve) => {
+        prepared = resolve
+      }),
+    execute: () =>
+      new Promise((resolve) => {
+        executed = resolve
+      }),
+  })
+  let pending!: Promise<void>
+  act(() => {
+    pending = f.state().prepare({ kind: 'cleanCaches', ids: ['cache'] })
+  })
+  const dialog = screen.getByRole('dialog', { name: 'Preparing review' })
+  expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  fireEvent.keyDown(dialog, { key: 'Escape' })
+  expect(screen.getByRole('dialog')).toBe(dialog)
+  await act(async () => {
+    prepared(plan)
+    await pending
+  })
+  expect(screen.getByRole('dialog', { name: 'Review operation' })).toBe(dialog)
+  act(() => {
+    pending = f.state().execute()
+  })
+  expect(screen.getByRole('dialog', { name: 'Executing operation' })).toBe(dialog)
+  await act(async () => {
+    executed({ items: [], removedBytes: 0, reclaimedBytes: null, cancelled: false })
+    await pending
+  })
+  expect(screen.getByRole('dialog', { name: 'Operation results' })).toBe(dialog)
+  fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+})
+
+it('keeps preparation errors in the dialog and retries the original request', async () => {
+  const prepare = vi
+    .fn()
+    .mockRejectedValueOnce(new Error('Selected path is unavailable'))
+    .mockResolvedValueOnce(plan)
+  const f = await fixture({ prepare })
+  const request = { kind: 'cleanCaches' as const, ids: ['cache'] }
+  await act(() => f.state().prepare(request))
+  expect(screen.getByRole('dialog', { name: 'Review required' })).toBeTruthy()
+  expect(screen.getByRole('alert').textContent).toContain('Selected path is unavailable')
+  expect(f.state().error).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Confirm operation' })).toBeNull()
+  await act(() => f.state().reviewAgain())
+  expect(prepare.mock.calls[1][0]).toEqual(request)
+  expect(screen.getByRole('dialog', { name: 'Review operation' })).toBeTruthy()
+})
+
+it('does not open a late review after cancelling preparation', async () => {
+  let resolve!: (value: Plan) => void
+  const f = await fixture({
+    prepare: () =>
+      new Promise((done) => {
+        resolve = done
+      }),
+  })
+  let pending!: Promise<void>
+  act(() => {
+    pending = f.state().prepare({ kind: 'cleanCaches', ids: ['cache'] })
+  })
+  await act(() => f.state().cancel())
+  await act(async () => {
+    resolve(plan)
+    await pending
+  })
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(f.state().plan).toBeNull()
+  expect(f.state().error).toBeNull()
+})
 
 it('reports model download bytes without describing them as scanned entries', async () => {
   let resolve!: (value: Plan) => void
@@ -91,6 +174,8 @@ it('makes preparation visible, prevents competing tasks, filters stale progress,
   act(() => {
     pending = f.state().prepare({ kind: 'cleanCaches', ids: ['npm'] })
   })
+  expect(screen.getByRole('dialog', { name: 'Preparing review' })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Confirm operation' })).toBeNull()
   expect(screen.getByRole('status').textContent).toContain('Checking selected items before review')
   expect(screen.getByRole('status').textContent).toContain('Clean shared caches')
   const jobId = (prepare.mock.calls[0] as unknown as [unknown, string])[1]
