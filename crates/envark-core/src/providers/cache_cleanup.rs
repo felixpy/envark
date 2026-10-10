@@ -354,8 +354,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cache_cleanup_completes_without_scanning_projects() {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = tempfile::tempdir().unwrap();
         let path = root.path().canonicalize().unwrap();
+        // CI runners can have Gradle installed independently of the fixture home.
+        let inherited = path.join("inherited-gradle");
+        std::fs::create_dir_all(inherited.join("bin")).unwrap();
+        std::fs::create_dir_all(inherited.join("lib")).unwrap();
+        std::fs::write(inherited.join("lib/gradle-launcher-9.0.jar"), "fixture").unwrap();
+        for name in ["gradle", "java"] {
+            let binary = inherited.join("bin").join(name);
+            std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -371,8 +383,9 @@ mod tests {
             .env(
                 "PATH",
                 format!(
-                    "{}:{}",
+                    "{}:{}:{}",
                     path.join("bin").display(),
+                    inherited.join("bin").display(),
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
@@ -399,6 +412,11 @@ mod tests {
         let mut ctx = Context::new(CancellationToken::new()).unwrap();
         ctx.home = root.clone();
         std::fs::create_dir_all(root.join("bin")).unwrap();
+        // Shadow inherited Gradle installations; distributions are supplied below.
+        let gradle_binary = root.join("bin/gradle");
+        std::fs::write(&gradle_binary, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&gradle_binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(ctx.executable("gradle"), Some(gradle_binary));
         let cargo = cargo_home(&ctx);
         std::fs::create_dir_all(cargo.join("registry/cache")).unwrap();
         std::fs::create_dir_all(cargo.join("bin")).unwrap();
