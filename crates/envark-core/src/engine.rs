@@ -216,6 +216,133 @@ impl Engine {
         Ok(self.snapshot().await)
     }
 
+    pub async fn refresh_caches(
+        &self,
+        job_id: String,
+        progress: ProgressSink,
+        measure: bool,
+    ) -> Result<Snapshot> {
+        let _guard = self
+            .work
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| Error::Conflict("An operation is already running.".into()))?;
+        let token = CancellationToken::new();
+        let context = Context::new(token.clone())?;
+        self.jobs.lock().await.insert(job_id.clone(), token);
+        let result = self
+            .refresh_caches_inner(context, &job_id, progress, measure)
+            .await;
+        self.jobs.lock().await.remove(&job_id);
+        result?;
+        Ok(self.snapshot().await)
+    }
+
+    pub(crate) async fn refresh_caches_inner(
+        &self,
+        context: Context,
+        job_id: &str,
+        progress: ProgressSink,
+        measure: bool,
+    ) -> Result<()> {
+        progress(Progress {
+            job_id: job_id.into(),
+            stage: if measure {
+                "discover-caches"
+            } else {
+                "check-caches"
+            }
+            .into(),
+            completed: 0,
+            total: None,
+            message: String::new(),
+        });
+        let previous = self.state.read().await.inventory.caches.clone();
+        let mut caches = if measure {
+            providers::cache_discovery::discover(context.clone()).await?
+        } else {
+            let mut caches = previous.clone();
+            providers::cache_discovery::check_capabilities(&context, &mut caches).await?;
+            caches
+        };
+        for cache in &mut caches {
+            if let Some(old) = previous.iter().find(|old| old.id == cache.id) {
+                cache.size = old.size.clone();
+            }
+        }
+        let scan_context = context.clone();
+        let sink = progress.clone();
+        let scan_job = job_id.to_owned();
+        let caches = if measure {
+            tokio::task::spawn_blocking(move || {
+                use rayon::prelude::*;
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(4)
+                    .build()
+                    .map_err(|e| Error::Unavailable(e.to_string()))?;
+                let last = std::sync::Mutex::new(
+                    std::time::Instant::now() - std::time::Duration::from_secs(1),
+                );
+                let checked = std::sync::atomic::AtomicU64::new(0);
+                pool.install(|| {
+                    caches.par_iter_mut().for_each(|cache| {
+                        let result = crate::filesystem::measure_with(
+                            &cache.path,
+                            &scan_context.cancel,
+                            |_, _| {
+                                let count =
+                                    checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                                if let Ok(mut last) = last.lock()
+                                    && last.elapsed() >= std::time::Duration::from_millis(150)
+                                {
+                                    sink(Progress {
+                                        job_id: scan_job.clone(),
+                                        stage: "measure-caches".into(),
+                                        completed: count,
+                                        total: None,
+                                        message: cache.path.display().to_string(),
+                                    });
+                                    *last = std::time::Instant::now();
+                                }
+                                Ok(())
+                            },
+                        );
+                        match result {
+                            Ok(size) => cache.size = size,
+                            Err(error) => {
+                                cache.size.complete = false;
+                                cache.size.fingerprint = None;
+                                cache.warning =
+                                    format!("Cache size could not be confirmed: {error}");
+                            }
+                        }
+                    })
+                });
+                Ok::<_, Error>(caches)
+            })
+            .await
+            .map_err(|error| Error::Unavailable(error.to_string()))??
+        } else {
+            caches
+        };
+        if context.cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let mut state = self.state.write().await;
+        let mut inventory = state.inventory.clone();
+        inventory.caches = caches;
+        self.storage.save_inventory(&inventory)?;
+        state.inventory = inventory;
+        progress(Progress {
+            job_id: job_id.into(),
+            stage: "complete".into(),
+            completed: 1,
+            total: Some(1),
+            message: "Cache inventory refreshed".into(),
+        });
+        Ok(())
+    }
+
     pub async fn manager_options(
         &self,
         provider: ProviderId,
@@ -464,7 +591,7 @@ impl Engine {
             Error::Conflict("This plan is no longer valid. Review the operation again.".into())
         })?;
         let settings = self.state.read().await.settings.clone();
-        if plan.view.use_trash != settings.use_trash {
+        if plan.reviewed_use_trash != settings.use_trash {
             return Err(Error::Conflict(
                 "The cleanup policy changed. Review a new plan.".into(),
             ));

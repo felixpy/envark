@@ -366,6 +366,13 @@ pub struct Worktree {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CacheCleanupIssue {
+    pub reason: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Cache {
     pub id: String,
     pub provider: ProviderId,
@@ -375,6 +382,8 @@ pub struct Cache {
     pub strategy: String,
     pub warning: String,
     pub can_clean: bool,
+    #[serde(default)]
+    pub cleanup_issue: Option<CacheCleanupIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

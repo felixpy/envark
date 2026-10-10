@@ -16,7 +16,7 @@ export function TaskProgress() {
   if (!task) return null
   const status = progressLabel(
     progress ??
-      (['prepare', 'updates'].includes(task.kind)
+      (['prepare', 'updates', 'caches'].includes(task.kind)
         ? { stage: task.kind, jobId: '', completed: 0, total: null, message: '' }
         : null),
     t,

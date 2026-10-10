@@ -1,4 +1,5 @@
 pub(crate) mod cache_cleanup;
+pub(crate) mod cache_discovery;
 mod javascript;
 pub(crate) mod js_tooling;
 pub(crate) mod language_lifecycle;
@@ -148,6 +149,9 @@ impl Context {
                 candidates.push(home.join("bin"));
                 candidates.push(home);
             }
+        }
+        if ["node", "npm", "npx", "pnpm", "yarn", "corepack"].contains(&name) {
+            candidates.extend(js_tooling::node_bins(self));
         }
         candidates
             .into_iter()
@@ -330,6 +334,7 @@ pub(crate) async fn discover_selected(
     // Shared cache paths are counted only once, even when several tools report them.
     let mut seen = std::collections::HashSet::new();
     caches.retain(|c| seen.insert(std::fs::canonicalize(&c.path).unwrap_or(c.path.clone())));
+    cache_discovery::check_capabilities(&context, &mut caches).await?;
     Ok(Discovery { providers, caches })
 }
 
@@ -355,7 +360,7 @@ pub(super) fn cache(
     if !path.is_dir() {
         return None;
     }
-    Some(Cache { id: id_for("cache", &path), provider, name: name.into(), path, size: Default::default(), strategy: strategy.into(), can_clean, warning: match strategy {
+    Some(Cache { cleanup_issue: None, id: id_for("cache", &path), provider, name: name.into(), path, size: Default::default(), strategy: strategy.into(), can_clean, warning: match strategy {
         "maven-repository" => "This repository can contain locally published artifacts that cannot be downloaded again. Blanket cache cleanup is disabled to preserve them.",
         "cargo-registry" | "cargo-git" => "Downloaded dependencies are removed while holding Cargo cache locks. Installed tools and configuration are preserved. Dependencies will be downloaded again when needed.",
         "gradle-caches" | "gradle-dists" => "Gradle applies its retention policy to both caches and distributions. Recently used entries are retained; this does not empty every cache.",
@@ -552,10 +557,38 @@ pub fn cache_command(ctx: &Context, cache: &Cache) -> Result<CommandSpec> {
 }
 
 pub fn cache_probe(cache: &Cache, command: &CommandSpec) -> Option<CommandSpec> {
+    if matches!(cache.strategy.as_str(), "go-build" | "go-modules") {
+        let mut probe = command.clone();
+        probe.args = vec![
+            "env".into(),
+            if cache.strategy == "go-build" {
+                "GOCACHE"
+            } else {
+                "GOMODCACHE"
+            }
+            .into(),
+        ];
+        probe.timeout = std::time::Duration::from_secs(20);
+        return Some(probe);
+    }
+    if cache.strategy == "npm-verify" {
+        let mut probe = command.clone();
+        let offset = probe
+            .args
+            .windows(2)
+            .position(|args| args == ["cache", "verify"])?;
+        probe.args.splice(
+            offset..offset + 2,
+            ["config".into(), "get".into(), "cache".into()],
+        );
+        probe.timeout = std::time::Duration::from_secs(20);
+        return Some(probe);
+    }
     let (action, replacement) = match cache.strategy.as_str() {
         "pnpm-prune" => ("prune", "path"),
         "yarn-clean" => ("clean", "dir"),
         "pip-purge" => ("purge", "dir"),
+        "uv-prune" => ("prune", "dir"),
         _ => return None,
     };
     let mut probe = command.clone();

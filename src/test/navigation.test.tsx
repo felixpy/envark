@@ -61,6 +61,7 @@ async function fixture(native = false) {
   let menu: ((action: string) => void) | undefined
   let progress: ((event: Progress) => void) | undefined
   const refresh = vi.fn(async () => data)
+  const refreshCaches = vi.fn(async () => data)
   const syncViewState = vi.fn(async () => {})
   const openAppLink = vi.fn(async () => {})
   const checkAppUpdate = vi.fn(async () => ({ version: '0.2.0', available: true }))
@@ -73,6 +74,7 @@ async function fixture(native = false) {
     native,
     snapshot: async () => data,
     refresh,
+    refreshCaches,
     syncViewState,
     openAppLink,
     checkAppUpdate,
@@ -104,6 +106,7 @@ async function fixture(native = false) {
   return {
     api,
     refresh,
+    refreshCaches,
     syncViewState,
     openAppLink,
     checkAppUpdate,
@@ -279,17 +282,21 @@ it('routes native menu events to navigation, shortcuts, and rescan', async () =>
 })
 
 it('handles Windows shortcuts delivered to the webview without repeating operations', async () => {
-  const { refresh } = await fixture(true)
+  const { refresh, refreshCaches } = await fixture(true)
   await screen.findByRole('heading', { name: 'Overview' })
   fireEvent.keyDown(window, { key: '4', ctrlKey: true })
   await screen.findByRole('heading', { name: 'Global caches' })
+  await waitFor(() => expect(refreshCaches).toHaveBeenCalledWith(expect.any(String), false))
+  refreshCaches.mockClear()
   fireEvent.keyDown(window, { key: 'F1' })
   expect(await screen.findByRole('dialog')).toBeTruthy()
   await userEvent.setup().click(screen.getByRole('button', { name: 'Close' }))
   fireEvent.keyDown(window, { key: 'r', ctrlKey: true, repeat: true })
   expect(refresh).not.toHaveBeenCalled()
+  expect(refreshCaches).not.toHaveBeenCalled()
   fireEvent.keyDown(window, { key: 'r', ctrlKey: true })
-  await waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+  await waitFor(() => expect(refreshCaches).toHaveBeenCalledOnce())
+  expect(refresh).not.toHaveBeenCalled()
 })
 
 it('disables shortcuts independently while leaving menu actions available', async () => {

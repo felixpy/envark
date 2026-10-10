@@ -46,6 +46,62 @@ pub(crate) fn lock_cargo(root: &Path) -> Result<Vec<std::fs::File>> {
     Ok(guards)
 }
 
+// A read-only eligibility check. Execution still acquires locks and revalidates
+// ownership because another process can start using a cache after discovery.
+pub(crate) async fn check(ctx: &Context, cache: &Cache) -> Result<()> {
+    reject_links(&cache.path)?;
+    if !cache.path.is_dir() {
+        return Err(Error::Conflict("The cache directory changed.".into()));
+    }
+    std::fs::read_dir(&cache.path)?;
+    if cache.strategy.starts_with("cargo-") {
+        let root = cargo_root(ctx, cache)?;
+        let mut guards = vec![];
+        for name in [".package-cache-mutate", ".package-cache"] {
+            let path = root.join(name);
+            reject_links(&path)?;
+            let file = match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            file.try_lock().map_err(|_| Error::Conflict("Cargo is using this cache. Retry cleanup when the current build or download finishes.".into()))?;
+            guards.push(file);
+        }
+        return validate_cargo_checkouts(ctx, cache).await;
+    }
+    let command = super::cache_command(ctx, cache)?;
+    if cache.strategy.starts_with("gradle-") {
+        let mut java = CommandSpec::new(&command.program, ["-version"]);
+        ctx.apply_read_policy(&mut java);
+        ctx.runner.run(&java, &ctx.cancel).await.map_err(|error| {
+            Error::Unavailable(format!("Java cannot run the Gradle cleanup tool: {error}"))
+        })?;
+    }
+    if let Some(mut probe) = super::cache_probe(cache, &command) {
+        ctx.apply_read_policy(&mut probe);
+        let output = ctx.runner.run(&probe, &ctx.cancel).await?;
+        let resolved = output
+            .stdout
+            .lines()
+            .rev()
+            .map(str::trim)
+            .filter(|line| Path::new(line).is_absolute())
+            .find_map(|line| std::fs::canonicalize(line).ok());
+        if resolved != Some(std::fs::canonicalize(&cache.path)?) {
+            return Err(Error::Conflict(
+                "The tool resolved a different cache directory. Refresh caches before cleaning."
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn pip_base(ctx: &Context, action: &str) -> Result<CommandSpec> {
     let mut command = if ctx.executable("pip").is_some() {
         ctx.command("pip", &["cache", action])?
@@ -185,9 +241,28 @@ pub(crate) fn gradle_command(ctx: &Context, cache: &Cache) -> Result<CommandSpec
             "Native on-demand cache cleanup requires Gradle 8 or later.".into(),
         ));
     }
-    let mut spec = ctx.command(
-        "java",
-        &[
+    // Finder launches can see Apple's Java stub but not SDKMAN's selected JDK.
+    let sdk = std::env::var_os("SDKMAN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ctx.home.join(".sdkman"));
+    let configured_java = std::env::var_os("JAVA_HOME")
+        .map(PathBuf::from)
+        .map(|root| {
+            root.join(if cfg!(windows) {
+                "bin/java.exe"
+            } else {
+                "bin/java"
+            })
+        })
+        .filter(|path| path.is_file());
+    let selected_java = sdk.join("candidates/java/current/bin/java");
+    let java = configured_java
+        .or_else(|| selected_java.is_file().then_some(selected_java))
+        .or_else(|| ctx.executable("java"))
+        .ok_or_else(|| Error::Unavailable("java is not installed or cannot be found.".into()))?;
+    let mut spec = CommandSpec::new(
+        java,
+        [
             "-cp",
             &launcher.to_string_lossy(),
             "org.gradle.launcher.GradleMain",
@@ -198,7 +273,7 @@ pub(crate) fn gradle_command(ctx: &Context, cache: &Cache) -> Result<CommandSpec
             &home.to_string_lossy(),
             "help",
         ],
-    )?;
+    );
     spec.env.insert(
         "GRADLE_USER_HOME".into(),
         home.to_string_lossy().into_owned(),
@@ -279,8 +354,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cache_cleanup_completes_without_scanning_projects() {
+        use std::os::unix::fs::PermissionsExt;
+
         let root = tempfile::tempdir().unwrap();
         let path = root.path().canonicalize().unwrap();
+        // CI runners can have Gradle installed independently of the fixture home.
+        let inherited = path.join("inherited-gradle");
+        std::fs::create_dir_all(inherited.join("bin")).unwrap();
+        std::fs::create_dir_all(inherited.join("lib")).unwrap();
+        std::fs::write(inherited.join("lib/gradle-launcher-9.0.jar"), "fixture").unwrap();
+        for name in ["gradle", "java"] {
+            let binary = inherited.join("bin").join(name);
+            std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -291,11 +378,14 @@ mod tests {
             .env("ENVARK_CACHE_FIXTURE", &path)
             .env("CARGO_HOME", path.join(".cargo"))
             .env("GRADLE_USER_HOME", path.join(".gradle"))
+            .env("SDKMAN_DIR", path.join(".sdkman"))
+            .env_remove("JAVA_HOME")
             .env(
                 "PATH",
                 format!(
-                    "{}:{}",
+                    "{}:{}:{}",
                     path.join("bin").display(),
+                    inherited.join("bin").display(),
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
@@ -322,6 +412,11 @@ mod tests {
         let mut ctx = Context::new(CancellationToken::new()).unwrap();
         ctx.home = root.clone();
         std::fs::create_dir_all(root.join("bin")).unwrap();
+        // Shadow inherited Gradle installations; distributions are supplied below.
+        let gradle_binary = root.join("bin/gradle");
+        std::fs::write(&gradle_binary, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&gradle_binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(ctx.executable("gradle"), Some(gradle_binary));
         let cargo = cargo_home(&ctx);
         std::fs::create_dir_all(cargo.join("registry/cache")).unwrap();
         std::fs::create_dir_all(cargo.join("bin")).unwrap();
@@ -336,6 +431,22 @@ mod tests {
             true,
         )
         .unwrap();
+        let held = lock_cargo(&cargo).unwrap();
+        let mut eligibility = vec![registry.clone()];
+        super::super::cache_discovery::check_capabilities(&ctx, &mut eligibility)
+            .await
+            .unwrap();
+        assert!(!eligibility[0].can_clean);
+        assert_eq!(
+            eligibility[0].cleanup_issue.as_ref().unwrap().reason,
+            "busy"
+        );
+        drop(held);
+        super::super::cache_discovery::check_capabilities(&ctx, &mut eligibility)
+            .await
+            .unwrap();
+        assert!(eligibility[0].can_clean);
+        assert!(eligibility[0].cleanup_issue.is_none());
         let mut inventory = Inventory {
             caches: vec![registry.clone()],
             ..Default::default()
@@ -465,6 +576,145 @@ esac
         assert_eq!(result.removed_bytes, 12);
         assert!(!pip_path.join("wheel").exists());
 
+        // A successful native cleanup is not a failure when accounting is incomplete.
+        std::fs::write(pip_path.join("wheel"), "cached wheel").unwrap();
+        let unreadable = pip_path.join("unreadable");
+        std::fs::create_dir_all(&unreadable).unwrap();
+        std::fs::write(unreadable.join("keep"), "unmeasurable").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let plan = operations::prepare(
+            ActionRequest::CleanCaches {
+                ids: vec![inventory.caches[0].id.clone()],
+            },
+            &inventory,
+            &Settings::default(),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let result = operations::execute(
+            plan,
+            Settings::default(),
+            ctx.clone(),
+            silent_progress(),
+            "partial-measurement".into(),
+            false,
+        )
+        .await
+        .unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+        assert!(!pip_path.join("wheel").exists());
+        assert_eq!(result.removed_bytes, 0);
+        assert!(!result.accounting_complete);
+        assert!(
+            result.items[0]
+                .message
+                .contains("size could not be confirmed")
+        );
+
+        // Gradle directories alone do not prove that a usable cleanup tool is installed.
+        std::fs::create_dir_all(gradle_home(&ctx).join("caches")).unwrap();
+        let mut found = super::super::cache_discovery::language(&ctx, ProviderId::Jvm).await;
+        super::super::cache_discovery::check_capabilities(&ctx, &mut found)
+            .await
+            .unwrap();
+        let unavailable = found
+            .iter()
+            .find(|cache| cache.strategy == "gradle-caches")
+            .unwrap();
+        assert!(!unavailable.can_clean);
+        assert!(unavailable.warning.contains("Gradle distribution"));
+
+        // JS discovery and cleanup agree on the versioned store and owning tool.
+        let node = root.join("bin/node");
+        std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (name, strategy, suffix, prefix, query, action, flag) in [
+            (
+                "npm",
+                "npm-verify",
+                "npm",
+                "cache",
+                "config",
+                "verify",
+                "--cache",
+            ),
+            (
+                "pnpm",
+                "pnpm-prune",
+                "pnpm/v10",
+                "store",
+                "store",
+                "prune",
+                "--store-dir",
+            ),
+            (
+                "yarn",
+                "yarn-clean",
+                "yarn/v6",
+                "cache",
+                "cache",
+                "clean",
+                "--cache-folder",
+            ),
+        ] {
+            let path = root.join("js-cache").join(suffix);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("entry"), "cache").unwrap();
+            let native_root = if name == "npm" {
+                &path
+            } else {
+                path.parent().unwrap()
+            };
+            let script = format!(
+                r#"#!/bin/sh
+if [ "$1" = '{prefix}' ] && [ "$2" = '{action}' ]; then
+    [ "$3" = '{flag}' ] && [ "$4" = '{native_root}' ] || exit 12
+    rm '{path}/entry'
+elif [ "$1" = '{query}' ]; then
+    printf '%s\n' '{path}'
+else
+    exit 13
+fi
+"#,
+                path = path.display(),
+                native_root = native_root.display()
+            );
+            let binary = root.join("bin").join(name);
+            std::fs::write(&binary, script).unwrap();
+            std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let cache = cache(ProviderId::Js, name, path.clone(), strategy, true).unwrap();
+            inventory.caches = vec![cache.clone()];
+            let plan = operations::prepare(
+                ActionRequest::CleanCaches {
+                    ids: vec![cache.id],
+                },
+                &inventory,
+                &Settings::default(),
+                &ctx,
+            )
+            .await
+            .unwrap();
+            let result = operations::execute(
+                plan,
+                Settings::default(),
+                ctx.clone(),
+                silent_progress(),
+                name.into(),
+                false,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                result.items[0].status, "success",
+                "{name}: {:?}",
+                result.items
+            );
+            assert_eq!(result.removed_bytes, 5);
+            assert!(!path.join("entry").exists());
+        }
+
         // One Gradle operation covers both cache rows and uses an isolated project.
         let gradle = gradle_home(&ctx);
         let lib = gradle.join("wrapper/dists/gradle-8.14-bin/hash/gradle-8.14/lib");
@@ -472,10 +722,12 @@ esac
         std::fs::write(lib.join("gradle-launcher-8.14.jar"), "fixture").unwrap();
         std::fs::create_dir_all(gradle.join("caches/expired")).unwrap();
         std::fs::write(gradle.join("caches/expired/file"), "payload").unwrap();
-        let java = root.join("bin/java");
+        let java = root.join(".sdkman/candidates/java/current/bin/java");
+        std::fs::create_dir_all(java.parent().unwrap()).unwrap();
         std::fs::write(
             &java,
             r#"#!/bin/sh
+if [ "$1" = -version ]; then printf 'openjdk version "21.0.1"\n'; exit 0; fi
 case "$PWD" in "$ENVARK_CACHE_FIXTURE"*) exit 10;; esac
 [ -f settings.gradle ] && [ -f cleanup.init.gradle ] || exit 11
 rm -r "$GRADLE_USER_HOME/caches/expired"
@@ -531,7 +783,7 @@ printf 'Native cleanup completed\n'
             inventory,
             targets,
             &result,
-            ctx,
+            ctx.clone(),
             silent_progress(),
             "refresh".into(),
         )
@@ -539,5 +791,158 @@ printf 'Native cleanup completed\n'
         .unwrap();
         assert_eq!(updated.caches[0].size.bytes, 0);
         assert_eq!(updated.caches[1].size.bytes, 7);
+
+        // Exercise the public engine path with the default Trash preference.
+        // Preparing native cleanup must not turn that preference into a false policy conflict.
+        std::fs::create_dir_all(gradle.join("caches/expired")).unwrap();
+        std::fs::write(gradle.join("caches/expired/file"), "payload").unwrap();
+        let engine = crate::engine::Engine::new(root.join("engine-state")).unwrap();
+        {
+            let mut state = engine.state.write().await;
+            state.inventory = updated;
+            state.settings.roots = vec![root.join("must-not-scan")];
+            state.settings.use_trash = true;
+        }
+        let ids = engine
+            .snapshot()
+            .await
+            .inventory
+            .caches
+            .iter()
+            .map(|c| c.id.clone())
+            .collect();
+        let review = engine
+            .plan(
+                ActionRequest::CleanCaches { ids },
+                "review".into(),
+                silent_progress(),
+            )
+            .await
+            .unwrap();
+        let result = engine
+            .execute(&review.id, "execute".into(), silent_progress(), false)
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+        assert!(!gradle.join("caches/expired").exists());
+
+        // A real preference change still requires another review.
+        let review = engine
+            .plan(
+                ActionRequest::CleanCaches {
+                    ids: engine
+                        .snapshot()
+                        .await
+                        .inventory
+                        .caches
+                        .iter()
+                        .map(|c| c.id.clone())
+                        .collect(),
+                },
+                "changed-review".into(),
+                silent_progress(),
+            )
+            .await
+            .unwrap();
+        engine.state.write().await.settings.use_trash = false;
+        assert!(
+            matches!(engine.execute(&review.id, "changed-execute".into(), silent_progress(), false).await, Err(Error::Conflict(message)) if message.contains("cleanup policy changed"))
+        );
+
+        // Cache refresh calls only cache probes and retains the unrelated inventory.
+        for name in ["node", "npm", "pnpm", "yarn", "uv", "pip", "go"] {
+            let cache = root.join(format!("cache-{name}"));
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(cache.join("entry"), "cache").unwrap();
+            let output = if name == "go" {
+                serde_json::json!({"GOCACHE": cache, "GOMODCACHE": cache}).to_string()
+            } else {
+                cache.display().to_string()
+            };
+            let binary = root.join("bin").join(name);
+            let script = if name == "go" {
+                format!(
+                    "#!/bin/sh\nif [ \"$2\" = -json ]; then printf '%s\\n' '{}'; else printf '%s\\n' '{}'; fi\n",
+                    output,
+                    cache.display()
+                )
+            } else {
+                format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", output)
+            };
+            std::fs::write(&binary, script).unwrap();
+            std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        ctx.data = root.join("data");
+        ctx.cache = root.join("cache");
+        let before = engine.snapshot().await;
+        let events = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let sink = events.clone();
+        engine
+            .refresh_caches_inner(
+                ctx.clone(),
+                "caches-only",
+                std::sync::Arc::new(move |event| sink.lock().unwrap().push(event.stage)),
+                true,
+            )
+            .await
+            .unwrap();
+        let after = engine.snapshot().await;
+        assert_eq!(
+            serde_json::to_value(before.inventory.projects).unwrap(),
+            serde_json::to_value(after.inventory.projects).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(before.inventory.providers).unwrap(),
+            serde_json::to_value(after.inventory.providers).unwrap()
+        );
+        assert_eq!(before.inventory.scanned_at, after.inventory.scanned_at);
+        assert!(!events.lock().unwrap().iter().any(|stage| {
+            ["discover", "measure-projects", "updates", "environments"].contains(&stage.as_str())
+        }));
+        assert!(
+            after
+                .inventory
+                .caches
+                .iter()
+                .any(|cache| cache.name == "npm" && cache.size.bytes == 5),
+            "{:#?}",
+            after.inventory.caches
+        );
+        assert!(
+            after
+                .inventory
+                .caches
+                .iter()
+                .any(|cache| cache.name == "pnpm" && cache.size.bytes == 5)
+        );
+        // Rechecking availability must not traverse or remeasure any cache contents.
+        std::fs::write(root.join("cache-npm/new-entry"), "unmeasured new bytes").unwrap();
+        let stages = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
+        let sink = stages.clone();
+        engine
+            .refresh_caches_inner(
+                ctx,
+                "capabilities-only",
+                std::sync::Arc::new(move |event| sink.lock().unwrap().push(event.stage)),
+                false,
+            )
+            .await
+            .unwrap();
+        let checked = engine.snapshot().await;
+        let npm = checked
+            .inventory
+            .caches
+            .iter()
+            .find(|cache| cache.name == "npm")
+            .unwrap();
+        assert_eq!(npm.size.bytes, 5);
+        assert!(npm.can_clean);
+        assert!(
+            !stages
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|stage| stage == "measure-caches")
+        );
     }
 }

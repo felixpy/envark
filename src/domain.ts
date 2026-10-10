@@ -142,6 +142,18 @@ export interface Cache {
   strategy: string
   warning: string
   canClean: boolean
+  cleanupIssue?: {
+    reason:
+      | 'toolUnavailable'
+      | 'unsupportedTool'
+      | 'busy'
+      | 'localChanges'
+      | 'changed'
+      | 'accessDenied'
+      | 'unsafePath'
+      | 'unavailable'
+    detail: string
+  } | null
 }
 export interface Disk {
   name: string
@@ -167,6 +179,7 @@ export interface Activity {
   detail: string
   removedBytes: number
   reclaimedBytes: number | null
+  accountingComplete?: boolean
 }
 export interface Snapshot {
   settings: Settings
@@ -237,6 +250,7 @@ export interface OperationResult {
   cancelled: boolean
   removedBytes: number
   reclaimedBytes: number | null
+  accountingComplete?: boolean
 }
 
 export const defaultSettings: Settings = {
