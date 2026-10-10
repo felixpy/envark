@@ -238,10 +238,6 @@ impl Engine {
         job_id: String,
         progress: ProgressSink,
     ) -> Result<Provider> {
-        let _guard = self
-            .work
-            .try_lock()
-            .map_err(|_| Error::Conflict("An operation is already running.".into()))?;
         let mut provider = {
             let state = self.state.read().await;
             if !state.settings.check_updates {
@@ -257,6 +253,7 @@ impl Engine {
                 .cloned()
                 .ok_or_else(|| Error::InvalidInput("Unknown environment.".into()))?
         };
+        let before = provider.clone();
         let token = CancellationToken::new();
         let ctx = Context::new(token.clone())?;
         self.jobs.lock().await.insert(job_id.clone(), token.clone());
@@ -273,15 +270,36 @@ impl Engine {
         if token.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        // Merge into the current inventory to retain independent disk refreshes.
+        // Registry lookups do not reserve the mutation lock. Only merge tools
+        // whose installation has not changed while the read-only lookup ran.
         let mut state = self.state.write().await;
+        if !state.settings.check_updates {
+            return Err(Error::Cancelled);
+        }
         let mut inventory = state.inventory.clone();
         if let Some(current) = inventory
             .providers
             .iter_mut()
             .find(|item| item.id == provider_id)
         {
-            *current = provider.clone();
+            for (current_tools, before_tools, updated_tools) in [
+                (
+                    &mut current.package_managers,
+                    &before.package_managers,
+                    &provider.package_managers,
+                ),
+                (&mut current.tools, &before.tools, &provider.tools),
+            ] {
+                for tool in current_tools {
+                    if let Some(original) = before_tools.iter().find(|item| item.id == tool.id)
+                        && serde_json::to_value(&*tool)? == serde_json::to_value(original)?
+                        && let Some(updated) = updated_tools.iter().find(|item| item.id == tool.id)
+                    {
+                        *tool = updated.clone();
+                    }
+                }
+            }
+            provider = current.clone();
         }
         self.storage.save_inventory(&inventory)?;
         state.inventory = inventory;
@@ -658,6 +676,46 @@ mod tests {
             );
             assert!(engine.jobs.lock().await.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn update_lookup_does_not_block_operations_or_restore_changed_installations() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = Arc::new(Engine::new(root.path().into()).unwrap());
+        let mut provider = Provider::empty(ProviderId::Go);
+        let tool: Tool = serde_json::from_value(serde_json::json!({
+            "id": "fixture", "name": "fixture", "version": "1.0.0", "source": "unsupported",
+            "latest": null, "updateStatus": "unknown", "runtime": null, "path": null,
+            "size": null, "canUpdate": false, "canRemove": false, "note": null
+        }))
+        .unwrap();
+        provider.tools.push(tool.clone());
+        provider.package_managers.push(tool);
+        engine.state.write().await.inventory.providers = vec![provider];
+        let concurrent = engine.clone();
+        let updated = engine
+            .check_tool_updates(
+                ProviderId::Go,
+                "lookup".into(),
+                Arc::new(move |_| {
+                    let _operation = concurrent
+                        .reserve_work()
+                        .expect("lookup must not block mutations");
+                    let mut state = concurrent.state.try_write().unwrap();
+                    let provider = &mut state.inventory.providers[0];
+                    provider.tools.clear();
+                    provider.package_managers[0].version = "3.0.0".into();
+                    provider.issues.push("new diagnostic".into());
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(updated.tools.is_empty());
+        assert_eq!(updated.package_managers[0].version, "3.0.0");
+        assert_eq!(updated.issues, vec!["new diagnostic"]);
+        let persisted = engine.storage.inventory().unwrap();
+        assert!(persisted.providers[0].tools.is_empty());
+        assert_eq!(persisted.providers[0].package_managers[0].version, "3.0.0");
     }
 
     #[tokio::test]

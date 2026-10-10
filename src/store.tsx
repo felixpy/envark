@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
+import { useToolUpdates, type UpdateCheck } from './tool-updates'
 import traditionalStrings from './locales/zh-TW.json'
 import { backend, type Backend } from './bridge'
 import {
@@ -34,6 +35,7 @@ interface Store {
   progress: Progress | null
   cancel(): Promise<void>
   refresh(): Promise<void>
+  updateChecks: Partial<Record<ProviderId, UpdateCheck>>
   checkToolUpdates(provider: ProviderId): Promise<void>
   saveSettings(settings: Settings): Promise<boolean>
   setTheme(theme: Settings['theme']): Promise<void>
@@ -207,6 +209,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       return false
     }
   }
+  const updates = useToolUpdates(api, data, setData, loaded && view === 'env' ? provider : null)
   const store: Store = {
     data,
     loaded,
@@ -233,26 +236,7 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       setNavigationKey((key) => key + 1)
     },
     refresh,
-    checkToolUpdates: async (provider) => {
-      if (running.current) return
-      const id = begin('updates')
-      try {
-        const updated = await api.checkToolUpdates(provider, id)
-        setData((current) => ({
-          ...current,
-          inventory: {
-            ...current.inventory,
-            providers: current.inventory.providers.map((item) =>
-              item.id === updated.id ? updated : item,
-            ),
-          },
-        }))
-      } catch (cause) {
-        fail(cause)
-      } finally {
-        finish()
-      }
-    },
+    ...updates,
     saveSettings,
     setTheme: async (theme) => {
       try {

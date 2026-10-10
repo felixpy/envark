@@ -1,3 +1,4 @@
+import { ToolUpdateStatus } from '@/components/ToolUpdateStatus'
 import { OllamaProgram, OllamaService } from '@/components/OllamaEnvironment'
 import { ManagerInstallDialog } from '@/components/ManagerInstallDialog'
 import { displayPath } from '@/lib/paths'
@@ -768,6 +769,7 @@ function Tools({
 }) {
   const s = useStore()
   const { t, busy } = s
+  const checking = s.updateChecks[providerId] === 'checking'
   const busyReason = busy
     ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
     : null
@@ -825,18 +827,21 @@ function Tools({
           <Button
             variant="outline"
             size="sm"
-            reason={busyReason}
+            reason={checking ? t('正在检查更新…', 'Checking tool updates…') : null}
             onClick={() =>
               s.data.settings.checkUpdates ? void s.checkToolUpdates(providerId) : s.go('settings')
             }
           >
-            {s.data.settings.checkUpdates
-              ? t('重新检查更新', 'Check updates again')
-              : t('开启更新检查', 'Enable update checks')}
+            {checking
+              ? t('正在检查…', 'Checking…')
+              : s.data.settings.checkUpdates
+                ? t('重新检查更新', 'Check updates again')
+                : t('开启更新检查', 'Enable update checks')}
           </Button>
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-3">
+        <ToolUpdateStatus provider={providerId} />
         {global && (
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput
@@ -921,7 +926,15 @@ function Tools({
                 <TableCell>
                   <Checkbox
                     aria-label={`${t('选择', 'Select')} ${item.name}`}
-                    reason={busyReason || toolUpdateReason(item, s.data.settings.checkUpdates, t)}
+                    reason={
+                      busyReason ||
+                      toolUpdateReason(
+                        item,
+                        s.data.settings.checkUpdates,
+                        t,
+                        s.updateChecks[providerId],
+                      )
+                    }
                     checked={canUpdateTool(item) && selection.selected.has(item.id)}
                     onCheckedChange={(on) => selection.toggle([item.id], on === true)}
                   />
@@ -946,7 +959,9 @@ function Tools({
                   )}
                   {updateKind(item) === 'unknown' && (
                     <span className="block text-muted-foreground">
-                      {t('需检查更新', 'Update check required')}
+                      {checking
+                        ? t('正在查询…', 'Checking…')
+                        : t('版本信息暂不可用', 'Version information unavailable')}
                     </span>
                   )}
                 </TableCell>
@@ -979,7 +994,15 @@ function Tools({
                     <Button
                       variant="outline"
                       size="sm"
-                      reason={busyReason || toolUpdateReason(item, s.data.settings.checkUpdates, t)}
+                      reason={
+                        busyReason ||
+                        toolUpdateReason(
+                          item,
+                          s.data.settings.checkUpdates,
+                          t,
+                          s.updateChecks[providerId],
+                        )
+                      }
                       onClick={() => onUpdate(item)}
                     >
                       <ArrowUp />
