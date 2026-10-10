@@ -3,6 +3,7 @@ import { CheckCircle2, CircleAlert, Download, RefreshCw } from 'lucide-react'
 import type { AppRelease, AppUpdateProgress } from '@/desktop'
 import { formatBytes } from '@/domain'
 import { useStore } from '@/store'
+import { mergeAppUpdateProgress } from '@/lib/app-update-progress'
 import { AppLink } from './AppLink'
 import { Button } from './ui/button'
 import { ActionButton } from './action-controls'
@@ -66,20 +67,30 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
     installing.current = true
     setState({ status: 'downloading', progress: { downloaded: 0, total: null, installing: false } })
     let unsubscribe: (() => void) | undefined
+    let acceptingProgress = true
     try {
       if (!api.installAppUpdate || !api.subscribeAppUpdate)
         throw new Error(
           t('此客户端不支持自动更新。', 'Automatic updates are unavailable in this client.'),
         )
-      unsubscribe = await api.subscribeAppUpdate((progress) =>
-        setState({ status: 'downloading', progress }),
-      )
+      unsubscribe = await api.subscribeAppUpdate((progress) => {
+        if (!acceptingProgress) return
+        setState((previous) =>
+          previous.status === 'downloading'
+            ? {
+                status: 'downloading',
+                progress: mergeAppUpdateProgress(previous.progress, progress),
+              }
+            : previous,
+        )
+      })
       await api.installAppUpdate()
       restartReady.current = true
       setState({ status: 'installed' })
     } catch (error) {
       setState({ status: 'error', message: String(error), phase: 'install' })
     } finally {
+      acceptingProgress = false
       unsubscribe?.()
       installing.current = false
     }
@@ -154,21 +165,37 @@ export function AppUpdateProvider({ children }: { children: ReactNode }) {
             )}
             {state.status === 'downloading' && (
               <div className="space-y-3">
-                <p>
+                <p className="flex items-center gap-2">
+                  <RefreshCw aria-hidden="true" className="size-4 animate-spin" />
                   {state.progress.installing
                     ? t('正在安装更新…', 'Installing update…')
                     : t('正在下载更新…', 'Downloading update…')}
                 </p>
-                <Progress
-                  value={
-                    state.progress.total
-                      ? Math.min(100, (state.progress.downloaded / state.progress.total) * 100)
-                      : null
-                  }
-                />
-                <p className="font-mono text-xs text-muted-foreground">
-                  {formatBytes(state.progress.downloaded)}
-                  {state.progress.total ? ` / ${formatBytes(state.progress.total)}` : ''}
+                {(state.progress.total || state.progress.installing) && (
+                  <Progress
+                    aria-label={t('正在下载更新…', 'Downloading update…')}
+                    value={
+                      state.progress.installing
+                        ? 100
+                        : Math.min(100, (state.progress.downloaded / state.progress.total!) * 100)
+                    }
+                    className="[&>[data-slot=progress-indicator]]:transition-transform [&>[data-slot=progress-indicator]]:duration-100 [&>[data-slot=progress-indicator]]:ease-linear [&>[data-slot=progress-indicator]]:motion-reduce:transition-none"
+                  />
+                )}
+                <p className="flex justify-between font-mono text-xs text-muted-foreground">
+                  <span>
+                    {formatBytes(state.progress.downloaded)}
+                    {state.progress.total ? ` / ${formatBytes(state.progress.total)}` : ''}
+                  </span>
+                  {state.progress.total && (
+                    <span>
+                      {Math.min(
+                        100,
+                        Math.floor((state.progress.downloaded / state.progress.total) * 100),
+                      )}
+                      %
+                    </span>
+                  )}
                 </p>
               </div>
             )}
