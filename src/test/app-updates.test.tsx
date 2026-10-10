@@ -18,6 +18,7 @@ function fixture(release: AppRelease = { version: '0.3.0', available: true, inst
   snapshot.settings.language = 'en'
   snapshot.settings.scanOnLaunch = false
   let onProgress: ((progress: AppUpdateProgress) => void) | undefined
+  const listeners: Array<(progress: AppUpdateProgress) => void> = []
   const stop = vi.fn()
   const install = vi.fn(async () => {})
   const restart = vi.fn(async () => {})
@@ -44,6 +45,7 @@ function fixture(release: AppRelease = { version: '0.3.0', available: true, inst
     restartAfterUpdate: restart,
     subscribeAppUpdate: async (handler) => {
       onProgress = handler
+      listeners.push(handler)
       return stop
     },
   }
@@ -62,6 +64,8 @@ function fixture(release: AppRelease = { version: '0.3.0', available: true, inst
     restart,
     stop,
     progress: (value: AppUpdateProgress) => act(() => onProgress?.(value)),
+    progressFromAttempt: (attempt: number, value: AppUpdateProgress) =>
+      act(() => listeners[attempt]?.(value)),
   }
 }
 
@@ -80,12 +84,23 @@ it('downloads signed updates, shows progress, prevents duplicate installs, and r
   await waitFor(() => expect(install).toHaveBeenCalledOnce())
   progress({ downloaded: 512, total: 1024, installing: false })
   expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50')
+  progress({ downloaded: 256, total: 1024, installing: false })
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50')
+  progress({ downloaded: 768, total: null, installing: false })
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('75')
   await user.keyboard('{Escape}')
   expect(screen.getByRole('dialog')).toBeTruthy()
   progress({ downloaded: 1024, total: 1024, installing: true })
   expect(screen.getByText('Installing update…')).toBeTruthy()
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100')
+  progress({ downloaded: 800, total: 1024, installing: false })
+  expect(screen.getByText('Installing update…')).toBeTruthy()
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100')
   await act(async () => finish())
   const button = await screen.findByRole('button', { name: 'Restart now' })
+  progress({ downloaded: 900, total: 1024, installing: false })
+  expect(screen.getByRole('button', { name: 'Restart now' })).toBe(button)
+  expect(screen.queryByRole('progressbar')).toBeNull()
   expect(stop).toHaveBeenCalledOnce()
   expect(restart).not.toHaveBeenCalled()
   await user.click(button)
@@ -133,4 +148,53 @@ it('cleans up the progress listener and permits retry after an installation fail
   await screen.findByRole('button', { name: 'Restart now' })
   expect(check).toHaveBeenCalledTimes(2)
   expect(install).toHaveBeenCalledTimes(2)
+})
+
+it('shows downloaded bytes without inventing a percentage when the server omits the length', async () => {
+  const { install, progress } = fixture()
+  let finish!: () => void
+  install.mockImplementation(() => new Promise<void>((resolve) => (finish = resolve)))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Check update' }))
+  await user.click(await screen.findByRole('button', { name: 'Download and install' }))
+  await waitFor(() => expect(install).toHaveBeenCalledOnce())
+  progress({ downloaded: 4096, total: null, installing: false })
+  expect(screen.getByText('4.0 KB')).toBeTruthy()
+  expect(screen.queryByRole('progressbar')).toBeNull()
+  progress({ downloaded: 2048, total: 0, installing: false })
+  expect(screen.getByText('4.0 KB')).toBeTruthy()
+  expect(screen.queryByRole('progressbar')).toBeNull()
+  progress({ downloaded: 4096, total: 8192, installing: false })
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('50')
+  progress({ downloaded: 8192, total: 8192, installing: true })
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('100')
+  await act(async () => finish())
+})
+
+it('starts a retried download at zero and keeps late failed-attempt events out of its progress', async () => {
+  const { install, progress, progressFromAttempt } = fixture()
+  let fail!: (error: Error) => void
+  let finish!: () => void
+  install
+    .mockImplementationOnce(() => new Promise<void>((_, reject) => (fail = reject)))
+    .mockImplementationOnce(() => new Promise<void>((resolve) => (finish = resolve)))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Check update' }))
+  await user.click(await screen.findByRole('button', { name: 'Download and install' }))
+  await waitFor(() => expect(install).toHaveBeenCalledOnce())
+  progress({ downloaded: 768, total: 1024, installing: false })
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('75')
+  await act(async () => fail(new Error('Download interrupted')))
+  progress({ downloaded: 1024, total: 1024, installing: true })
+  expect(screen.getByText('Error: Download interrupted')).toBeTruthy()
+  await user.click(screen.getByRole('button', { name: 'Retry' }))
+  await user.click(await screen.findByRole('button', { name: 'Download and install' }))
+  await waitFor(() => expect(install).toHaveBeenCalledTimes(2))
+  expect(screen.queryByRole('progressbar')).toBeNull()
+  progress({ downloaded: 256, total: 1024, installing: false })
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('25')
+  progressFromAttempt(0, { downloaded: 1024, total: 1024, installing: true })
+  expect(screen.getByText('Downloading update…')).toBeTruthy()
+  expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('25')
+  await act(async () => finish())
 })
