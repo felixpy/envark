@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/felixpy/envark/compare/v0.4.2...v0.4.3) (2026-10-10)
+
+
+### Bug Fixes
+
+* **updates:** keep download progress monotonic and throttle events ([#42](https://github.com/felixpy/envark/issues/42)) ([24a19a2](https://github.com/felixpy/envark/commit/24a19a21f7905263898ff0d1aba443e110ca360d))
+
 ## [0.4.2](https://github.com/felixpy/envark/compare/v0.4.1...v0.4.2) (2026-10-10)
 
 
