@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/felixpy/envark/compare/v0.4.0...v0.4.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **ui:** open dialogs promptly and check tool updates automatically ([#38](https://github.com/felixpy/envark/issues/38)) ([837ecd7](https://github.com/felixpy/envark/commit/837ecd724bc4dad33d1b5d000f7a4538f19da3b8))
+
 ## [0.4.0](https://github.com/felixpy/envark/compare/v0.3.4...v0.4.0) (2026-10-09)
 
 
