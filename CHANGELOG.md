@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/felixpy/envark/compare/v0.4.1...v0.4.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **caches:** scope refresh, preflight cleanup and prevent false failures ([#40](https://github.com/felixpy/envark/issues/40)) ([851e17d](https://github.com/felixpy/envark/commit/851e17dc53cb16792cae284afc78016aac2ea649))
+
 ## [0.4.1](https://github.com/felixpy/envark/compare/v0.4.0...v0.4.1) (2026-10-10)
 
 
