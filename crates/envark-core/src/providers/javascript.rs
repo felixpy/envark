@@ -14,7 +14,6 @@ fn fnm_default(root: &Path) -> Option<PathBuf> {
 }
 
 pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
-    let mut caches = vec![];
     let active_path = ctx
         .executable("node")
         .and_then(|p| std::fs::canonicalize(p).ok());
@@ -140,20 +139,9 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if let Some(root) = ctx.cache_path("yarn", &["global", "dir"]).await {
         add_packages(provider, &root.join("node_modules"), "yarn", None);
     }
-    for (manager, args, strategy) in [
-        ("npm", vec!["config", "get", "cache"], "npm-verify"),
-        ("pnpm", vec!["store", "path"], "pnpm-prune"),
-        ("yarn", vec!["cache", "dir"], "yarn-clean"),
-    ] {
-        if let Some(path) = ctx.cache_path(manager, &args).await
-            && let Some(found) = cache(ProviderId::Js, manager, path, strategy, true)
-        {
-            caches.push(found);
-        }
-    }
     config(provider, ctx.home.join(".npmrc"), "ini", true);
     config(provider, ctx.home.join(".yarnrc.yml"), "yaml", true);
-    caches
+    super::cache_discovery::javascript(ctx).await
 }
 
 fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Option<String>) {
@@ -197,6 +185,59 @@ fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn caches_resolve_from_fnm_and_config_without_shell_initialization() {
+        let root = tempfile::tempdir().unwrap();
+        let mut ctx = Context::new(CancellationToken::new()).unwrap();
+        ctx.home = std::fs::canonicalize(root.path()).unwrap();
+        ctx.data = ctx.home.join(".local/share");
+        ctx.cache = ctx.home.join(".cache");
+        let bin = ctx.data.join("fnm/aliases/default/bin");
+        let npm = ctx.data.join("fnm/aliases/default/lib/node_modules/npm");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(npm.join("bin")).unwrap();
+        std::fs::write(bin.join("node"), "fixture").unwrap();
+        std::fs::write(
+            npm.join("package.json"),
+            r#"{"name":"npm","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(npm.join("bin/npm-cli.js"), "fixture").unwrap();
+        std::os::unix::fs::symlink(npm.join("bin/npm-cli.js"), bin.join("npm")).unwrap();
+        assert!(ctx.executable_candidates("npm").contains(&bin.join("npm")));
+        let command = super::super::js_tooling::cli_command(
+            &ctx,
+            &bin.join("npm"),
+            "npm",
+            &["config", "get", "cache"],
+        )
+        .unwrap();
+        assert_eq!(command.program, bin.join("node"));
+        // An explicitly configured location remains visible even if the CLI is unavailable.
+        let configured = ctx.home.join("custom-cache");
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::write(
+            ctx.home.join(".npmrc"),
+            format!("cache={}\n", configured.display()),
+        )
+        .unwrap();
+        let store = ctx.home.join("Library/pnpm/store/v10");
+        std::fs::create_dir_all(&store).unwrap();
+        let found = super::super::cache_discovery::javascript(&ctx).await;
+        assert!(
+            found
+                .iter()
+                .any(|cache| cache.name == "npm" && cache.path == configured)
+        );
+        assert!(
+            found
+                .iter()
+                .any(|cache| cache.name == "pnpm"
+                    && cache.path == ctx.home.join("Library/pnpm/store"))
+        );
+    }
 
     #[cfg(unix)]
     #[test]

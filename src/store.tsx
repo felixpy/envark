@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { toast } from 'sonner'
+import { failedReview } from './lib/operation-review'
 import { useToolUpdates, type UpdateCheck } from './tool-updates'
 import traditionalStrings from './locales/zh-TW.json'
 import { backend, type Backend } from './bridge'
@@ -28,7 +29,7 @@ interface Store {
   go(view: View, provider?: ProviderId | null, focus?: NavigationFocus): void
   busy: boolean
   task: {
-    kind: 'scan' | 'updates' | 'prepare' | 'execute'
+    kind: 'scan' | 'caches' | 'updates' | 'prepare' | 'execute'
     startedAt: number
     request: ActionRequest | null
   } | null
@@ -48,6 +49,8 @@ interface Store {
   completedSelectionIds: string[]
   prepare(request: ActionRequest): Promise<void>
   reviewAgain(): Promise<void>
+  canReviewFailed: boolean
+  reviewFailed(): Promise<void>
   execute(discardWorktreeChanges?: boolean): Promise<void>
   closePlan(): void
   reload(): Promise<void>
@@ -115,9 +118,10 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
   }
   const refresh = async () => {
     if (running.current) return
-    const id = begin('scan')
+    const cachesOnly = view === 'caches'
+    const id = begin(cachesOnly ? 'caches' : 'scan')
     try {
-      setData(await api.refresh(id))
+      setData(await (cachesOnly ? api.refreshCaches(id) : api.refresh(id)))
     } catch (cause) {
       fail(cause)
     } finally {
@@ -299,6 +303,11 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
       } finally {
         finish()
       }
+    },
+    canReviewFailed: !!failedReview(reviewedRequest.current, result),
+    reviewFailed: async () => {
+      const request = failedReview(reviewedRequest.current, result)
+      if (request) await store.prepare(request)
     },
     reviewAgain: async () => {
       if (reviewedRequest.current) await store.prepare(reviewedRequest.current)

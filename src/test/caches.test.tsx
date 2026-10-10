@@ -1,9 +1,10 @@
+import { act } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { backend } from '@/bridge'
 import { emptySnapshot } from '@/domain'
-import { StoreProvider } from '@/store'
+import { StoreProvider, useStore } from '@/store'
 import Caches from '@/views/Caches'
 import { TooltipProvider } from '@/components/ui/tooltip'
 
@@ -111,4 +112,32 @@ it('offers pip, Cargo and Gradle cleanup in the app with accurate strategies', a
     ),
   )
   expect(refresh).not.toHaveBeenCalled()
+})
+
+it('refreshes caches without scanning project roots and keeps review available afterward', async () => {
+  const data = structuredClone(emptySnapshot)
+  data.settings.language = 'en'
+  data.settings.scanOnLaunch = false
+  const refresh = vi.fn(async () => data)
+  const refreshCaches = vi.fn(async () => data)
+  let state!: ReturnType<typeof useStore>
+  function Probe() {
+    state = useStore()
+    return <Caches />
+  }
+  render(
+    <StoreProvider
+      api={{ ...backend, snapshot: async () => data, refresh, refreshCaches } as typeof backend}
+    >
+      <Probe />
+    </StoreProvider>,
+    { wrapper: TooltipProvider },
+  )
+  await waitFor(() => expect(state.loaded).toBe(true))
+  act(() => state.go('caches'))
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Refresh caches' }))
+  await waitFor(() => expect(state.busy).toBe(false))
+  expect(refreshCaches).toHaveBeenCalledOnce()
+  expect(refresh).not.toHaveBeenCalled()
+  expect(state.busy).toBe(false)
 })

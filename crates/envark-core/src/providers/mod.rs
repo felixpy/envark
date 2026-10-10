@@ -1,4 +1,5 @@
 pub(crate) mod cache_cleanup;
+pub(crate) mod cache_discovery;
 mod javascript;
 pub(crate) mod js_tooling;
 pub(crate) mod language_lifecycle;
@@ -148,6 +149,9 @@ impl Context {
                 candidates.push(home.join("bin"));
                 candidates.push(home);
             }
+        }
+        if ["node", "npm", "npx", "pnpm", "yarn", "corepack"].contains(&name) {
+            candidates.extend(js_tooling::node_bins(self));
         }
         candidates
             .into_iter()

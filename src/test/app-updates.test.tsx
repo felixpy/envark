@@ -30,6 +30,7 @@ function fixture(release: AppRelease = { version: '0.3.0', available: true, inst
     native: true,
     snapshot: async () => snapshot,
     refresh: vi.fn(),
+    refreshCaches: vi.fn(),
     saveSettings: vi.fn(),
     prepare: vi.fn(),
     execute: vi.fn(),

@@ -12,7 +12,6 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
 }
 
 async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
-    let mut caches = vec![];
     for name in ["uv", "pyenv"] {
         if let Some(manager) = ctx.manager(name, true, true).await {
             provider.managers.push(manager);
@@ -76,22 +75,12 @@ async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             provider.tools.push(tool);
         }
     }
-    if let Some(path) = ctx.cache_path("uv", &["cache", "dir"]).await
-        && let Some(item) = cache(ProviderId::Py, "uv", path, "uv-prune", true)
-    {
-        caches.push(item);
-    }
-    if let Some(path) = super::cache_cleanup::pip_path(ctx).await
-        && let Some(item) = cache(ProviderId::Py, "pip", path, "pip-purge", true)
-    {
-        caches.push(item);
-    }
     config(provider, ctx.home.join(".config/uv/uv.toml"), "toml", true);
     config(provider, ctx.data.join("uv/uv.toml"), "toml", true);
     config(provider, ctx.home.join(".config/pip/pip.conf"), "ini", true);
     config(provider, ctx.home.join("pip/pip.ini"), "ini", true);
     config(provider, ctx.home.join(".python-version"), "text", true);
-    caches
+    super::cache_discovery::language(ctx, ProviderId::Py).await
 }
 
 async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
@@ -178,25 +167,7 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.home.join(".cargo"));
     config(provider, cargo_root.join("config.toml"), "toml", true);
-    [
-        cache(
-            ProviderId::Rust,
-            "Cargo registry",
-            cargo_root.join("registry"),
-            "cargo-registry",
-            true,
-        ),
-        cache(
-            ProviderId::Rust,
-            "Cargo Git checkouts",
-            cargo_root.join("git"),
-            "cargo-git",
-            true,
-        ),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    super::cache_discovery::language(ctx, ProviderId::Rust).await
 }
 
 fn rustc_version(output: &str) -> Result<String> {
@@ -305,17 +276,7 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             }
         }
     }
-    [
-        ("Go build", "GOCACHE", "go-build"),
-        ("Go modules", "GOMODCACHE", "go-modules"),
-    ]
-    .into_iter()
-    .filter_map(|(name, key, strategy)| {
-        env[key]
-            .as_str()
-            .and_then(|p| cache(ProviderId::Go, name, PathBuf::from(p), strategy, true))
-    })
-    .collect()
+    super::cache_discovery::go_paths(ctx, &env)
 }
 
 async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
@@ -424,32 +385,7 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         true,
     );
     config(provider, sdkman.join("etc/config"), "properties", true);
-    [
-        cache(
-            ProviderId::Jvm,
-            "Maven repository",
-            ctx.home.join(".m2/repository"),
-            "maven-repository",
-            false,
-        ),
-        cache(
-            ProviderId::Jvm,
-            "Gradle caches",
-            super::cache_cleanup::gradle_home(ctx).join("caches"),
-            "gradle-caches",
-            true,
-        ),
-        cache(
-            ProviderId::Jvm,
-            "Gradle distributions",
-            super::cache_cleanup::gradle_home(ctx).join("wrapper/dists"),
-            "gradle-dists",
-            true,
-        ),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+    super::cache_discovery::language(ctx, ProviderId::Jvm).await
 }
 
 #[cfg(test)]

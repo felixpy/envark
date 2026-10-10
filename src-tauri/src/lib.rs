@@ -116,6 +116,18 @@ async fn refresh(
 }
 
 #[tauri::command]
+async fn refresh_caches(
+    app: tauri::AppHandle,
+    engine: State<'_, Engine>,
+    job_id: String,
+) -> NativeResult<Snapshot> {
+    engine
+        .refresh_caches(job_id, progress(&app))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn manager_options(
     engine: State<'_, Engine>,
     provider: ProviderId,
@@ -237,6 +249,7 @@ pub fn run() {
             snapshot,
             save_settings,
             refresh,
+            refresh_caches,
             check_tool_updates,
             manager_options,
             cancel,

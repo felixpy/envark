@@ -1,5 +1,5 @@
 import { displayPath } from '@/lib/paths'
-import { Database, Trash2 } from 'lucide-react'
+import { Database, RefreshCw, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
 import { formatBytes, metadata } from '@/domain'
 import { EcoDot, Empty, PageHeader } from '@/components/shared'
@@ -33,6 +33,12 @@ export default function Caches() {
     <div className="space-y-6">
       <PageHeader
         title={t('全局缓存', 'Global caches')}
+        actions={
+          <ActionButton variant="outline" reason={busyReason} onClick={() => void s.refresh()}>
+            <RefreshCw />
+            {t('刷新缓存', 'Refresh caches')}
+          </ActionButton>
+        }
         description={t(
           '在此清理共享缓存，自动调用对应工具或移至回收站。再次使用时可能需要重新下载。',
           'Clean shared caches here using their native tools or the Trash. Future builds may need to download dependencies again.',
@@ -194,9 +200,27 @@ export default function Caches() {
                                         '取得 Cargo 缓存锁后清理，保留已安装工具与配置；有本地修改的 Git 缓存不会删除。',
                                         'Cleans downloaded dependencies while holding Cargo cache locks; installed tools, configuration, and modified Git checkouts are preserved.',
                                       )
-                                    : cache.warning || cache.strategy}
+                                    : !cache.canClean &&
+                                        ['npm-verify', 'pnpm-prune', 'yarn-clean'].includes(
+                                          cache.strategy,
+                                        )
+                                      ? t(
+                                          '已找到缓存，但尚未确认对应的清理工具。管理 Node 环境后，点击刷新缓存重新检查。',
+                                          'Cache found, but its cleanup tool is not confirmed. Manage the Node environment, then refresh caches to check again.',
+                                        )
+                                      : cache.warning || cache.strategy}
                             </TooltipContent>
                           </Tooltip>
+                          {!cache.canClean &&
+                            ['npm-verify', 'pnpm-prune', 'yarn-clean'].includes(cache.strategy) && (
+                              <ActionButton
+                                variant="link"
+                                size="sm"
+                                onClick={() => s.go('env', 'js', { tab: 'runtime' })}
+                              >
+                                {t('管理 Node 环境', 'Manage Node environment')}
+                              </ActionButton>
+                            )}
                         </TableCell>
                         <TableCell
                           className="text-right font-mono text-xs"
@@ -223,7 +247,10 @@ export default function Caches() {
       })}
       {!caches.length && (
         <Empty>
-          {t('扫描后显示已识别的缓存目录。', 'Known cache directories appear after a scan.')}
+          {t(
+            '点击刷新缓存，检查共享缓存目录。',
+            'Refresh caches to discover shared cache directories.',
+          )}
         </Empty>
       )}
       <p className="text-xs text-muted-foreground">

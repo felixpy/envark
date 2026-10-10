@@ -64,6 +64,7 @@ function fixture(configure?: (data: Snapshot) => void) {
     native: false,
     snapshot: async () => data,
     refresh: async () => data,
+    refreshCaches: async () => data,
     saveSettings: async (settings) => ({ ...data, settings }),
     prepare,
     execute: vi.fn(),

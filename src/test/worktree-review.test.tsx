@@ -63,6 +63,7 @@ function fixture(onlyChanged = false) {
     native: false,
     snapshot: async () => data,
     refresh: async () => data,
+    refreshCaches: async () => data,
     saveSettings: async (settings) => ({ ...data, settings }),
     prepare: async () => ({ ...plan, id: `review-${++revision}` }),
     execute,

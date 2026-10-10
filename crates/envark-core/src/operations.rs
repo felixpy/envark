@@ -112,7 +112,7 @@ pub struct PlanView {
     pub created_at: u64,
     pub items: Vec<PlanItem>,
     pub warnings: Vec<String>,
-    // Snapshot of the reviewed setting; native commands may not use Trash.
+    // Native cleanup may prune permanently regardless of the Trash preference.
     pub use_trash: bool,
     pub worktree_changes: Vec<WorktreeChanges>,
     pub runtime_dependents: Vec<crate::runtime_pins::RuntimeDependent>,
@@ -201,6 +201,7 @@ impl Step {
 #[derive(Debug)]
 pub struct Plan {
     pub view: PlanView,
+    pub(crate) reviewed_use_trash: bool,
     steps: Vec<Step>,
     refresh_provider: Option<ProviderId>,
 }
@@ -532,6 +533,7 @@ fn native_plan(
     request: &ActionRequest,
 ) -> Plan {
     Plan {
+        reviewed_use_trash: settings.use_trash,
         view: PlanView {
             id: uuid::Uuid::new_v4().to_string(),
             kind: native.kind().into(),
@@ -897,6 +899,7 @@ fn prepare_steps(
                     removal: None,
                 });
                 return Ok(Plan {
+                    reviewed_use_trash: settings.use_trash,
                     view,
                     steps,
                     refresh_provider,
@@ -1037,6 +1040,7 @@ fn prepare_steps(
         ));
     }
     Ok(Plan {
+        reviewed_use_trash: settings.use_trash,
         view,
         steps,
         refresh_provider,
@@ -1719,6 +1723,7 @@ mod tests {
         let ctx = Context::new(CancellationToken::new()).unwrap();
         let size = measure(&path, &ctx.cancel).unwrap();
         let plan = Plan {
+            reviewed_use_trash: false,
             refresh_provider: None,
             view: PlanView {
                 id: "test".into(),

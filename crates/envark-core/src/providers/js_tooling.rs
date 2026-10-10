@@ -1,5 +1,66 @@
 use super::*;
 
+// Desktop launches do not inherit version-manager shell initialization.
+pub(super) fn node_bins(ctx: &Context) -> Vec<PathBuf> {
+    let mut bins = vec![];
+    let mut fnm = vec![
+        ctx.data.join("fnm"),
+        ctx.home.join(".local/share/fnm"),
+        ctx.home.join(".fnm"),
+    ];
+    if let Some(root) = std::env::var_os("FNM_DIR") {
+        fnm.insert(0, root.into());
+    }
+    for root in fnm {
+        bins.push(
+            root.join("aliases/default")
+                .join(if cfg!(windows) { "" } else { "bin" }),
+        );
+    }
+    let nvm = std::env::var_os("NVM_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| ctx.home.join(".nvm"));
+    if let Some(bin) = nvm_default_bin(&nvm) {
+        bins.push(bin);
+    }
+    bins
+}
+
+fn nvm_default_bin(nvm: &Path) -> Option<PathBuf> {
+    let mut selector = read_small(&nvm.join("alias/default"), 1024)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    for _ in 0..8 {
+        if selector.contains("..") || Path::new(&selector).is_absolute() {
+            break;
+        }
+        let Ok(alias) = read_small(&nvm.join("alias").join(&selector), 1024) else {
+            break;
+        };
+        selector = alias.trim().to_owned();
+    }
+    if !selector.is_empty() {
+        let mut versions: Vec<_> = directories(&nvm.join("versions/node"))
+            .into_iter()
+            .filter_map(|root| {
+                let name = root.file_name()?.to_str()?.trim_start_matches('v');
+                let version = semver::Version::parse(name).ok()?;
+                let prefix = selector.trim_start_matches('v');
+                let matches = matches!(prefix, "node" | "stable")
+                    || name == prefix
+                    || name.starts_with(&format!("{prefix}."));
+                matches.then_some((version, root.join("bin")))
+            })
+            .collect();
+        versions.sort_by(|a, b| b.0.cmp(&a.0));
+        if let Some((_, bin)) = versions.into_iter().next() {
+            return Some(bin);
+        }
+    }
+    None
+}
+
 fn manifest_name(root: &Path) -> Option<String> {
     let json: serde_json::Value =
         serde_json::from_str(&read_small(&root.join("package.json"), 1_048_576).ok()?).ok()?;
@@ -212,6 +273,28 @@ mod tests {
         std::fs::create_dir_all(node.parent().unwrap()).unwrap();
         std::fs::write(&node, "fixture").unwrap();
         (temp, root, node)
+    }
+
+    #[test]
+    fn nvm_default_alias_selects_only_the_matching_installed_major() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::new(CancellationToken::new()).unwrap();
+        ctx.home = temp.path().into();
+        let nvm = ctx.home.join(".nvm");
+        std::fs::create_dir_all(nvm.join("alias")).unwrap();
+        std::fs::write(nvm.join("alias/default"), "development\n").unwrap();
+        std::fs::write(nvm.join("alias/development"), "22\n").unwrap();
+        for version in ["v22.1.0", "v22.2.0", "v24.0.0"] {
+            std::fs::create_dir_all(nvm.join("versions/node").join(version).join("bin")).unwrap();
+        }
+        let selected = nvm.join("versions/node/v22.2.0/bin");
+        assert_eq!(nvm_default_bin(&nvm), Some(selected.clone()));
+        assert_ne!(
+            nvm_default_bin(&nvm),
+            Some(nvm.join("versions/node/v24.0.0/bin"))
+        );
+        std::fs::write(nvm.join("alias/development"), "missing-alias\n").unwrap();
+        assert_eq!(nvm_default_bin(&nvm), None);
     }
 
     #[test]

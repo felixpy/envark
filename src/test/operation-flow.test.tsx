@@ -485,3 +485,34 @@ it('preserves selections when older result payloads omit target IDs', async () =
   await act(() => f.state().execute())
   expect(f.state().completedSelectionIds).toEqual([])
 })
+
+it('reviews only failed cache targets after partial cleanup without re-running successful targets', async () => {
+  const f = await fixture({
+    execute: async () => ({
+      items: [
+        { title: 'npm', status: 'success', message: 'Done', removedBytes: 1, targetIds: ['npm'] },
+        {
+          title: 'Gradle',
+          status: 'failed',
+          message: 'Gradle unavailable',
+          removedBytes: 0,
+          targetIds: ['gradle', 'dists'],
+        },
+      ],
+      removedBytes: 1,
+      reclaimedBytes: null,
+      cancelled: false,
+    }),
+  })
+  await act(async () => f.state().prepare({ kind: 'cleanCaches', ids: ['npm', 'gradle', 'dists'] }))
+  await act(async () => f.state().execute())
+  expect(screen.getByRole('dialog', { name: 'Operation results' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Review failed items' }))
+  await waitFor(() =>
+    expect(f.api.prepare).toHaveBeenLastCalledWith(
+      { kind: 'cleanCaches', ids: ['gradle', 'dists'] },
+      expect.any(String),
+    ),
+  )
+  expect(screen.getByRole('button', { name: 'Confirm operation' })).toBeTruthy()
+})

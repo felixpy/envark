@@ -128,12 +128,22 @@ export function OperationDialog() {
           ) : operationError ? (
             <div className="space-y-3">
               <p role="alert" className="whitespace-pre-wrap break-all text-sm text-destructive">
-                {operationError}
+                {operationError.includes('The cleanup policy changed.')
+                  ? t(
+                      '清理设置已变化，请重新审阅所选项目后确认执行。',
+                      'Cleanup settings changed. Review the selected items again before confirming.',
+                    )
+                  : operationError.includes('plan is no longer valid')
+                    ? t(
+                        '操作预览已失效，请重新审阅以获取当前状态。',
+                        'This preview expired. Review again to check the current state.',
+                      )
+                    : operationError}
               </p>
               <p className="text-sm text-muted-foreground">
                 {t(
-                  '此计划无法继续执行。请重新审阅当前状态，或关闭窗口。',
-                  'This plan can no longer be executed. Review the current state again, or close this dialog.',
+                  '点击“重新审阅”，应用会重新核对所选项目；再次确认后才会执行。',
+                  'Review again to check the selected items. Execution still requires your confirmation.',
                 )}
               </p>
               {s.busy && <TaskProgress />}
@@ -270,7 +280,14 @@ export function OperationDialog() {
               {t('取消操作', 'Cancel operation')}
             </Button>
           ) : result ? (
-            <Button onClick={s.closePlan}>{t('完成', 'Done')}</Button>
+            <>
+              {s.canReviewFailed && (
+                <Button variant="outline" onClick={() => void s.reviewFailed()}>
+                  {t('重新审阅失败项', 'Review failed items')}
+                </Button>
+              )}
+              <Button onClick={s.closePlan}>{t('完成', 'Done')}</Button>
+            </>
           ) : operationError ? (
             <>
               <Button variant="outline" onClick={s.closePlan}>
