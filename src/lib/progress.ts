@@ -14,6 +14,8 @@ export function progressLabel(progress: Progress | null, t: Translate, executing
       return t('操作已结束，正在更新受影响的项目', 'Operation finished; updating affected items')
     case 'refresh-environments':
       return t('操作已结束，正在更新相关环境', 'Operation finished; updating affected environments')
+    case 'check-caches':
+      return t('正在检查缓存清理条件', 'Checking cache cleanup availability')
     case 'discover-caches':
     case 'caches':
       return t('正在发现全局缓存', 'Discovering global caches')

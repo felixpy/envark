@@ -232,7 +232,64 @@ pub(crate) async fn discover(ctx: Context) -> Result<Vec<Cache>> {
     }
     found.sort_by(|a, b| a.path.cmp(&b.path));
     found.dedup_by(|a, b| a.path == b.path);
+    check_capabilities(&ctx, &mut found).await?;
     Ok(found)
+}
+
+pub(crate) async fn check_capabilities(ctx: &Context, caches: &mut [Cache]) -> Result<()> {
+    let mut jobs = tokio::task::JoinSet::new();
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    for (index, cache) in caches.iter().cloned().enumerate() {
+        if cache.strategy == "maven-repository" {
+            continue;
+        }
+        let mut ctx = ctx.clone();
+        ctx.cancel = ctx.cancel.child_token();
+        let permits = permits.clone();
+        jobs.spawn(async move {
+            let _permit = permits.acquire_owned().await.expect("cache check semaphore remains open");
+            let result = tokio::time::timeout(std::time::Duration::from_secs(3), cache_cleanup::check(&ctx, &cache)).await;
+            ctx.cancel.cancel();
+            (index, result.unwrap_or_else(|_| Err(Error::Process("The cleanup tool did not respond within 3 seconds. Check its environment, then check cleanup availability again.".into()))))
+        });
+    }
+    while let Some(result) = jobs.join_next().await {
+        let (index, result) = result.map_err(|error| Error::Unavailable(error.to_string()))?;
+        let cache = &mut caches[index];
+        match result {
+            Ok(()) => {
+                cache.can_clean = true;
+                cache.cleanup_issue = None;
+                cache.warning = "Native cleanup retains referenced entries. Future builds may need to download dependencies again.".into();
+            }
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(error) => {
+                let detail = error.to_string();
+                let reason = match &error {
+                    Error::Unavailable(_) if detail.contains("8 or later") => "unsupportedTool",
+                    Error::Unavailable(_) => "toolUnavailable",
+                    Error::UnsafePath(_) => "unsafePath",
+                    Error::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                        "accessDenied"
+                    }
+                    Error::Conflict(_) if detail.contains("using this cache") => "busy",
+                    Error::Conflict(_) if detail.contains("local changes") => "localChanges",
+                    Error::Conflict(_) => "changed",
+                    _ => "unavailable",
+                };
+                cache.can_clean = false;
+                cache.warning = detail.clone();
+                cache.cleanup_issue = Some(crate::model::CacheCleanupIssue {
+                    reason: reason.into(),
+                    detail,
+                });
+            }
+        }
+    }
+    if ctx.cancel.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

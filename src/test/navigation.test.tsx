@@ -286,6 +286,8 @@ it('handles Windows shortcuts delivered to the webview without repeating operati
   await screen.findByRole('heading', { name: 'Overview' })
   fireEvent.keyDown(window, { key: '4', ctrlKey: true })
   await screen.findByRole('heading', { name: 'Global caches' })
+  await waitFor(() => expect(refreshCaches).toHaveBeenCalledWith(expect.any(String), false))
+  refreshCaches.mockClear()
   fireEvent.keyDown(window, { key: 'F1' })
   expect(await screen.findByRole('dialog')).toBeTruthy()
   await userEvent.setup().click(screen.getByRole('button', { name: 'Close' }))

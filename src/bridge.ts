@@ -21,7 +21,7 @@ export interface Backend {
   native: boolean
   snapshot(): Promise<Snapshot>
   refresh(jobId: string): Promise<Snapshot>
-  refreshCaches(jobId: string): Promise<Snapshot>
+  refreshCaches(jobId: string, measure?: boolean): Promise<Snapshot>
   managerOptions(provider: ProviderId): Promise<ManagerInstallOption[]>
   checkToolUpdates(provider: ProviderId, jobId: string): Promise<Provider>
   saveSettings(settings: Settings): Promise<Snapshot>
@@ -57,7 +57,7 @@ const native: Backend = {
   setDisabledShortcuts: (disabled) => invoke('set_disabled_shortcuts', { disabled }),
   snapshot: () => invoke('snapshot'),
   refresh: (jobId) => invoke('refresh', { jobId }),
-  refreshCaches: (jobId) => invoke('refresh_caches', { jobId }),
+  refreshCaches: (jobId, measure = true) => invoke('refresh_caches', { jobId, measure }),
   managerOptions: (provider) => invoke('manager_options', { provider }),
   checkToolUpdates: (provider, jobId) => invoke('check_tool_updates', { provider, jobId }),
   saveSettings: (settings) => invoke('save_settings', { settings }),

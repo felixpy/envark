@@ -516,3 +516,35 @@ it('reviews only failed cache targets after partial cleanup without re-running s
   )
   expect(screen.getByRole('button', { name: 'Confirm operation' })).toBeTruthy()
 })
+
+it('keeps completed cleanup successful when only size accounting is unavailable', async () => {
+  const f = await fixture({
+    prepare: async () => ({ ...plan, kind: 'clean', useTrash: false }),
+    execute: async () => ({
+      items: [
+        {
+          title: 'pip',
+          status: 'success',
+          message: 'Native cleanup completed.',
+          removedBytes: 0,
+          targetIds: ['pip'],
+        },
+      ],
+      removedBytes: 0,
+      reclaimedBytes: null,
+      cancelled: false,
+      accountingComplete: false,
+    }),
+  })
+  await act(() => f.state().prepare({ kind: 'cleanCaches', ids: ['pip'] }))
+  await act(() => f.state().execute())
+  expect(screen.getByText('Confirmed logical size removed:')).toBeTruthy()
+  expect(
+    screen.getByText(
+      'Some completed cleanup items have unconfirmed removed sizes. Totals include confirmed sizes only; successful items do not need to run again.',
+    ),
+  ).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Review failed items' })).toBeNull()
+  expect(screen.queryByRole('region', { name: 'Failed items' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy()
+})

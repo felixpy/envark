@@ -343,6 +343,7 @@ mod tests {
             cancelled: true,
             removed_bytes: 7,
             reclaimed_bytes: None,
+            accounting_complete: true,
         };
         let events = std::sync::Arc::new(std::sync::Mutex::new(vec![]));
         let captured = events.clone();
@@ -411,6 +412,7 @@ mod tests {
             cancelled: true,
             removed_bytes: 0,
             reclaimed_bytes: None,
+            accounting_complete: true,
         };
         let (updated, invalidated) = refresh(
             inventory,
@@ -463,6 +465,7 @@ mod tests {
             strategy: "npm".into(),
             warning: String::new(),
             can_clean: true,
+            cleanup_issue: None,
         };
         let inventory = Inventory {
             caches: vec![
@@ -485,6 +488,7 @@ mod tests {
             cancelled: true,
             removed_bytes: 0,
             reclaimed_bytes: None,
+            accounting_complete: true,
         };
         let ctx = Context::new(CancellationToken::new()).unwrap();
         ctx.cancel.cancel();

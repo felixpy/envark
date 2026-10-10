@@ -48,7 +48,10 @@ export function OperationResults({ result }: { result: OperationResult }) {
         {plan && (['clean', 'removeWorktree'].includes(plan.kind) || result.removedBytes > 0) && (
           <>
             <p className="text-sm">
-              {t('已移除的逻辑大小', 'Logical size removed')}:{' '}
+              {result.accountingComplete === false
+                ? t('已确认移除的逻辑大小', 'Confirmed logical size removed')
+                : t('已移除的逻辑大小', 'Logical size removed')}
+              :{' '}
               <span className="font-mono text-emerald-600">{formatBytes(result.removedBytes)}</span>
             </p>
             {plan.kind === 'clean' && plan.useTrash && (
@@ -62,6 +65,14 @@ export function OperationResults({ result }: { result: OperationResult }) {
           </>
         )}
       </div>
+      {result.accountingComplete === false && (
+        <p className="text-sm text-muted-foreground">
+          {t(
+            '已完成的清理中，部分目录的移除大小未能确认；统计仅包含已确认的大小，成功项无需重复执行。',
+            'Some completed cleanup items have unconfirmed removed sizes. Totals include confirmed sizes only; successful items do not need to run again.',
+          )}
+        </p>
+      )}
       {result.cancelled && (
         <p className="text-sm text-amber-600">
           {t(

@@ -36,6 +36,7 @@ interface Store {
   progress: Progress | null
   cancel(): Promise<void>
   refresh(): Promise<void>
+  recheckCaches(): Promise<void>
   updateChecks: Partial<Record<ProviderId, UpdateCheck>>
   checkToolUpdates(provider: ProviderId): Promise<void>
   saveSettings(settings: Settings): Promise<boolean>
@@ -300,6 +301,18 @@ export function StoreProvider({ children, api = backend }: { children: ReactNode
         ) {
           setOperationError(String(cause))
         }
+      } finally {
+        finish()
+      }
+    },
+    recheckCaches: async () => {
+      if (running.current) return
+      const id = begin('caches')
+      setProgress({ jobId: id, stage: 'check-caches', completed: 0, total: null, message: '' })
+      try {
+        setData(await api.refreshCaches(id, false))
+      } catch (cause) {
+        fail(cause)
       } finally {
         finish()
       }

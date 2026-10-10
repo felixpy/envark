@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+import { cleanupAvailability, cleanupEnvironmentTab } from '@/lib/cache-cleanup'
 import { displayPath } from '@/lib/paths'
 import { Database, RefreshCw, Trash2 } from 'lucide-react'
 import { useStore } from '@/store'
@@ -20,6 +22,12 @@ import {
 export default function Caches() {
   const s = useStore()
   const { t } = s
+  const checked = useRef(false)
+  useEffect(() => {
+    if (!s.api.native || !s.loaded || s.busy || checked.current) return
+    checked.current = true
+    void s.recheckCaches()
+  }, [s.api.native, s.loaded, s.busy])
   const caches = s.data.inventory.caches
   const selection = useSelection(
     caches.filter((c) => c.canClean).map((c) => c.id),
@@ -34,10 +42,19 @@ export default function Caches() {
       <PageHeader
         title={t('全局缓存', 'Global caches')}
         actions={
-          <ActionButton variant="outline" reason={busyReason} onClick={() => void s.refresh()}>
-            <RefreshCw />
-            {t('刷新缓存', 'Refresh caches')}
-          </ActionButton>
+          <>
+            <ActionButton
+              variant="outline"
+              reason={busyReason}
+              onClick={() => void s.recheckCaches()}
+            >
+              {t('检查清理条件', 'Check cleanup availability')}
+            </ActionButton>
+            <ActionButton variant="outline" reason={busyReason} onClick={() => void s.refresh()}>
+              <RefreshCw />
+              {t('刷新缓存', 'Refresh caches')}
+            </ActionButton>
+          </>
         }
         description={t(
           '在此清理共享缓存，自动调用对应工具或移至回收站。再次使用时可能需要重新下载。',
@@ -86,8 +103,8 @@ export default function Caches() {
             {!canClean && (
               <p className="text-xs text-muted-foreground">
                 {t(
-                  '以下目录需要保留，具体原因见清理方式说明。',
-                  'These directories are preserved. See the cleanup details for the specific reason.',
+                  '以下目录暂未满足清理条件，原因和可用操作见下方。',
+                  'These directories are not ready for cleanup. See the reasons and available actions below.',
                 )}
               </p>
             )}
@@ -155,6 +172,14 @@ export default function Caches() {
                           >
                             {displayPath(cache.path)}
                           </p>
+                          {!cache.canClean && cleanupAvailability(cache, t) && (
+                            <p
+                              className="mt-2 max-w-md text-xs text-muted-foreground"
+                              title={cache.cleanupIssue?.detail}
+                            >
+                              {cleanupAvailability(cache, t)}
+                            </p>
+                          )}
                         </TableCell>
                         <TableCell>
                           <span className="flex items-center gap-2 text-sm">
@@ -211,16 +236,41 @@ export default function Caches() {
                                       : cache.warning || cache.strategy}
                             </TooltipContent>
                           </Tooltip>
-                          {!cache.canClean &&
-                            ['npm-verify', 'pnpm-prune', 'yarn-clean'].includes(cache.strategy) && (
-                              <ActionButton
-                                variant="link"
-                                size="sm"
-                                onClick={() => s.go('env', 'js', { tab: 'runtime' })}
-                              >
-                                {t('管理 Node 环境', 'Manage Node environment')}
-                              </ActionButton>
-                            )}
+                          {!cache.canClean && cache.cleanupIssue && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {['toolUnavailable', 'unsupportedTool', 'unavailable'].includes(
+                                cache.cleanupIssue.reason,
+                              ) && (
+                                <ActionButton
+                                  variant="link"
+                                  size="sm"
+                                  onClick={() =>
+                                    s.go('env', cache.provider, {
+                                      tab: cleanupEnvironmentTab(cache),
+                                    })
+                                  }
+                                >
+                                  {t('管理清理工具', 'Manage cleanup tool')}
+                                </ActionButton>
+                              )}
+                              {!['unsafePath', 'localChanges'].includes(
+                                cache.cleanupIssue.reason,
+                              ) && (
+                                <ActionButton
+                                  variant="outline"
+                                  size="sm"
+                                  reason={busyReason}
+                                  onClick={() =>
+                                    void (cache.cleanupIssue?.reason === 'changed'
+                                      ? s.refresh()
+                                      : s.recheckCaches())
+                                  }
+                                >
+                                  {t('重新检查', 'Check again')}
+                                </ActionButton>
+                              )}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell
                           className="text-right font-mono text-xs"

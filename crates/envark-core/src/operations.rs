@@ -265,6 +265,7 @@ pub struct OperationResult {
     pub cancelled: bool,
     pub removed_bytes: u64,
     pub reclaimed_bytes: Option<u64>,
+    pub accounting_complete: bool,
 }
 
 fn eligible_project(project: &Project, settings: &Settings) -> Result<()> {
@@ -478,8 +479,8 @@ pub async fn prepare_with_progress(
             plan.view.warnings.push("Only the selected manager installation will be removed. Installed runtimes, project files, caches, and shell configuration are kept. Commands using this manager will be unavailable until it is reinstalled.".into());
             *removal = Some(Box::new(prepared));
         }
-        if let Step::CacheFiles { cache, .. } = step {
-            providers::cache_cleanup::validate_cargo_checkouts(ctx, cache).await?;
+        if let Step::CacheFiles { cache, .. } | Step::Cache { cache, .. } = step {
+            providers::cache_cleanup::check(ctx, cache).await?;
         }
         if let Step::Runtime {
             runtime,
@@ -1128,14 +1129,20 @@ async fn clean_project(
     ))
 }
 
-async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<u64> {
-    tokio::task::spawn_blocking(move || {
-        let size = measure(&path, &token)?;
-        if !size.complete {
-            return Err(Error::Conflict("The cache cannot be measured completely. Check access permissions before cleaning.".into()));
-        }
-        Ok(size.bytes)
-    }).await.map_err(|e| Error::Unavailable(e.to_string()))?
+async fn measured_bytes(path: PathBuf, token: CancellationToken) -> Result<Option<u64>> {
+    tokio::task::spawn_blocking(move || match measure(&path, &token) {
+        Ok(size) if size.complete => Ok(Some(size.bytes)),
+        Err(Error::Cancelled) => Err(Error::Cancelled),
+        _ => Ok(None),
+    })
+    .await
+    .map_err(|e| Error::Unavailable(e.to_string()))?
+}
+
+struct CacheCleanupOutcome {
+    bytes: u64,
+    message: String,
+    accounting_complete: bool,
 }
 
 async fn clean_cache(
@@ -1143,25 +1150,24 @@ async fn clean_cache(
     cache: Cache,
     related: Vec<Cache>,
     command: CommandSpec,
-) -> Result<(u64, String)> {
-    reject_links(&cache.path)?;
-    let approved = std::fs::canonicalize(&cache.path)?;
-    if let Some(probe) = providers::cache_probe(&cache, &command) {
-        let output = ctx.runner.run(&probe, &ctx.cancel).await?;
-        let resolved = output
-            .stdout
-            .lines()
-            .rev()
-            .map(str::trim)
-            .filter(|line| Path::new(line).is_absolute())
-            .find_map(|line| std::fs::canonicalize(line).ok());
-        if resolved.as_ref() != Some(&approved) {
-            return Err(Error::Conflict("The tool resolved a different cache directory. Refresh the inventory before cleaning.".into()));
-        }
+) -> Result<CacheCleanupOutcome> {
+    providers::cache_cleanup::check(ctx, &cache).await?;
+    let current = providers::cache_command(ctx, &cache)?;
+    if current.program != command.program
+        || current.args != command.args
+        || current.env != command.env
+    {
+        return Err(Error::Conflict(
+            "The cleanup tool changed after review. Check cleanup availability before continuing."
+                .into(),
+        ));
     }
+    let approved = std::fs::canonicalize(&cache.path)?;
     let mut before = measured_bytes(cache.path.clone(), ctx.cancel.clone()).await?;
     for item in &related {
-        before += measured_bytes(item.path.clone(), ctx.cancel.clone()).await?;
+        before = before
+            .zip(measured_bytes(item.path.clone(), ctx.cancel.clone()).await?)
+            .map(|(total, bytes)| total.saturating_add(bytes));
     }
     reject_links(&cache.path)?;
     if std::fs::canonicalize(&cache.path)? != approved {
@@ -1172,28 +1178,44 @@ async fn clean_cache(
     } else {
         ctx.runner.run(&command, &ctx.cancel).await?
     };
-    let mut after = if cache.path.try_exists()? {
-        measured_bytes(cache.path, ctx.cancel.clone()).await?
-    } else {
-        0
-    };
-    for item in related {
-        if item.path.try_exists()? {
-            after += measured_bytes(item.path, ctx.cancel.clone()).await?;
-        }
+    // Accounting cannot retroactively turn a completed command into a failed mutation.
+    let mut after = Some(0_u64);
+    for path in std::iter::once(&cache.path).chain(related.iter().map(|item| &item.path)) {
+        let size = match path.try_exists() {
+            Ok(false) => Some(0),
+            Ok(true) => measured_bytes(path.clone(), ctx.cancel.clone())
+                .await
+                .ok()
+                .flatten(),
+            Err(_) => None,
+        };
+        after = after
+            .zip(size)
+            .map(|(total, bytes)| total.saturating_add(bytes));
     }
-    Ok((
-        before.saturating_sub(after),
-        if cache.strategy.starts_with("gradle-") {
-            if before > after {
-                "Gradle finished pruning expired caches and distributions. Entries required by its retention policy were kept.".into()
-            } else {
-                "Gradle finished checking caches and distributions. No net reduction was measured; retained entries are still within its retention policy.".into()
-            }
+    let confirmed = before.zip(after);
+    let mut message = if cache.strategy.starts_with("gradle-") {
+        match confirmed {
+            Some((before, after)) if before > after => "Gradle finished pruning expired caches and distributions. Entries required by its retention policy were kept.".into(),
+            Some(_) => "Gradle finished checking caches and distributions. No net reduction was measured; retained entries are still within its retention policy.".into(),
+            None => "Gradle finished its native cache cleanup.".into(),
+        }
+    } else {
+        let stdout: String = output.stdout.trim().chars().take(4000).collect();
+        if stdout.is_empty() {
+            "Native cache cleanup completed.".into()
         } else {
-            output.stdout.trim().chars().take(4000).collect()
-        },
-    ))
+            stdout
+        }
+    };
+    if confirmed.is_none() {
+        message.push_str("\nCleanup completed, but the removed size could not be confirmed. No unconfirmed bytes are included in the total.");
+    }
+    Ok(CacheCleanupOutcome {
+        bytes: confirmed.map_or(0, |(before, after)| before.saturating_sub(after)),
+        message,
+        accounting_complete: confirmed.is_some(),
+    })
 }
 
 async fn run_runtime(
@@ -1331,6 +1353,7 @@ pub async fn execute(
         cancelled: false,
         removed_bytes: 0,
         reclaimed_bytes: None,
+        accounting_complete: true,
     };
     for (index, step) in plan.steps.into_iter().enumerate() {
         if ctx.cancel.is_cancelled() {
@@ -1464,7 +1487,12 @@ pub async fn execute(
                 cache,
                 related,
                 command,
-            } => clean_cache(&ctx, cache, related, command).await,
+            } => clean_cache(&ctx, cache, related, command)
+                .await
+                .map(|outcome| {
+                    result.accounting_complete &= outcome.accounting_complete;
+                    (outcome.bytes, outcome.message)
+                }),
             Step::Project {
                 project,
                 artifact,
@@ -1591,6 +1619,7 @@ mod tests {
             strategy: "gradle-caches".into(),
             warning: String::new(),
             can_clean: true,
+            cleanup_issue: None,
         };
         let step = Step::Cache {
             cache: cache("gradle-cache"),

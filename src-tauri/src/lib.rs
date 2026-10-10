@@ -120,9 +120,10 @@ async fn refresh_caches(
     app: tauri::AppHandle,
     engine: State<'_, Engine>,
     job_id: String,
+    measure: Option<bool>,
 ) -> NativeResult<Snapshot> {
     engine
-        .refresh_caches(job_id, progress(&app))
+        .refresh_caches(job_id, progress(&app), measure.unwrap_or(true))
         .await
         .map_err(|e| e.to_string())
 }
