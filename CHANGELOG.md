@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/felixpy/envark/compare/v0.4.2...v0.4.3) (2026-10-12)
+
+
+### Bug Fixes
+
+* **updates:** keep download progress monotonic and throttle events ([#42](https://github.com/felixpy/envark/issues/42)) ([24a19a2](https://github.com/felixpy/envark/commit/24a19a21f7905263898ff0d1aba443e110ca360d))
+* **updates:** repair official version lookups and expose per-tool failures ([#49](https://github.com/felixpy/envark/issues/49)) ([8789fa4](https://github.com/felixpy/envark/commit/8789fa4680bfeb02f5e13a42e7db6fdc38f430cb))
+
 ## [0.4.2](https://github.com/felixpy/envark/compare/v0.4.1...v0.4.2) (2026-10-10)
 
 
