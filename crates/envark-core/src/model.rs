@@ -218,6 +218,8 @@ pub struct Tool {
     pub latest: Option<String>,
     #[serde(default)]
     pub update_status: UpdateStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_issue: Option<UpdateIssue>,
     pub source: String,
     pub runtime: Option<String>,
     pub path: Option<PathBuf>,
@@ -236,6 +238,13 @@ pub enum UpdateStatus {
     Ahead,
     Major,
     Minor,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateIssue {
+    pub reason: String,
+    pub detail: String,
 }
 
 impl UpdateStatus {

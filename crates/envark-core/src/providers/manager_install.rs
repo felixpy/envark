@@ -163,11 +163,16 @@ pub fn options(ctx: &Context, inventory: &Inventory, provider: ProviderId) -> Ve
 }
 
 async fn release(ctx: &Context, name: &str, modern_yarn: bool) -> Result<String> {
+    if let Some(repo) = match name {
+        "fnm" => Some("Schniz/fnm"),
+        "nvm" => Some("nvm-sh/nvm"),
+        "bun" => Some("oven-sh/bun"),
+        "uv" => Some("astral-sh/uv"),
+        _ => None,
+    } {
+        return super::release_versions::github_latest(repo, &ctx.cancel).await;
+    }
     let url = match name {
-        "fnm" => "https://api.github.com/repos/Schniz/fnm/releases/latest",
-        "nvm" => "https://api.github.com/repos/nvm-sh/nvm/releases/latest",
-        "bun" => "https://api.github.com/repos/oven-sh/bun/releases/latest",
-        "uv" => "https://api.github.com/repos/astral-sh/uv/releases/latest",
         "pnpm" => "https://registry.npmjs.org/pnpm/latest",
         "yarn" if modern_yarn => "https://registry.npmjs.org/@yarnpkg%2Fcli-dist/latest",
         "yarn" => "https://registry.npmjs.org/yarn/latest",

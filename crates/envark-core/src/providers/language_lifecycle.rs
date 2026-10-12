@@ -202,28 +202,42 @@ fn normalized(text: &str) -> Result<String> {
         .map_err(|_| Error::Unavailable(format!("Invalid manager release version: {clean}")))
 }
 async fn official_latest(ctx: &Context, name: &str) -> Result<String> {
+    if name == "mise" {
+        return super::release_versions::github_latest("jdx/mise", &ctx.cancel).await;
+    }
     let url = match name {
         "rustup" => "https://static.rust-lang.org/rustup/release-stable.toml",
         "SDKMAN!" => "https://api.sdkman.io/2/broker/version/sdkman/script/stable",
-        _ => "https://api.github.com/repos/jdx/mise/releases/latest",
+        _ => {
+            return Err(Error::InvalidInput(
+                "Unknown official manager source.".into(),
+            ));
+        }
     };
-    let bytes = fetch(ctx, url).await?;
+    let bytes = super::release_versions::bytes(
+        &super::release_versions::client()?,
+        url,
+        2 * 1024 * 1024,
+        &ctx.cancel,
+    )
+    .await?;
     let text = String::from_utf8(bytes).map_err(|e| Error::Unavailable(e.to_string()))?;
-    let version = match name {
-        "rustup" => text
-            .parse::<toml::Value>()
-            .map_err(|e| Error::Unavailable(e.to_string()))?
+    if name == "rustup" {
+        return rustup_release_version(&text);
+    }
+    normalized(&text)
+}
+
+pub(crate) fn rustup_release_version(text: &str) -> Result<String> {
+    // toml::Value::from_str parses a single value in TOML 1.x, not a document.
+    let manifest: toml::Value = toml::from_str(text)
+        .map_err(|error| Error::Unavailable(format!("Invalid rustup release manifest: {error}")))?;
+    normalized(
+        manifest
             .get("version")
             .and_then(toml::Value::as_str)
-            .map(str::to_owned),
-        "SDKMAN!" => Some(text),
-        _ => serde_json::from_str::<serde_json::Value>(&text)?
-            .get("tag_name")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned),
-    }
-    .ok_or_else(|| Error::Unavailable("Official source did not report a release.".into()))?;
-    normalized(&version)
+            .ok_or_else(|| Error::Unavailable("Rustup release manifest omitted version.".into()))?,
+    )
 }
 pub(crate) async fn latest(ctx: &Context, tool: &Tool) -> Result<String> {
     validate_owner(ctx, tool).await?;

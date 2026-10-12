@@ -1,4 +1,5 @@
 import { ToolUpdateStatus } from '@/components/ToolUpdateStatus'
+import { followsRustToolchain, updateIssueLabel } from '@/lib/tool-update-info'
 import { OllamaProgram, OllamaService } from '@/components/OllamaEnvironment'
 import { ManagerInstallDialog } from '@/components/ManagerInstallDialog'
 import { displayPath } from '@/lib/paths'
@@ -957,7 +958,22 @@ function Tools({
                       {t('高于已发布版本', 'Ahead of published version')}
                     </span>
                   )}
-                  {updateKind(item) === 'unknown' && (
+                  {updateIssueLabel(item, t) && (
+                    <div className="mt-1 font-sans text-xs text-muted-foreground">
+                      <span>{updateIssueLabel(item, t)}</span>
+                      {item.updateIssue && item.updateIssue.reason !== 'runtimeManaged' && (
+                        <details className="mt-1 max-w-sm">
+                          <summary className="cursor-pointer">
+                            {t('查看原因', 'Show reason')}
+                          </summary>
+                          <p className="mt-1 max-w-xs whitespace-normal break-all font-mono text-xs">
+                            {item.updateIssue.detail}
+                          </p>
+                        </details>
+                      )}
+                    </div>
+                  )}
+                  {updateKind(item) === 'unknown' && !updateIssueLabel(item, t) && (
                     <span className="block text-muted-foreground">
                       {checking
                         ? t('正在查询…', 'Checking…')
@@ -991,23 +1007,33 @@ function Tools({
                 </TableCell>
                 <TableCell>
                   <div className="flex justify-end gap-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      reason={
-                        busyReason ||
-                        toolUpdateReason(
-                          item,
-                          s.data.settings.checkUpdates,
-                          t,
-                          s.updateChecks[providerId],
-                        )
-                      }
-                      onClick={() => onUpdate(item)}
-                    >
-                      <ArrowUp />
-                      {t('更新', 'Update')}
-                    </Button>
+                    {followsRustToolchain(item) ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => s.go('env', 'rust', { tab: 'runtime' })}
+                      >
+                        {t('管理 Rust 工具链', 'Manage Rust toolchains')}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        reason={
+                          busyReason ||
+                          toolUpdateReason(
+                            item,
+                            s.data.settings.checkUpdates,
+                            t,
+                            s.updateChecks[providerId],
+                          )
+                        }
+                        onClick={() => onUpdate(item)}
+                      >
+                        <ArrowUp />
+                        {t('更新', 'Update')}
+                      </Button>
+                    )}
                     {(global || item.canRemove) && (
                       <Button
                         variant="outline"
