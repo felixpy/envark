@@ -50,6 +50,10 @@ export interface Tool {
   version: string
   latest: string | null
   updateStatus: 'unknown' | 'latest' | 'ahead' | 'major' | 'minor'
+  updateIssue?: {
+    reason: 'queryFailed' | 'invalidVersion' | 'unsupported' | 'runtimeManaged'
+    detail: string
+  } | null
   source: string
   runtime: string | null
   path: string | null
@@ -412,5 +416,5 @@ export function updateKind(tool: Tool): Tool['updateStatus'] {
   return tool.updateStatus ?? 'unknown'
 }
 export function canUpdateTool(tool: Tool) {
-  return tool.canUpdate && ['major', 'minor'].includes(updateKind(tool))
+  return tool.canUpdate && !tool.updateIssue && ['major', 'minor'].includes(updateKind(tool))
 }

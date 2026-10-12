@@ -1,5 +1,6 @@
 import type { UpdateCheck } from './tool-updates'
 import { updateKind, type Asset, type Manager, type Runtime, type Tool } from './domain'
+import { updateIssueLabel } from './lib/tool-update-info'
 
 type Translate = (zh: string, en: string) => string
 
@@ -65,6 +66,8 @@ export function toolUpdateReason(
   t: Translate,
   check?: UpdateCheck,
 ) {
+  const issue = updateIssueLabel(tool, t)
+  if (issue) return issue
   if (!tool.canUpdate)
     return (
       tool.note ||

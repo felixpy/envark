@@ -250,7 +250,7 @@ pub(crate) async fn latest(ctx: &Context, tool: &Tool) -> Result<String> {
             .map_err(|_| Error::Unavailable("Homebrew did not report an Ollama version.".into()))?;
         Ok(version.into())
     } else if owns_tool(tool) {
-        release_version(&json(ctx, RELEASE).await?)
+        super::release_versions::github_latest("ollama/ollama", &ctx.cancel).await
     } else {
         Err(Error::Unavailable(
             "Ollama program ownership is unverified.".into(),

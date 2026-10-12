@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { backend, type Backend } from '@/bridge'
 import { emptyProvider, emptySnapshot, type Provider, type ProviderId, type Tool } from '@/domain'
-import { StoreProvider } from '@/store'
+import { StoreProvider, useStore } from '@/store'
 import { TaskProgress } from '@/components/TaskProgress'
 import Environments from '@/views/Environments'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -57,6 +57,81 @@ it('bulk tool updates include only tools with a verified update capability', asy
       expect.any(String),
     ),
   )
+})
+
+it('shows the actual lookup failure while retaining a cached release and preventing stale updates', async () => {
+  const provider = emptyProvider('py')
+  provider.packageManagers = [
+    {
+      id: 'uv',
+      name: 'uv',
+      version: '0.10.10',
+      latest: '0.13.0',
+      updateStatus: 'minor',
+      source: 'uv-self',
+      runtime: null,
+      path: '/example/uv',
+      size: null,
+      canUpdate: true,
+      canRemove: true,
+      note: null,
+      updateIssue: {
+        reason: 'queryFailed',
+        detail: 'HTTP 403 Forbidden from https://pypi.org/pypi/uv/json',
+      },
+    },
+  ]
+  const prepare = fixture(provider)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('tab', { name: 'Package managers' }))
+  await screen.findByText('Official source rejected the request')
+  expect(screen.getByText('→ 0.13.0')).toBeTruthy()
+  await user.click(screen.getByText('Show reason'))
+  expect(screen.getByText(/HTTP 403 Forbidden/)).toBeTruthy()
+  await user.click(screen.getByRole('button', { name: /^Update$/ }))
+  expect(prepare).not.toHaveBeenCalled()
+})
+
+it('routes Cargo to Rust toolchains without labelling it as a failed version lookup', async () => {
+  const data = structuredClone(emptySnapshot)
+  data.settings.language = 'en'
+  data.settings.scanOnLaunch = false
+  const provider = emptyProvider('rust')
+  provider.packageManagers = [
+    {
+      id: 'cargo',
+      name: 'cargo',
+      version: '1.98.1',
+      latest: null,
+      updateStatus: 'unknown',
+      source: 'rustup',
+      runtime: null,
+      path: '/example/cargo',
+      size: null,
+      canUpdate: false,
+      canRemove: false,
+      note: null,
+    },
+  ]
+  data.inventory.providers = [provider]
+  let state!: ReturnType<typeof useStore>
+  function Probe() {
+    state = useStore()
+    return <Environments id="rust" />
+  }
+  render(
+    <StoreProvider api={{ ...backend, native: false, snapshot: async () => data }}>
+      <Probe />
+    </StoreProvider>,
+    { wrapper: TooltipProvider },
+  )
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('tab', { name: 'Package managers' }))
+  await screen.findByText('Updates with the Rust toolchain')
+  expect(screen.queryByText('Version information unavailable')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Manage Rust toolchains' }))
+  expect(state.provider).toBe('rust')
+  expect(state.focus.tab).toBe('runtime')
 })
 
 it('bulk resource removal excludes resources with incomplete size scans', async () => {

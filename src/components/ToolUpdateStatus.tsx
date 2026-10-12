@@ -19,8 +19,8 @@ export function ToolUpdateStatus({ provider }: { provider: ProviderId }) {
     return (
       <p role="status" className="text-xs text-muted-foreground">
         {t(
-          '部分版本信息暂不可用，将自动重试。也可点击“重新检查更新”立即重试。',
-          'Some version information is unavailable. Retrying automatically, or check again now.',
+          '部分版本查询失败，原因已显示在对应工具下方。将自动重试，也可立即重新检查。',
+          'Some version lookups failed; see the reason below each tool. Retrying automatically, or check again now.',
         )}
       </p>
     )

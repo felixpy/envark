@@ -764,7 +764,20 @@ mod tests {
             assert_eq!(result.id, id);
             let after = engine.snapshot().await;
             assert_eq!(
-                serde_json::to_value(&before).unwrap(),
+                result.tools[0].update_issue.as_ref().unwrap().reason,
+                "unsupported"
+            );
+            let mut expected = before.clone();
+            expected
+                .inventory
+                .providers
+                .iter_mut()
+                .find(|p| p.id == id)
+                .unwrap()
+                .tools[0]
+                .update_issue = result.tools[0].update_issue.clone();
+            assert_eq!(
+                serde_json::to_value(&expected).unwrap(),
                 serde_json::to_value(&after).unwrap()
             );
             assert_eq!(*events.lock().unwrap(), vec!["updates"]);

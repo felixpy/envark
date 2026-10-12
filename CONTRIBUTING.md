@@ -73,6 +73,8 @@ Use `Fixes #123` when a PR resolves a GitHub issue. A reference such as `Fixes F
 
 ## Validation
 
+Version lookup must use the operating system's proxy configuration and trusted certificates while retaining public certificate roots. Prefer official GitHub latest-release redirects for version-only queries, with the API as a fallback. Size metadata limits for each source: PyPI includes historical wheel records, so valid responses can exceed 2 MiB. Parse rustup's release manifest as a TOML document, not a single TOML value. Preserve per-tool failures and last successful versions; failed lookups must not enable updates based on stale data. Cargo supplied by rustup follows its Rust toolchain and must not be queried or updated as an independent crates.io package.
+
 ```sh
 pnpm format:check
 pnpm check

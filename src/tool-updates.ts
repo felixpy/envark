@@ -5,7 +5,11 @@ import type { Provider, ProviderId, Snapshot, Tool } from './domain'
 export type UpdateCheck = 'checking' | 'checked' | 'error'
 const tools = (provider: Provider) => [...provider.packageManagers, ...provider.tools]
 const fingerprint = (provider: Provider) =>
-  JSON.stringify(tools(provider).map(({ latest: _latest, updateStatus: _status, ...tool }) => tool))
+  JSON.stringify(
+    tools(provider).map(
+      ({ latest: _latest, updateStatus: _status, updateIssue: _issue, ...tool }) => tool,
+    ),
+  )
 
 // Only apply results to installations that have not changed since the lookup began.
 export function mergeToolUpdates(current: Provider, before: Provider, updated: Provider): Provider {
@@ -55,7 +59,10 @@ export function useToolUpdates(
         const updated = await api.checkToolUpdates(id, job)
         if (!alive.current || pending.current.get(id) !== job) return
         const incomplete = tools(updated).some(
-          (tool) => tool.canUpdate && tool.updateStatus === 'unknown',
+          (tool) =>
+            tool.canUpdate &&
+            (tool.updateIssue?.reason === 'queryFailed' ||
+              (!tool.updateIssue && tool.updateStatus === 'unknown')),
         )
         cache.current.set(id, { key, expires: Date.now() + (incomplete ? 60000 : 15 * 60000) })
         setData((state) =>

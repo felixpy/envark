@@ -16,6 +16,7 @@ pub(crate) mod script_installers;
 mod shell_managers;
 mod tool_commands;
 pub use tool_commands::tool_command;
+pub(crate) mod release_versions;
 pub mod updates;
 
 use crate::{
@@ -378,6 +379,7 @@ pub(super) fn basic_tool(name: &str, version: String, source: &str, path: Option
         version,
         latest: None,
         update_status: Default::default(),
+        update_issue: None,
         source: source.into(),
         runtime: None,
         path,

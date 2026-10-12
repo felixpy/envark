@@ -184,3 +184,24 @@ it('keeps automatic lookup working under Strict Mode and cancels on unmount', as
   expect(f.cancel).toHaveBeenCalledOnce()
   await f.resolve(f.provider)
 })
+
+it('retries genuine partial lookup failures but does not retry runtime-managed or unsupported tools', async () => {
+  const f = await fixture('rust')
+  await waitFor(() => expect(f.check).toHaveBeenCalledOnce())
+  const updated = structuredClone(f.provider)
+  updated.packageManagers[0].updateIssue = { reason: 'runtimeManaged', detail: 'Updates with Rust' }
+  updated.tools[0].updateIssue = { reason: 'unsupported', detail: 'Unverified source' }
+  await f.resolve(updated)
+  expect(f.state().updateChecks.rust).toBe('checked')
+  expect(f.check).toHaveBeenCalledOnce()
+  const failing = structuredClone(updated)
+  failing.packageManagers[0].latest = '2.0.0'
+  failing.packageManagers[0].updateStatus = 'major'
+  failing.packageManagers[0].updateIssue = { reason: 'queryFailed', detail: 'Timed out' }
+  act(() => {
+    void f.state().checkToolUpdates('rust')
+  })
+  await f.resolve(failing)
+  expect(f.state().updateChecks.rust).toBe('error')
+  expect(f.check).toHaveBeenCalledTimes(2)
+})
