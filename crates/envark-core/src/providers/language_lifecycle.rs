@@ -435,6 +435,9 @@ async fn mise_runtimes(ctx: &Context, path: &Path, provider: ProviderId) -> Resu
         let Some(path) = record["install_path"].as_str().map(PathBuf::from) else {
             continue;
         };
+        if provider == ProviderId::Jvm && !super::languages::usable_jdk(ctx, &path).await {
+            continue;
+        }
         // Runtime actions require both an owned SDK directory and the verified
         // manager that will execute them; discovery must match prepare eligibility.
         let managed = manager_owned

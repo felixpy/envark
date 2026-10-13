@@ -279,6 +279,38 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     super::cache_discovery::go_paths(ctx, &env)
 }
 
+// The macOS /usr/bin/java stub and a JRE are not installed JDKs.
+pub(super) async fn usable_jdk(ctx: &Context, path: &Path) -> bool {
+    if !read_small(&path.join("release"), 32_768).is_ok_and(|release| {
+        release
+            .lines()
+            .any(|line| line.starts_with("JAVA_VERSION="))
+    }) {
+        return false;
+    }
+    for name in ["java", "javac"] {
+        let binary = path.join("bin").join(if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.into()
+        });
+        if !binary.is_file() {
+            return false;
+        }
+        let mut command = CommandSpec::new(binary, ["-version"]);
+        ctx.apply_read_policy(&mut command);
+        command.timeout = std::time::Duration::from_secs(2);
+        let Ok(output) = ctx.runner.run(&command, &ctx.cancel).await else {
+            return false;
+        };
+        let version = format!("{} {}", output.stdout, output.stderr);
+        if !version.contains("version") && !version.trim_start().starts_with("javac ") {
+            return false;
+        }
+    }
+    true
+}
+
 async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if let Some(manager) = ctx.manager("SDKMAN!", true, true).await {
         provider.managers.push(manager);
@@ -304,6 +336,24 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if let Some(home) = std::env::var_os("JAVA_HOME") {
         roots.push(PathBuf::from(home));
     }
+    if let Some(binary) = ctx
+        .executable("java")
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        && let Some(root) = binary.parent().and_then(Path::parent)
+    {
+        roots.push(root.to_owned());
+    }
+    roots = roots
+        .into_iter()
+        .filter_map(|root| {
+            let root = if root.join("Contents/Home").is_dir() {
+                root.join("Contents/Home")
+            } else {
+                root
+            };
+            root.canonicalize().ok()
+        })
+        .collect();
     roots.sort();
     roots.dedup();
     let active = ctx
@@ -318,7 +368,7 @@ async fn java(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
         } else {
             "bin/java"
         });
-        if !binary.is_file() {
+        if !usable_jdk(ctx, &path).await {
             continue;
         }
         let version = read_small(&path.join("release"), 32_768)

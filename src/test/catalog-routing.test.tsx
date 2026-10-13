@@ -165,3 +165,39 @@ it('counts a shared mise update once while keeping separate installations distin
     ).toBeTruthy(),
   )
 })
+
+it('does not label a manager-only Java snapshot as an installed JDK and keeps its tools accessible', async () => {
+  const data = structuredClone(emptySnapshot)
+  data.settings.language = 'en'
+  data.settings.scanOnLaunch = false
+  data.inventory.scannedAt = 1
+  const java = emptyProvider('jvm')
+  java.detected = true // Cached by older clients that counted managers as runtimes.
+  java.packageManagers = [outdated('mise')]
+  java.managers = [
+    {
+      name: 'mise',
+      version: '1.0.0',
+      path: '/fixture/mise',
+      supportsInstall: true,
+      supportsDefault: true,
+    },
+  ]
+  data.inventory.providers = [java]
+  function RuntimeRoute() {
+    const state = useStore()
+    return state.provider ? <Environments id={state.provider} /> : <Catalog />
+  }
+  render(
+    <StoreProvider api={{ ...backend, snapshot: async () => data }}>
+      <RuntimeRoute />
+    </StoreProvider>,
+    { wrapper: TooltipProvider },
+  )
+  const card = await screen.findByRole('button', { name: /Java \/ JVM/ })
+  await waitFor(() => expect(within(card).getByText('Not detected')).toBeTruthy())
+  expect(within(card).queryByText('Detected')).toBeNull()
+  await userEvent.setup().click(card)
+  expect(await screen.findByText('Not detected')).toBeTruthy()
+  expect(within(screen.getByRole('row', { name: /mise/ })).getByText('mise')).toBeTruthy()
+})
