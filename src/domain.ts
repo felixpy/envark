@@ -383,6 +383,14 @@ export const categories = [
   { id: 'ai', zh: '本地 AI', en: 'Local AI' },
   { id: 'browser', zh: '浏览器与自动化', en: 'Browsers & automation' },
 ]
+// Older snapshots counted managers and build tools as installed language runtimes.
+export function providerDetected(provider?: Provider) {
+  if (!provider) return false
+  return metadata[provider.id].category === 'lang'
+    ? provider.runtimes.length > 0
+    : provider.detected
+}
+
 export function emptyProvider(id: ProviderId): Provider {
   return {
     id,

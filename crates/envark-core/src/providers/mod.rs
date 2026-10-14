@@ -1,5 +1,6 @@
 pub(crate) mod cache_cleanup;
 pub(crate) mod cache_discovery;
+pub(crate) mod cache_files;
 mod javascript;
 pub(crate) mod js_tooling;
 pub(crate) mod language_lifecycle;
@@ -313,11 +314,22 @@ pub(crate) async fn discover_selected(
             package_managers::resolve(&ctx, &mut provider).await;
             language_lifecycle::discover(&ctx, &mut provider).await;
             ollama_lifecycle::discover(&ctx, &mut provider).await;
-            provider.detected = !provider.runtimes.is_empty()
-                || !provider.managers.is_empty()
-                || !provider.package_managers.is_empty()
-                || !provider.tools.is_empty()
-                || !provider.assets.is_empty();
+            provider.detected = if matches!(
+                id,
+                ProviderId::Js
+                    | ProviderId::Py
+                    | ProviderId::Jvm
+                    | ProviderId::Rust
+                    | ProviderId::Go
+            ) {
+                !provider.runtimes.is_empty()
+            } else {
+                !provider.runtimes.is_empty()
+                    || !provider.managers.is_empty()
+                    || !provider.package_managers.is_empty()
+                    || !provider.tools.is_empty()
+                    || !provider.assets.is_empty()
+            };
             (provider, caches)
         });
     }

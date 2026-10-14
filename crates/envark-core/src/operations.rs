@@ -714,8 +714,8 @@ fn prepare_steps(
                     return Err(Error::Unavailable(cache.warning.clone()));
                 }
                 reject_links(&cache.path)?;
-                if ["cargo-registry", "cargo-git"].contains(&cache.strategy.as_str()) {
-                    providers::cache_cleanup::cargo_root(ctx, cache)?;
+                if providers::cache_files::direct(cache) {
+                    providers::cache_files::root(ctx, cache)?;
                     let size = measure(&cache.path, &ctx.cancel)?;
                     if !size.complete {
                         return Err(Error::Conflict(
@@ -727,23 +727,24 @@ fn prepare_steps(
                         path: Some(cache.path.clone()),
                         command: None,
                         bytes: size.bytes,
-                        restore: Some(
-                            "Cargo will download these dependencies again when needed.".into(),
-                        ),
+                        restore: Some("Dependencies will be downloaded again when needed.".into()),
                     });
                     steps.push(Step::CacheFiles {
                         cache: cache.clone(),
                         size,
                         modified: modified(&cache.path),
                     });
-                    view.warnings.push(if settings.use_trash { "Cargo cache contents will move to Trash after acquiring Cargo's cache locks. Installed tools and configuration are kept." } else { "Cargo cache contents will be removed after acquiring Cargo's cache locks. Installed tools and configuration are kept." }.into());
+                    view.warnings.push(if settings.use_trash { "Only the selected cache directory will move to Trash. Installed tools and configuration outside this directory are kept." } else { "Only the selected cache directory will be permanently removed. Installed tools and configuration outside this directory are kept." }.into());
                     continue;
                 }
                 let related: Vec<Cache> = if cache.strategy.starts_with("gradle-") {
                     inventory
                         .caches
                         .iter()
-                        .filter(|c| c.id != cache.id && c.strategy.starts_with("gradle-"))
+                        .filter(|c| {
+                            c.id != cache.id
+                                && ["gradle-caches", "gradle-dists"].contains(&c.strategy.as_str())
+                        })
                         .cloned()
                         .collect()
                 } else {
@@ -1055,6 +1056,7 @@ fn remove_directory(
     timestamp: Option<u64>,
     use_trash: bool,
     token: &CancellationToken,
+    cache: Option<&Cache>,
 ) -> Result<u64> {
     let canonical = contained_directory(root, path)?;
     if modified(path) != timestamp {
@@ -1071,6 +1073,9 @@ fn remove_directory(
         return Err(Error::Conflict(
             "The contents changed after review. Scan again before cleaning.".into(),
         ));
+    }
+    if let Some(cache) = cache {
+        providers::cache_files::check_idle(cache)?;
     }
     if token.is_cancelled() {
         return Err(Error::Cancelled);
@@ -1114,6 +1119,7 @@ async fn clean_project(
             timestamp,
             use_trash,
             &token,
+            None,
         )
     })
     .await
@@ -1455,11 +1461,18 @@ pub async fn execute(
             } => {
                 async {
                     let (ctx, use_trash) = (ctx.clone(), settings.use_trash);
-                    let root = providers::cache_cleanup::cargo_root(&ctx, &cache)?;
-                    let locks = providers::cache_cleanup::lock_cargo(&root)?;
+                    providers::cache_cleanup::check(&ctx, &cache).await?;
+                    let root = providers::cache_files::root(&ctx, &cache)?;
+                    let locks = if cache.strategy.starts_with("cargo-") {
+                        providers::cache_cleanup::lock_cargo(&root)?
+                    } else {
+                        vec![]
+                    };
                     providers::cache_cleanup::validate_cargo_checkouts(&ctx, &cache).await?;
                     tokio::task::spawn_blocking(move || {
                         let _locks = locks;
+                        providers::cache_files::root(&ctx, &cache)?;
+                        providers::cache_files::check_idle(&cache)?;
                         let bytes = remove_directory(
                             &root,
                             &cache.path,
@@ -1467,6 +1480,7 @@ pub async fn execute(
                             modified,
                             use_trash,
                             &ctx.cancel,
+                            Some(&cache),
                         )?;
                         Ok((
                             bytes,
@@ -1508,7 +1522,7 @@ pub async fn execute(
                 let token = ctx.cancel.clone();
                 let use_trash = settings.use_trash;
                 tokio::task::spawn_blocking(move || {
-                    remove_directory(&root, &path, &size, modified, use_trash, &token)
+                    remove_directory(&root, &path, &size, modified, use_trash, &token, None)
                 })
                 .await
                 .map_err(|e| Error::Unavailable(e.to_string()))?

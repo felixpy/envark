@@ -162,6 +162,7 @@ pub(crate) async fn refresh(
     }
     tokio::task::spawn_blocking(move || {
         let mut worktrees = HashSet::new();
+        let mut removed_caches = HashSet::new();
         let mut invalidated = vec![];
         for target in targets {
             match target {
@@ -214,10 +215,11 @@ pub(crate) async fn refresh(
                 }
                 RefreshTarget::Cache(id) => {
                     if let Some(cache) = inventory.caches.iter_mut().find(|c| c.id == id) {
+                        invalidated.push(cache.path.clone());
                         cache.size = match std::fs::symlink_metadata(&cache.path) {
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Measurement {
-                                complete: true,
-                                ..Default::default()
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                removed_caches.insert(cache.id.clone());
+                                Measurement { complete: true, ..Default::default() }
                             },
                             _ => match measure_changed(&cache.path, &ctx, &progress, &job_id) {
                                 Ok(size) => size,
@@ -240,6 +242,7 @@ pub(crate) async fn refresh(
                 | RefreshTarget::Providers(_) => {}
             }
         }
+        inventory.caches.retain(|cache| !removed_caches.contains(&cache.id));
         for id in worktrees {
             let Some(index) = inventory.worktrees.iter().position(|w| w.id == id) else {
                 continue;
@@ -510,7 +513,7 @@ mod tests {
         assert!(updated.caches[0].size.fingerprint.is_none());
         assert!(!updated.caches[0].can_clean);
         assert!(updated.caches[0].warning.contains("Refresh the inventory"));
-        assert_eq!(updated.caches[1].size.bytes, 0);
-        assert!(updated.caches[1].size.complete);
+        assert_eq!(updated.caches.len(), 1);
+        assert!(updated.caches.iter().all(|cache| cache.id != "removed"));
     }
 }

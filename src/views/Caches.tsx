@@ -196,7 +196,8 @@ export default function Caches() {
                                 tabIndex={0}
                               >
                                 {cache.canClean
-                                  ? cache.strategy.startsWith('cargo-')
+                                  ? cache.strategy.startsWith('cargo-') ||
+                                    cache.strategy.endsWith('-files')
                                     ? s.data.settings.useTrash
                                       ? t('移至回收站', 'Move to Trash')
                                       : t('删除下载缓存', 'Remove downloaded cache')
@@ -215,25 +216,35 @@ export default function Caches() {
                                     '可能包含无法重新下载的本地发布产物，暂不执行整库清理。',
                                     'May contain locally published artifacts that cannot be downloaded again; whole-repository cleanup is disabled.',
                                   )
-                                : cache.strategy.startsWith('gradle-')
-                                  ? t(
-                                      '同时整理 Gradle 缓存和发行包，按保留策略保留仍在使用或近期使用的内容，不会全部清空。',
-                                      'Prunes Gradle caches and distributions together, retaining entries required by its retention policy. This does not empty every cache.',
-                                    )
-                                  : cache.strategy.startsWith('cargo-')
+                                : cache.strategy.endsWith('-files')
+                                  ? cache.strategy.startsWith('gradle-')
                                     ? t(
-                                        '取得 Cargo 缓存锁后清理，保留已安装工具与配置；有本地修改的 Git 缓存不会删除。',
-                                        'Cleans downloaded dependencies while holding Cargo cache locks; installed tools, configuration, and modified Git checkouts are preserved.',
+                                        '无需安装 JDK 或 Gradle，仅清理选中的下载缓存目录；保留配置，并在执行前检查 Gradle 进程占用。',
+                                        'No JDK or Gradle installation is needed. Removes only the selected downloaded cache directory, preserves configuration, and checks for running Gradle processes before removal.',
                                       )
-                                    : !cache.canClean &&
-                                        ['npm-verify', 'pnpm-prune', 'yarn-clean'].includes(
-                                          cache.strategy,
-                                        )
+                                    : t(
+                                        '清理已确认属于 pnpm 的旧 store，保留当前 store 与项目文件；执行前重新核对路径和占用。',
+                                        'Removes a verified old pnpm store while preserving the current store and project files. Rechecks its path and running processes before removal.',
+                                      )
+                                  : cache.strategy.startsWith('gradle-')
+                                    ? t(
+                                        '同时整理 Gradle 缓存和发行包，按保留策略保留仍在使用或近期使用的内容，不会全部清空。',
+                                        'Prunes Gradle caches and distributions together, retaining entries required by its retention policy. This does not empty every cache.',
+                                      )
+                                    : cache.strategy.startsWith('cargo-')
                                       ? t(
-                                          '已找到缓存，但尚未确认对应的清理工具。管理 Node 环境后，点击刷新缓存重新检查。',
-                                          'Cache found, but its cleanup tool is not confirmed. Manage the Node environment, then refresh caches to check again.',
+                                          '取得 Cargo 缓存锁后清理，保留已安装工具与配置；有本地修改的 Git 缓存不会删除。',
+                                          'Cleans downloaded dependencies while holding Cargo cache locks; installed tools, configuration, and modified Git checkouts are preserved.',
                                         )
-                                      : cache.warning || cache.strategy}
+                                      : !cache.canClean &&
+                                          ['npm-verify', 'pnpm-prune', 'yarn-clean'].includes(
+                                            cache.strategy,
+                                          )
+                                        ? t(
+                                            '已找到缓存，但尚未确认对应的清理工具。管理 Node 环境后，点击刷新缓存重新检查。',
+                                            'Cache found, but its cleanup tool is not confirmed. Manage the Node environment, then refresh caches to check again.',
+                                          )
+                                        : cache.warning || cache.strategy}
                             </TooltipContent>
                           </Tooltip>
                           {!cache.canClean && cache.cleanupIssue && (

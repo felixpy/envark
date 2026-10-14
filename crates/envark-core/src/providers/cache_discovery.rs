@@ -1,6 +1,6 @@
 use super::*;
 
-fn configured_path(ctx: &Context, key: &str) -> Option<PathBuf> {
+pub(super) fn configured_path(ctx: &Context, key: &str) -> Option<PathBuf> {
     let rc = std::env::var_os("NPM_CONFIG_USERCONFIG")
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.home.join(".npmrc"));
@@ -102,6 +102,51 @@ pub(super) async fn javascript(ctx: &Context) -> Vec<Cache> {
         }
         for path in fallbacks {
             let real = std::fs::canonicalize(&path).ok();
+            // Keep sibling versions visible: a v11 store does not account for v3 downloads.
+            if name == "pnpm"
+                && let Some(root) = &real
+            {
+                let current = found
+                    .iter()
+                    .find(|cache| cache.name == name && cache.path.starts_with(root))
+                    .map(|cache| cache.path.clone());
+                if let Some(current) = current {
+                    let siblings: Vec<_> = std::fs::read_dir(root)
+                        .into_iter()
+                        .flatten()
+                        .take(128)
+                        .filter_map(|entry| entry.ok())
+                        .filter(|entry| {
+                            super::cache_files::store_version(&entry.file_name().to_string_lossy())
+                        })
+                        .map(|entry| entry.path())
+                        .filter(|path| path != &current)
+                        .collect();
+                    for path in siblings {
+                        let mut candidate = cache(
+                            ProviderId::Js,
+                            "pnpm",
+                            path.clone(),
+                            "pnpm-store-files",
+                            false,
+                        );
+                        if candidate
+                            .as_mut()
+                            .is_some_and(|cache| super::cache_files::root(ctx, cache).is_ok())
+                        {
+                            add(
+                                ctx,
+                                &mut found,
+                                ProviderId::Js,
+                                name,
+                                path,
+                                "pnpm-store-files",
+                                false,
+                            );
+                        }
+                    }
+                }
+            }
             // Do not count a reported versioned store and its configured parent twice.
             if real.as_ref().is_some_and(|root| {
                 found.iter().any(|cache| {
@@ -248,19 +293,43 @@ pub(crate) async fn check_capabilities(ctx: &Context, caches: &mut [Cache]) -> R
         let permits = permits.clone();
         jobs.spawn(async move {
             let _permit = permits.acquire_owned().await.expect("cache check semaphore remains open");
-            let result = tokio::time::timeout(std::time::Duration::from_secs(3), cache_cleanup::check(&ctx, &cache)).await;
+            let mut cache = cache;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                let result = cache_cleanup::check(&ctx, &cache).await;
+                let fallback = match (&result, cache.strategy.as_str()) {
+                    (Err(Error::Unavailable(_)), "gradle-caches") => Some("gradle-caches-files"),
+                    (Err(Error::Unavailable(_)), "gradle-dists") => Some("gradle-dists-files"),
+                    (Err(Error::Conflict(_) | Error::Unavailable(_)), "pnpm-prune") => Some("pnpm-store-files"),
+                    _ => None,
+                };
+                if let Some(strategy) = fallback {
+                    let original = cache.strategy.clone();
+                    cache.strategy = strategy.into();
+                    let direct = super::cache_files::check(&ctx, &cache).await;
+                    // Never hide a failed ownership check by making an arbitrary directory removable.
+                    if matches!(direct, Err(Error::UnsafePath(_))) { cache.strategy = original; }
+                    return direct;
+                }
+                result
+            }).await;
             ctx.cancel.cancel();
-            (index, result.unwrap_or_else(|_| Err(Error::Process("The cleanup tool did not respond within 3 seconds. Check its environment, then check cleanup availability again.".into()))))
+            (index, cache.strategy, result.unwrap_or_else(|_| Err(Error::Process("The cleanup tool did not respond within 3 seconds. Check its environment, then check cleanup availability again.".into()))))
         });
     }
     while let Some(result) = jobs.join_next().await {
-        let (index, result) = result.map_err(|error| Error::Unavailable(error.to_string()))?;
+        let (index, strategy, result) =
+            result.map_err(|error| Error::Unavailable(error.to_string()))?;
         let cache = &mut caches[index];
+        cache.strategy = strategy;
         match result {
             Ok(()) => {
                 cache.can_clean = true;
                 cache.cleanup_issue = None;
-                cache.warning = "Native cleanup retains referenced entries. Future builds may need to download dependencies again.".into();
+                cache.warning = if super::cache_files::direct(cache) {
+                    "Only the selected downloaded cache is removed. Other installed tools and configuration are kept; dependencies may need to be downloaded again."
+                } else {
+                    "Native cleanup retains referenced entries. Future builds may need to download dependencies again."
+                }.into();
             }
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(error) => {

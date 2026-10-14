@@ -8,6 +8,7 @@ import { ArrowUp, Check, Download, FilePenLine, Plus, Star, Trash2 } from 'lucid
 import { toast } from 'sonner'
 import {
   emptyProvider,
+  providerDetected,
   formatBytes,
   metadata,
   updateKind,
@@ -68,6 +69,7 @@ export default function Environments({ id }: { id: ProviderId }) {
   const { t } = s
   const meta = metadata[id]
   const provider = s.data.inventory.providers.find((p) => p.id === id) ?? emptyProvider(id)
+  const detected = providerDetected(provider)
   const caps = capabilities(id)
   const versionManagers = provider.packageManagers.filter((tool) =>
     provider.managers.some((manager) => manager.name === tool.name),
@@ -159,14 +161,12 @@ export default function Environments({ id }: { id: ProviderId }) {
             <EcoDot id={id} className="size-2.5" />
             <h1 className="text-2xl font-semibold tracking-tight">{meta.name}</h1>
             <Badge
-              variant={provider.detected ? 'secondary' : 'outline'}
+              variant={detected ? 'secondary' : 'outline'}
               className={
-                !provider.detected
-                  ? 'border-muted-foreground/40 bg-muted text-muted-foreground'
-                  : ''
+                !detected ? 'border-muted-foreground/40 bg-muted text-muted-foreground' : ''
               }
             >
-              {provider.detected
+              {detected
                 ? t('已检测到', 'Detected')
                 : s.data.inventory.scannedAt
                   ? t('未检测到', 'Not detected')

@@ -248,3 +248,60 @@ it('checks cleanup prerequisites automatically, explains blocked caches and rech
     ),
   )
 })
+
+it('offers legacy pnpm and Gradle fallback cleanup with the selected removal policy', async () => {
+  const data = structuredClone(emptySnapshot)
+  data.settings.language = 'en'
+  data.settings.scanOnLaunch = false
+  data.settings.useTrash = true
+  data.inventory.caches = [
+    { id: 'current', name: 'pnpm current', provider: 'js' as const, strategy: 'pnpm-prune' },
+    { id: 'old', name: 'pnpm old', provider: 'js' as const, strategy: 'pnpm-store-files' },
+    {
+      id: 'gradle',
+      name: 'Gradle caches',
+      provider: 'jvm' as const,
+      strategy: 'gradle-caches-files',
+    },
+    {
+      id: 'dists',
+      name: 'Gradle distributions',
+      provider: 'jvm' as const,
+      strategy: 'gradle-dists-files',
+    },
+  ].map((cache) => ({
+    ...cache,
+    path: `/cache/${cache.id}`,
+    size: { bytes: 42, files: 1, skipped: 0, complete: true },
+    canClean: true,
+    warning: '',
+  }))
+  const prepare = vi.fn(async () => ({
+    id: 'plan',
+    kind: 'clean',
+    createdAt: 0,
+    items: [],
+    warnings: [],
+    useTrash: true,
+  }))
+  render(
+    <StoreProvider api={{ ...backend, snapshot: async () => data, prepare }}>
+      <Caches />
+    </StoreProvider>,
+    { wrapper: TooltipProvider },
+  )
+  await screen.findByText('pnpm old')
+  expect(screen.getAllByText('Move to Trash')).toHaveLength(3)
+  expect(
+    within(screen.getByText('pnpm current').closest('tr')!).getByText('Native cleanup'),
+  ).toBeTruthy()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('checkbox', { name: 'Select Gradle caches' }))
+  await user.click(screen.getByRole('button', { name: 'Review cleanup (1)' }))
+  await waitFor(() =>
+    expect(prepare).toHaveBeenCalledWith(
+      { kind: 'cleanCaches', ids: ['gradle'] },
+      expect.any(String),
+    ),
+  )
+})

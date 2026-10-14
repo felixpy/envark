@@ -13,7 +13,14 @@ import {
 } from 'lucide-react'
 import { Toaster } from 'sonner'
 import { StoreProvider, useStore } from './store'
-import { categories, metadata, providerIds, formatBytes, type View } from './domain'
+import {
+  categories,
+  metadata,
+  providerIds,
+  providerDetected,
+  formatBytes,
+  type View,
+} from './domain'
 import {
   Sidebar,
   SidebarContent,
@@ -108,6 +115,7 @@ function Shell() {
                       .filter((id) => metadata[id].category === category.id)
                       .map((id) => {
                         const provider = data.inventory.providers.find((p) => p.id === id)
+                        const detected = providerDetected(provider)
                         const active = provider?.runtimes.find((r) => r.active)
                         return (
                           <SidebarMenuItem key={id}>
@@ -116,21 +124,19 @@ function Shell() {
                               isActive={s.view === 'env' && s.provider === id}
                               onClick={() => s.go('env', id)}
                             >
-                              <EcoDot
-                                id={id}
-                                className={!provider?.detected ? 'grayscale opacity-50' : ''}
-                              />
+                              <EcoDot id={id} className={!detected ? 'grayscale opacity-50' : ''} />
                               {metadata[id].short}
                             </SidebarMenuButton>
                             <SidebarMenuBadge
                               title={active?.version}
-                              className={`max-w-24 truncate text-[10px] font-normal ${!provider?.detected ? 'rounded border border-muted-foreground/30 bg-muted px-1 text-muted-foreground' : 'font-mono text-muted-foreground'}`}
+                              className={`max-w-24 truncate text-[10px] font-normal ${!detected ? 'rounded border border-muted-foreground/30 bg-muted px-1 text-muted-foreground' : 'font-mono text-muted-foreground'}`}
                             >
-                              {!provider?.detected
+                              {!detected
                                 ? data.inventory.scannedAt
                                   ? t('未检测到', 'Not detected')
                                   : t('待扫描', 'Not scanned')
-                                : (active?.version.split(' ')[0] ?? (provider.assets.length || ''))}
+                                : (active?.version.split(' ')[0] ??
+                                  (provider?.assets.length || ''))}
                             </SidebarMenuBadge>
                           </SidebarMenuItem>
                         )

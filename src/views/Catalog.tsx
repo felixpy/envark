@@ -2,6 +2,7 @@ import { ArrowRight, Cpu, FileCog, HardDriveDownload, Package, Wrench } from 'lu
 import {
   categories,
   emptyProvider,
+  providerDetected,
   metadata,
   providerIds,
   updateKind,
@@ -117,6 +118,7 @@ export default function Catalog() {
                 .filter((id) => metadata[id].category === category.id)
                 .map((id) => {
                   const p = s.data.inventory.providers.find((p) => p.id === id) ?? emptyProvider(id)
+                  const detected = providerDetected(p)
                   const meta = metadata[id]
                   const open = () =>
                     s.go('env', id, {
@@ -131,7 +133,7 @@ export default function Catalog() {
                   return (
                     <Card
                       key={id}
-                      className={`cursor-pointer gap-4 py-4 shadow-none transition-colors hover:border-foreground/40 focus-visible:outline-2 focus-visible:outline-ring ${!p.detected ? 'border-dashed bg-muted/50' : ''}`}
+                      className={`cursor-pointer gap-4 py-4 shadow-none transition-colors hover:border-foreground/40 focus-visible:outline-2 focus-visible:outline-ring ${!detected ? 'border-dashed bg-muted/50' : ''}`}
                       role="button"
                       tabIndex={0}
                       onClick={open}
@@ -144,7 +146,7 @@ export default function Catalog() {
                     >
                       <CardHeader className="px-4">
                         <CardTitle className="flex items-center gap-2">
-                          <EcoDot id={id} className={!p.detected ? 'grayscale opacity-60' : ''} />
+                          <EcoDot id={id} className={!detected ? 'grayscale opacity-60' : ''} />
                           {meta.name}
                         </CardTitle>
                         <CardDescription className="min-h-10">
@@ -153,14 +155,14 @@ export default function Catalog() {
                       </CardHeader>
                       <CardFooter className="justify-between gap-2 border-t px-4 pt-3 text-xs text-muted-foreground">
                         <Badge
-                          variant={p.detected ? 'secondary' : 'outline'}
+                          variant={detected ? 'secondary' : 'outline'}
                           className={
-                            !p.detected
+                            !detected
                               ? 'border-muted-foreground/40 bg-background text-muted-foreground'
                               : ''
                           }
                         >
-                          {p.detected
+                          {detected
                             ? t('已检测到', 'Detected')
                             : s.data.inventory.scannedAt
                               ? t('未检测到', 'Not detected')

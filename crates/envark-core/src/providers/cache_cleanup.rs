@@ -74,6 +74,9 @@ pub(crate) async fn check(ctx: &Context, cache: &Cache) -> Result<()> {
         }
         return validate_cargo_checkouts(ctx, cache).await;
     }
+    if super::cache_files::direct(cache) {
+        return super::cache_files::check(ctx, cache).await;
+    }
     let command = super::cache_command(ctx, cache)?;
     if cache.strategy.starts_with("gradle-") {
         let mut java = CommandSpec::new(&command.program, ["-version"]);
@@ -417,6 +420,35 @@ mod tests {
         std::fs::write(&gradle_binary, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&gradle_binary, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(ctx.executable("gradle"), Some(gradle_binary));
+        // SDKMAN/build tools without a compiler must not create a JDK runtime.
+        let jre = root.join(".sdkman/candidates/java/jre-only");
+        std::fs::create_dir_all(jre.join("bin")).unwrap();
+        std::fs::write(
+            jre.join("bin/java"),
+            "#!/bin/sh\nprintf 'java version 21\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(jre.join("bin/java"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::write(jre.join("release"), "JAVA_VERSION=\"21.0.1\"\n").unwrap();
+        let mut provider = Provider::empty(ProviderId::Jvm);
+        super::super::languages::discover(&ctx, &mut provider).await;
+        assert!(provider.runtimes.iter().all(|runtime| runtime.path != jre));
+        std::fs::write(
+            jre.join("bin/javac"),
+            "#!/bin/sh\nprintf 'javac 21.0.1\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            jre.join("bin/javac"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        assert!(super::super::languages::usable_jdk(&ctx, &jre).await);
+        std::fs::write(jre.join("bin/java"), "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(!super::super::languages::usable_jdk(&ctx, &jre).await);
+        std::fs::remove_dir_all(jre).unwrap();
+
         let cargo = cargo_home(&ctx);
         std::fs::create_dir_all(cargo.join("registry/cache")).unwrap();
         std::fs::create_dir_all(cargo.join("bin")).unwrap();
@@ -510,7 +542,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(updated.caches[0].size.bytes, 0);
+        assert!(
+            updated.caches.is_empty(),
+            "Removed caches must not remain selectable."
+        );
 
         // Refuse modified cached Git checkouts, and never follow escaped roots.
         let checkout = cargo.join("git/checkouts/repo/hash");
@@ -613,18 +648,54 @@ esac
                 .contains("size could not be confirmed")
         );
 
-        // Gradle directories alone do not prove that a usable cleanup tool is installed.
+        // Cache cleanup does not require an installed JDK or Gradle launcher.
         std::fs::create_dir_all(gradle_home(&ctx).join("caches")).unwrap();
         let mut found = super::super::cache_discovery::language(&ctx, ProviderId::Jvm).await;
         super::super::cache_discovery::check_capabilities(&ctx, &mut found)
             .await
             .unwrap();
-        let unavailable = found
+        let direct = found
             .iter()
-            .find(|cache| cache.strategy == "gradle-caches")
+            .find(|cache| cache.name == "Gradle caches")
             .unwrap();
-        assert!(!unavailable.can_clean);
-        assert!(unavailable.warning.contains("Gradle distribution"));
+        assert!(direct.can_clean, "{:?}", direct.cleanup_issue);
+        assert_eq!(direct.strategy, "gradle-caches-files");
+        let gradle = gradle_home(&ctx);
+        std::fs::write(gradle.join("gradle.properties"), "configuration").unwrap();
+        std::fs::write(gradle.join("caches/download"), "payload").unwrap();
+        inventory.caches = found;
+        let plan = operations::prepare(
+            ActionRequest::CleanCaches {
+                ids: vec![
+                    inventory
+                        .caches
+                        .iter()
+                        .find(|c| c.name == "Gradle caches")
+                        .unwrap()
+                        .id
+                        .clone(),
+                ],
+            },
+            &inventory,
+            &settings,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert!(plan.view.items[0].command.is_none());
+        let result = operations::execute(
+            plan,
+            settings.clone(),
+            ctx.clone(),
+            silent_progress(),
+            "gradle-files".into(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+        assert!(!gradle.join("caches").exists());
+        assert!(gradle.join("gradle.properties").is_file());
 
         // JS discovery and cleanup agree on the versioned store and owning tool.
         let node = root.join("bin/node");
@@ -714,6 +785,100 @@ fi
             assert_eq!(result.removed_bytes, 5);
             assert!(!path.join("entry").exists());
         }
+
+        // Older store versions beside the active version remain independently visible.
+        let store = root.join("js-cache/pnpm");
+        std::fs::write(
+            root.join(".npmrc"),
+            format!("store-dir={}\n", store.display()),
+        )
+        .unwrap();
+        std::fs::create_dir_all(store.join("v3/files")).unwrap();
+        std::fs::write(store.join("v3/files/download"), "old sibling").unwrap();
+        std::fs::create_dir_all(store.join("v10/files")).unwrap();
+        std::fs::write(store.join("v10/files/download"), "current download").unwrap();
+        let mut siblings = super::super::cache_discovery::javascript(&ctx).await;
+        super::super::cache_discovery::check_capabilities(&ctx, &mut siblings)
+            .await
+            .unwrap();
+        let current = siblings
+            .iter()
+            .find(|c| c.path == store.join("v10"))
+            .unwrap();
+        assert_eq!(current.strategy, "pnpm-prune");
+        assert!(current.can_clean);
+        assert!(siblings.iter().any(|c| c.path == store.join("v3")
+            && c.strategy == "pnpm-store-files"
+            && c.can_clean));
+        assert!(!siblings.iter().any(|c| c.path == store));
+        let mut protected = current.clone();
+        protected.strategy = "pnpm-store-files".into();
+        assert!(matches!(
+            super::super::cache_files::check(&ctx, &protected).await,
+            Err(Error::Conflict(_))
+        ));
+
+        // A legacy pnpm store is separate from the current versioned store.
+        let legacy = root.join(".pnpm-store/v3/files/ab");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("cached-package"), "legacy download").unwrap();
+        let mut found = super::super::cache_discovery::javascript(&ctx).await;
+        super::super::cache_discovery::check_capabilities(&ctx, &mut found)
+            .await
+            .unwrap();
+        let old = found
+            .iter()
+            .find(|c| c.path == root.join(".pnpm-store"))
+            .unwrap();
+        assert!(old.can_clean, "{:?}", old.cleanup_issue);
+        assert_eq!(old.strategy, "pnpm-store-files");
+        inventory.caches = found.clone();
+        let plan = operations::prepare(
+            ActionRequest::CleanCaches {
+                ids: vec![old.id.clone()],
+            },
+            &inventory,
+            &settings,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        std::fs::write(legacy.join("cached-package"), "changed download").unwrap();
+        let changed = operations::execute(
+            plan,
+            settings.clone(),
+            ctx.clone(),
+            silent_progress(),
+            "legacy-changed".into(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(changed.items[0].status, "failed");
+        assert!(legacy.join("cached-package").is_file());
+        let plan = operations::prepare(
+            ActionRequest::CleanCaches {
+                ids: vec![old.id.clone()],
+            },
+            &inventory,
+            &settings,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let result = operations::execute(
+            plan,
+            settings.clone(),
+            ctx.clone(),
+            silent_progress(),
+            "legacy-pnpm".into(),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.items[0].status, "success", "{:?}", result.items);
+        assert!(!root.join(".pnpm-store").exists());
+        assert!(root.join("js-cache/pnpm/v10/files/download").is_file());
 
         // One Gradle operation covers both cache rows and uses an isolated project.
         let gradle = gradle_home(&ctx);
