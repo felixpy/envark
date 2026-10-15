@@ -409,6 +409,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn package_manager_updates_complete_inside_the_client() {
+        let _pnpm = super::super::PNPM_MUTATION_TEST_LOCK.lock().unwrap();
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
