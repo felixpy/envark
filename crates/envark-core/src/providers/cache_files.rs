@@ -137,15 +137,25 @@ fn uses_cache(strategy: &str, name: &str, args: &[String]) -> bool {
                 .any(|arg| arg.starts_with("org.gradle.") || arg.ends_with("gradle-wrapper.jar"))
             || (name.starts_with("java") && args.is_empty())
     } else {
-        ["pnpm", "pnpm.exe", "pnpm.cmd"].contains(&name)
-            || args.iter().any(|arg| {
-                arg.rsplit(['/', '\\']).next().is_some_and(|name| {
-                    [
-                        "pnpm", "pnpm.exe", "pnpm.cmd", "pnpm.ps1", "pnpm.cjs", "pnpm.js",
-                    ]
-                    .contains(&name)
-                })
+        let is_pnpm = |arg: &str| {
+            arg.rsplit(['/', '\\']).next().is_some_and(|name| {
+                [
+                    "pnpm", "pnpm.exe", "pnpm.cmd", "pnpm.ps1", "pnpm.cjs", "pnpm.js",
+                ]
+                .contains(&name)
             })
+        };
+        let direct = ["pnpm", "pnpm.exe", "pnpm.cmd"].contains(&name);
+        let script = args.iter().position(|arg| is_pnpm(arg));
+        if !direct && script.is_none() {
+            return false;
+        }
+        let command = script.map_or(args, |index| &args[index + 1..]);
+        // Discovery probes run concurrently with eligibility checks. Queries do
+        // not use package contents and must not block cleanup of an old store.
+        !(command.len() == 1 && ["--version", "-v"].contains(&command[0].as_str())
+            || command.first().is_some_and(|arg| arg == "store")
+                && command.get(1).is_some_and(|arg| arg == "path"))
     }
 }
 
@@ -259,6 +269,84 @@ mod tests {
             "node.exe",
             &[r"C:\pnpm\pnpm.cjs".into()]
         ));
+    }
+
+    #[test]
+    fn read_only_pnpm_probes_do_not_occupy_dependency_stores() {
+        for (name, argv) in [
+            ("pnpm", vec!["pnpm", "store", "path"]),
+            (
+                "pnpm.exe",
+                vec!["store", "path", "--store-dir", r"C:\cache"],
+            ),
+            ("node", vec!["node", "/tools/pnpm.cjs", "store", "path"]),
+            (
+                "node.exe",
+                vec![r"C:\node.exe", r"C:\tools\pnpm.cjs", "--version"],
+            ),
+            ("sh", vec!["/bin/sh", "/tools/pnpm", "--version"]),
+            ("pnpm", vec!["/bin/sh", "/tools/pnpm", "--version"]),
+        ] {
+            let args = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(
+                !uses_cache("pnpm-store-files", name, &args),
+                "{name}: {args:?}"
+            );
+        }
+        for command in [
+            vec!["store", "prune"],
+            vec!["install"],
+            vec!["add", "package"],
+            vec!["--filter", "workspace", "install"],
+        ] {
+            let args = std::iter::once("/tools/pnpm.cjs")
+                .chain(command)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            assert!(uses_cache("pnpm-store-files", "node", &args), "{args:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_pnpm_queries_do_not_block_cleanup_but_installs_do() {
+        use std::io::BufRead;
+        use std::os::unix::fs::PermissionsExt;
+        let _pnpm = super::super::PNPM_MUTATION_TEST_LOCK.lock().unwrap();
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        let binary = path.join("pnpm");
+        std::fs::write(&binary, "#!/bin/sh\nprintf 'ready\\n'\nread input\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = cache(ProviderId::Js, "pnpm", path, "pnpm-store-files", true).unwrap();
+        for (args, blocked) in [
+            (vec!["--version"], false),
+            (vec!["store", "path"], false),
+            (vec!["install"], true),
+        ] {
+            let mut child = ChildGuard(
+                std::process::Command::new(&binary)
+                    .args(args)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let mut line = String::new();
+            std::io::BufReader::new(child.0.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line.trim(), "ready");
+            let result = check_idle(&cache);
+            assert_eq!(result.is_err(), blocked, "{result:?}");
+        }
     }
 
     #[cfg(unix)]
