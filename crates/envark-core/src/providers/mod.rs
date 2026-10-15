@@ -1,6 +1,6 @@
 // These parent tests spawn fake pnpm processes in separate homes. They share
 // the OS process table, so mutating fixtures must not overlap cache removal.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static PNPM_MUTATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) mod cache_cleanup;
