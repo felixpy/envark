@@ -75,6 +75,13 @@ export function OperationDialog() {
   const changes = plan?.worktreeChanges ?? []
   const changedCount = changes.length
   const removeCount = (plan?.items.length ?? 0) - changedCount
+  const commonRestore =
+    plan &&
+    plan.items.length > 1 &&
+    plan.items[0]?.restore &&
+    plan.items.every((item) => item.restore === plan.items[0].restore)
+      ? plan.items[0].restore
+      : null
   return (
     <Dialog
       open={s.operationOpen}
@@ -83,7 +90,7 @@ export function OperationDialog() {
       }}
     >
       <DialogContent
-        className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl"
+        className="flex max-h-[85vh] flex-col gap-4 overflow-hidden sm:max-w-2xl"
         showCloseButton={!s.busy}
       >
         <DialogHeader className="shrink-0">
@@ -98,7 +105,9 @@ export function OperationDialog() {
                     ? t('正在执行操作', 'Executing operation')
                     : t('审阅操作', 'Review operation')}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription
+            className={!preparing && !executing && !operationError ? 'sr-only' : undefined}
+          >
             {preparing
               ? t(
                   '正在核对所选项目，准备完成后由你确认执行。',
@@ -156,7 +165,7 @@ export function OperationDialog() {
                 {plan?.items.map((item, index) => {
                   const changed = changes.find((change) => change.path === item.path)
                   return (
-                    <div className="space-y-1 p-3 text-sm" key={index}>
+                    <div className="space-y-1 px-3 py-2.5 text-sm" key={index}>
                       <div className="flex justify-between gap-4 font-medium">
                         <span>{item.title}</span>
                         {item.bytes > 0 && (
@@ -179,13 +188,14 @@ export function OperationDialog() {
                           {item.command}
                         </pre>
                       )}
-                      {item.restore && (
+                      {item.restore && !commonRestore && (
                         <p className="text-xs text-muted-foreground">{item.restore}</p>
                       )}
                     </div>
                   )
                 })}
               </div>
+              {commonRestore && <p className="text-xs text-muted-foreground">{commonRestore}</p>}
               {changedCount > 0 && (
                 <fieldset className="space-y-3 rounded-lg border p-3 text-sm" disabled={s.busy}>
                   <legend className="px-1 font-medium">

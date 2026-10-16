@@ -90,13 +90,9 @@ export default function Projects() {
       return next
     })
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
         title={t('项目空间', 'Project space')}
-        description={t(
-          '按 Git 仓库汇总，自动包含关联 worktree，查看产物与工作树整体占用。',
-          'Git repositories and linked worktrees, with generated artifacts and total checkout sizes.',
-        )}
         actions={
           <>
             <ActionButton variant="outline" reason={busyReason} onClick={() => void s.addRoot()}>

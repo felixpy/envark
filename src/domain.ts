@@ -61,6 +61,17 @@ export interface Tool {
   canUpdate: boolean
   canRemove: boolean
   note: string | null
+  installation?: {
+    entry: string
+    package: string
+    root: string | null
+    module: string | null
+    origin: string | null
+    evidence: string | null
+    requirement?: string | null
+    sourceKind?: string | null
+  } | null
+  updateSource?: { label: string; fingerprint: string } | null
 }
 export interface Asset {
   id: string

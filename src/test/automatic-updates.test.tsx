@@ -205,3 +205,31 @@ it('retries genuine partial lookup failures but does not retry runtime-managed o
   expect(f.state().updateChecks.rust).toBe('error')
   expect(f.check).toHaveBeenCalledTimes(2)
 })
+
+it('does not immediately recheck hydrated sources or retry authentication failures every minute', async () => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(1000000)
+  const f = await fixture('js')
+  await waitFor(() => expect(f.check).toHaveBeenCalledOnce())
+  const updated = structuredClone(f.provider)
+  for (const tool of [...updated.packageManagers, ...updated.tools]) {
+    tool.installation = {
+      entry: tool.name,
+      package: tool.name,
+      root: '/tools',
+      module: null,
+      origin: null,
+      evidence: null,
+    }
+    tool.updateSource = { label: 'https://private.invalid/npm/', fingerprint: 'session' }
+    tool.updateIssue = { reason: 'queryFailed', detail: 'E401 Unauthorized' }
+  }
+  await f.resolve(updated)
+  expect(f.check).toHaveBeenCalledOnce()
+  clock.mockReturnValue(1061000)
+  act(() => window.dispatchEvent(new Event('focus')))
+  expect(f.check).toHaveBeenCalledOnce()
+  act(() => {
+    void f.state().checkToolUpdates('js')
+  })
+  expect(f.check).toHaveBeenCalledTimes(2)
+})

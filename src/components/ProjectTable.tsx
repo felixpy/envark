@@ -71,9 +71,17 @@ export function ProjectTable({
         )
       : null
   return (
-    <Card className="overflow-hidden py-0 shadow-none">
+    <Card className="overflow-hidden rounded-none border-0 py-0 shadow-none">
       <CardContent className="px-0">
-        <Table>
+        <Table className="table-fixed">
+          <colgroup>
+            <col className="w-9" />
+            <col />
+            <col className="w-[100px]" />
+            {mode === 'artifacts' && <col className="w-[180px]" />}
+            <col className="w-[130px]" />
+            <col className="w-[112px]" />
+          </colgroup>
           <TableHeader>
             <TableRow>
               <TableHead className="w-10 pl-4">
@@ -97,7 +105,7 @@ export function ProjectTable({
               <TableHead>{t('最近活动', 'Last activity')}</TableHead>
               {mode === 'artifacts' && <TableHead>{t('可清理目录', 'Artifacts')}</TableHead>}
               <TableHead className="text-right">{t('占用', 'Size')}</TableHead>
-              <TableHead className="w-36 pr-4">
+              <TableHead className="pr-4">
                 <span className="sr-only">{t('操作', 'Actions')}</span>
               </TableHead>
             </TableRow>
@@ -397,7 +405,7 @@ function WorkspaceRow({
           </div>
         </TableCell>
       )}
-      <TableCell className="text-right font-mono text-xs">
+      <TableCell className="whitespace-normal text-right font-mono text-xs">
         {mode === 'worktrees' && !worktree ? (
           formatBytes(familySize ?? 0)
         ) : mode === 'worktrees' && worktree?.size ? (
@@ -420,8 +428,9 @@ function WorkspaceRow({
           '—'
         )}
         {mode === 'artifacts' && familySize !== undefined && (
-          <p className="mt-1 whitespace-nowrap text-[10px] text-muted-foreground">
-            {t('产物含 worktree', 'Artifacts with worktrees')} {formatBytes(familySize)}
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            {t('含工作树', 'With worktrees')}{' '}
+            <span className="whitespace-nowrap">{formatBytes(familySize)}</span>
           </p>
         )}
       </TableCell>

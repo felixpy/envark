@@ -15,14 +15,5 @@ export function ToolUpdateStatus({ provider }: { provider: ProviderId }) {
         )}
       </p>
     )
-  if (state === 'error')
-    return (
-      <p role="status" className="text-xs text-muted-foreground">
-        {t(
-          '部分版本查询失败，原因已显示在对应工具下方。将自动重试，也可立即重新检查。',
-          'Some version lookups failed; see the reason below each tool. Retrying automatically, or check again now.',
-        )}
-      </p>
-    )
   return null
 }
