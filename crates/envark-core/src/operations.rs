@@ -329,6 +329,46 @@ pub async fn prepare_with_progress(
     progress: ProgressSink,
     job_id: &str,
 ) -> Result<Plan> {
+    let mut source_inventory;
+    let targets: Vec<&str> = match &request {
+        ActionRequest::UpdateTool { id, .. } => vec![id],
+        ActionRequest::UpdateTools { ids, .. } => ids.iter().map(String::as_str).collect(),
+        _ => vec![],
+    };
+    let inventory = if !targets.is_empty() {
+        source_inventory = inventory.clone();
+        let candidates: Vec<_> = source_inventory
+            .providers
+            .iter()
+            .flat_map(|p| p.tools.iter().chain(&p.package_managers))
+            .filter(|tool| {
+                targets.contains(&tool.id.as_str())
+                    && providers::package_sources::handles(tool)
+                    && (tool.installation.is_some() || tool.update_source.is_some())
+                    && (tool.update_source.is_none()
+                        || providers::package_sources::validate(ctx, tool).is_err())
+            })
+            .cloned()
+            .collect();
+        for mut tool in candidates {
+            let (version, source) = providers::package_sources::query(ctx, &tool).await?;
+            tool.latest = Some(version);
+            tool.update_source = Some(source);
+            tool.update_issue = None;
+            tool.update_status = providers::updates::classify(&tool);
+            if let Some(current) = source_inventory
+                .providers
+                .iter_mut()
+                .flat_map(|p| p.tools.iter_mut().chain(&mut p.package_managers))
+                .find(|current| current.id == tool.id)
+            {
+                *current = tool;
+            }
+        }
+        &source_inventory
+    } else {
+        inventory
+    };
     progress(Progress {
         job_id: job_id.into(),
         stage: "prepare".into(),
@@ -914,9 +954,14 @@ fn prepare_steps(
                 providers::tool_command(ctx, tool, remove)?
             };
             let mut item = command_description(
-                format!("{} {}", if remove { "Remove" } else { "Update" }, tool.name),
+                format!(
+                    "{} {}",
+                    if remove { "Remove" } else { "Update" },
+                    providers::package_sources::entry(tool)
+                ),
                 &command,
             );
+            item.path = tool.path.clone();
             if providers::script_installers::handles(tool) {
                 let url = providers::script_installers::url(tool)?;
                 item.path = tool
@@ -1273,7 +1318,7 @@ async fn run_tool(
         let path = tool.path.as_ref().ok_or_else(|| {
             Error::Conflict("The tool no longer has an installation path.".into())
         })?;
-        let root = if tool.name.starts_with('@') {
+        let root = if providers::package_sources::entry(&tool).starts_with('@') {
             path.parent().and_then(Path::parent)
         } else {
             path.parent()
@@ -1290,8 +1335,11 @@ async fn run_tool(
             .map(str::trim)
             .filter(|line| Path::new(line).is_absolute())
             .find_map(|line| std::fs::canonicalize(line).ok());
+        let root = std::fs::canonicalize(root)?;
         if probe.program != command.program
-            || current.as_ref() != Some(&std::fs::canonicalize(root)?)
+            || !current
+                .as_ref()
+                .is_some_and(|global| &root == global || root.starts_with(global))
         {
             return Err(Error::Conflict(
                 "The pnpm global installation changed. Refresh before updating or removing tools."
@@ -1338,7 +1386,43 @@ async fn run_tool(
             ),
         ));
     }
-    Ok((0, output.stdout.trim().chars().take(4000).collect()))
+    if !remove && providers::package_sources::handles(&tool) {
+        let installed = providers::updates::installed_version(ctx, &tool).await?;
+        let mut verified = tool.clone();
+        verified.latest = Some(installed.clone());
+        if !providers::updates::classify(&verified).is_upgrade() {
+            return Err(Error::Conflict(format!(
+                "The command completed but {} is still at version {}.",
+                tool.name, installed
+            )));
+        }
+        verified.version = tool
+            .latest
+            .clone()
+            .ok_or_else(|| Error::Conflict("The reviewed target is missing.".into()))?;
+        if matches!(
+            providers::updates::classify(&verified),
+            crate::model::UpdateStatus::Ahead | crate::model::UpdateStatus::Unknown
+        ) {
+            return Err(Error::Conflict(format!(
+                "The installed version {installed} does not meet the reviewed update target."
+            )));
+        }
+        return Ok((
+            0,
+            format!(
+                "{} updated from {} to {}.",
+                tool.name, tool.version, installed
+            ),
+        ));
+    }
+    Ok((
+        0,
+        crate::process::redact(output.stdout.trim())
+            .chars()
+            .take(4000)
+            .collect(),
+    ))
 }
 
 pub async fn execute(

@@ -74,6 +74,7 @@ fn apply_result(tool: &mut Tool, result: Result<String>) {
         }
         Err(error) => {
             // Keep the last successful lookup visible; never relabel it as fresh.
+            tool.update_source = None;
             tool.update_issue = Some(UpdateIssue {
                 reason: "queryFailed".into(),
                 detail: error.to_string(),
@@ -126,6 +127,7 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
                     .into(),
             });
         } else if super::native_lifecycle::owns_tool(tool)
+            || super::package_sources::handles(tool)
             || registry(tool).is_some()
             || matches!(
                 tool.source.as_str(),
@@ -146,6 +148,7 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
         }
     }
     let mut results = std::collections::HashMap::new();
+    let mut sources = std::collections::HashMap::new();
     for batch in requests.chunks(4) {
         if cancel.is_cancelled() {
             return;
@@ -156,8 +159,17 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
             let client = client.clone();
             let tool = tool.clone();
             jobs.spawn(async move {
+                let mut source = None;
                 let result = if super::native_lifecycle::owns_tool(&tool) {
                     super::native_lifecycle::latest(&ctx, &tool).await
+                } else if super::package_sources::handles(&tool) {
+                    match super::package_sources::query(&ctx, &tool).await {
+                        Ok((version, resolved)) => {
+                            source = Some(resolved);
+                            Ok(version)
+                        }
+                        Err(error) => Err(error),
+                    }
                 } else if matches!(tool.source.as_str(), "fnm-script" | "nvm-script" | "winget") {
                     super::release_versions::github_latest(
                         if tool.name == "fnm" {
@@ -199,11 +211,14 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
                     let (url, field, limit) = registry(&tool).expect("registered update source");
                     registry_version(&client, &url, field, limit, &ctx.cancel).await
                 };
-                (tool.id, result)
+                (tool.id, result, source)
             });
         }
         while let Some(result) = jobs.join_next().await {
-            if let Ok((id, result)) = result {
+            if let Ok((id, result, source)) = result {
+                if let Some(source) = source {
+                    sources.insert(id.clone(), source);
+                }
                 results.insert(id, result.map_err(|error| error.to_string()));
             }
         }
@@ -212,6 +227,14 @@ pub async fn check(providers: &mut [Provider], cancel: &CancellationToken) {
         return;
     }
     apply_results(providers, &results);
+    for tool in providers
+        .iter_mut()
+        .flat_map(|p| p.tools.iter_mut().chain(&mut p.package_managers))
+    {
+        if let Some(source) = sources.remove(&tool.id) {
+            tool.update_source = Some(source);
+        }
+    }
 }
 
 pub fn classify(tool: &Tool) -> UpdateStatus {
@@ -274,26 +297,44 @@ pub fn require_upgrade(tool: &Tool) -> Result<()> {
 }
 
 pub async fn verify_installed(ctx: &super::Context, tool: &Tool) -> Result<()> {
+    super::package_sources::validate(ctx, tool)?;
     if super::package_managers::handles(tool) {
         super::package_managers::validate_owner(ctx, tool).await?;
-        if super::package_managers::installed_version(ctx, tool).await? != tool.version {
-            return Err(Error::Conflict(
-                "The package manager version changed after review. Check updates again.".into(),
-            ));
-        }
-        return require_upgrade(tool);
+    }
+    if installed_version(ctx, tool).await? != tool.version {
+        return Err(Error::Conflict(
+            "The installed tool version changed after review. Refresh before updating.".into(),
+        ));
+    }
+    require_upgrade(tool)
+}
+
+pub(crate) async fn installed_version(ctx: &super::Context, tool: &Tool) -> Result<String> {
+    if super::package_managers::handles(tool) {
+        return super::package_managers::installed_version(ctx, tool).await;
     }
     let version = match tool.source.as_str() {
-        "npm" | "pnpm" => {
+        "pnpm" if tool.installation.is_some() => {
+            super::package_sources::pnpm_version(ctx, tool).await?
+        }
+        "npm" | "pnpm" | "yarn" => {
             let path = tool
                 .path
                 .as_ref()
                 .ok_or_else(|| Error::Conflict("Missing tool installation path.".into()))?;
             let json = crate::filesystem::read_small(&path.join("package.json"), 1_048_576)?;
             let json: serde_json::Value = serde_json::from_str(&json)?;
+            if json["name"]
+                .as_str()
+                .is_some_and(|name| name != super::package_sources::package(tool))
+            {
+                return Err(Error::Conflict(
+                    "The installed package identity changed.".into(),
+                ));
+            }
             json["version"].as_str().map(str::to_owned)
         }
-        "uv" | "cargo" => {
+        "uv" => {
             let (program, args): (&str, &[&str]) = if tool.source == "uv" {
                 ("uv", &["tool", "list"])
             } else {
@@ -317,6 +358,7 @@ pub async fn verify_installed(ctx: &super::Context, tool: &Tool) -> Result<()> {
                     )
                 })
         }
+        "cargo" | "go" => super::package_sources::installed_version(ctx, tool).await?,
         "pipx" => {
             let output = ctx.read("pipx", &["list", "--json"]).await?;
             let json: serde_json::Value = serde_json::from_str(&output)?;
@@ -326,12 +368,8 @@ pub async fn verify_installed(ctx: &super::Context, tool: &Tool) -> Result<()> {
         }
         _ => None,
     };
-    if version.as_ref() != Some(&tool.version) {
-        return Err(Error::Conflict(
-            "The installed tool version changed after review. Refresh before updating.".into(),
-        ));
-    }
-    require_upgrade(tool)
+    version
+        .ok_or_else(|| Error::Conflict("The installed tool version could not be verified.".into()))
 }
 
 #[cfg(test)]
@@ -343,6 +381,10 @@ mod tests {
         let mut tool = super::super::basic_tool("uv", "0.10.10".into(), "uv-self", None);
         apply_result(&mut tool, Ok("0.12.0".into()));
         assert_eq!(tool.update_status, UpdateStatus::Minor);
+        tool.update_source = Some(crate::model::PackageUpdateSource {
+            label: "https://old.invalid/".into(),
+            fingerprint: "old".into(),
+        });
         apply_result(
             &mut tool,
             Err(Error::Unavailable(
@@ -351,6 +393,7 @@ mod tests {
         );
         assert_eq!(tool.latest.as_deref(), Some("0.12.0"));
         assert_eq!(tool.update_issue.as_ref().unwrap().reason, "queryFailed");
+        assert!(tool.update_source.is_none());
         assert!(require_upgrade(&tool).is_err());
         apply_result(&mut tool, Ok("0.13.0".into()));
         assert!(tool.update_issue.is_none());

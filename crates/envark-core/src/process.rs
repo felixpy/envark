@@ -11,6 +11,60 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) const OUTPUT_LIMIT: usize = 2 * 1024 * 1024;
 
+pub(crate) fn redact(value: &str) -> String {
+    let mut result = value.to_owned();
+    for (key, secret) in std::env::vars() {
+        let key = key.to_ascii_uppercase();
+        if secret.len() >= 4
+            && ["TOKEN", "PASSWORD", "SECRET"]
+                .iter()
+                .any(|part| key.contains(part))
+        {
+            result = result.replace(&secret, "[redacted]");
+        }
+    }
+    result = result
+        .split_inclusive(char::is_whitespace)
+        .map(|part| {
+            let start = part.find("https://").or_else(|| part.find("http://"));
+            let Some(start) = start else {
+                return part.to_owned();
+            };
+            let end = part[start..]
+                .find(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | ')' | ']' | '}'))
+                .map_or(part.len(), |end| start + end);
+            let raw = &part[start..end];
+            let Ok(mut url) = reqwest::Url::parse(raw) else {
+                return part.to_owned();
+            };
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+            format!("{}{}{}", &part[..start], url, &part[end..])
+        })
+        .collect();
+    result
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            if ["_authtoken", "_password", "authorization:", "password="]
+                .iter()
+                .any(|key| lower.contains(key))
+                && let Some(index) = line.find('=').or_else(|| {
+                    lower
+                        .find("authorization:")
+                        .map(|i| i + "authorization".len())
+                })
+            {
+                return format!("{} [redacted]", &line[..=index]);
+            }
+            line.to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 struct ProcessGuard {
     child: Box<dyn ChildWrapper>,
     completed: bool,
@@ -24,7 +78,7 @@ impl Drop for ProcessGuard {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CommandSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
@@ -33,6 +87,16 @@ pub struct CommandSpec {
     pub cwd: Option<PathBuf>,
     pub timeout: Duration,
     pub successful_codes: Vec<i32>,
+}
+
+impl std::fmt::Debug for CommandSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandSpec")
+            .field("command", &self.display())
+            .field("cwd", &self.cwd)
+            .field("timeout", &self.timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CommandSpec {
@@ -51,16 +115,18 @@ impl CommandSpec {
         }
     }
     pub fn display(&self) -> String {
-        std::iter::once(self.program.to_string_lossy().into_owned())
-            .chain(self.args.iter().map(|a| {
-                if a.contains(' ') {
-                    format!("{a:?}")
-                } else {
-                    a.clone()
-                }
-            }))
-            .collect::<Vec<_>>()
-            .join(" ")
+        redact(
+            &std::iter::once(self.program.to_string_lossy().into_owned())
+                .chain(self.args.iter().map(|a| {
+                    if a.contains(' ') {
+                        format!("{a:?}")
+                    } else {
+                        a.clone()
+                    }
+                }))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
     }
 }
 
@@ -186,7 +252,7 @@ impl Runner {
                 "{} exited with {}: {}",
                 spec.program.display(),
                 output.code,
-                detail.chars().take(4000).collect::<String>().trim()
+                redact(detail).chars().take(4000).collect::<String>().trim()
             )));
         }
         Ok(output)
@@ -196,6 +262,20 @@ impl Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_remove_url_credentials_and_auth_assignments() {
+        let message = "HTTP 401 for (https://user:private@host.invalid/npm/?token=private)\n//host.invalid/:_authToken=private";
+        let output = redact(message);
+        assert!(output.contains("https://host.invalid/npm/"));
+        assert!(!output.contains("private"));
+        assert!(output.contains("[redacted]"));
+        let mut command = CommandSpec::new("pipx", ["https://user:private@host.invalid/simple/"]);
+        command
+            .env
+            .insert("CUSTOM_CREDENTIAL".into(), "private".into());
+        assert!(!format!("{command:?}").contains("private"));
+    }
 
     #[test]
     #[ignore = "subprocess fixture launched by the supervision test"]
