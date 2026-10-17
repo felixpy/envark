@@ -129,7 +129,7 @@ function Shell() {
                             </SidebarMenuButton>
                             <SidebarMenuBadge
                               title={active?.version}
-                              className={`max-w-24 truncate text-[10px] font-normal ${!detected ? 'rounded border border-muted-foreground/30 bg-muted px-1 text-muted-foreground' : 'font-mono text-muted-foreground'}`}
+                              className={`max-w-24 truncate text-[10px] font-normal text-muted-foreground ${detected ? 'font-mono' : ''}`}
                             >
                               {!detected
                                 ? data.inventory.scannedAt
@@ -158,7 +158,7 @@ function Shell() {
                 </SidebarMenuButton>
               </SidebarMenuItem>
             </SidebarMenu>
-            <div className="space-y-2 rounded-lg border bg-background p-3">
+            <div className="space-y-2 border-t px-2 pb-1 pt-3">
               <div className="flex items-center gap-2 truncate text-xs font-medium">
                 <HardDrive className="size-3.5 text-muted-foreground" />
                 {disk?.name || t('本机存储', 'Local storage')}
@@ -243,7 +243,7 @@ function Shell() {
             className="min-h-0 flex-1 overflow-auto overscroll-contain"
             data-slot="page-scroll"
           >
-            <div className="mx-auto w-full max-w-6xl p-6 lg:p-8">
+            <div className="mx-auto w-full max-w-6xl p-6">
               {!s.loaded ? (
                 <div className="flex gap-2 text-sm">
                   <Spinner />

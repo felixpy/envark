@@ -1,10 +1,11 @@
 import { ToolUpdateStatus } from '@/components/ToolUpdateStatus'
-import { followsRustToolchain, updateIssueLabel } from '@/lib/tool-update-info'
+import { followsRustToolchain } from '@/lib/tool-update-info'
+import { ToolSource, ToolVersion } from '@/components/ToolDetails'
 import { OllamaProgram, OllamaService } from '@/components/OllamaEnvironment'
 import { ManagerInstallDialog } from '@/components/ManagerInstallDialog'
 import { displayPath } from '@/lib/paths'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUp, Check, Download, FilePenLine, Plus, Star, Trash2 } from 'lucide-react'
+import { ArrowUp, Download, FilePenLine, Plus, Star, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   emptyProvider,
@@ -154,7 +155,7 @@ export default function Environments({ id }: { id: ProviderId }) {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
@@ -173,9 +174,7 @@ export default function Environments({ id }: { id: ProviderId }) {
                   : t('待扫描', 'Not scanned')}
             </Badge>
           </div>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            {t(meta.description[0], meta.description[1])}
-          </p>
+          <p className="sr-only">{t(meta.description[0], meta.description[1])}</p>
         </div>
         {['js', 'py', 'go', 'jvm', 'rust'].includes(id) && (
           <ManagerInstallDialog key={id} provider={id} />
@@ -200,22 +199,11 @@ export default function Environments({ id }: { id: ProviderId }) {
           ))}
         </TabsList>
       </Tabs>
-      {tab === 'runtime' && versionManagers.length > 0 && (
-        <Tools
-          providerId={id}
-          items={versionManagers}
-          global={false}
-          runtimeManagers
-          onUpdate={(item) => operation('updateTool', item.id)}
-          onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
-          onRemove={(item) => operation('removeTool', item.id)}
-        />
-      )}
       {tab === 'runtime' && id === 'ollama' && <OllamaProgram provider={provider} />}
       {id === 'ollama' && tab !== 'runtime' && <OllamaService provider={provider} />}
       {tab === 'runtime' && id !== 'ollama' && (
-        <Card className="shadow-none">
-          <CardHeader>
+        <Card className="gap-3 rounded-none border-0 bg-transparent py-0 shadow-none">
+          <CardHeader className="px-0">
             <CardTitle>
               {meta.runtime} {t('运行时', 'runtimes')}
             </CardTitle>
@@ -254,51 +242,7 @@ export default function Environments({ id }: { id: ProviderId }) {
               </Button>
             </CardAction>
           </CardHeader>
-          <CardContent className="space-y-4">
-            {provider.managers.length > 0 && (
-              <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
-                {provider.managers.map((item) => (
-                  <div
-                    key={item.name}
-                    className={`flex items-center gap-3 rounded-lg border p-3 ${preferred === item.name ? 'border-foreground/30 bg-muted/40' : ''}`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <span className="font-mono">{item.name}</span>
-                        {item.name === preferred && <Badge>{t('优先', 'Preferred')}</Badge>}
-                      </div>
-                      <div
-                        className="truncate font-mono text-xs text-muted-foreground"
-                        title={displayPath(item.path)}
-                      >
-                        {item.version}
-                      </div>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      reason={
-                        busyReason ||
-                        (preferred === item.name
-                          ? t('已设为优先管理器。', 'Already the preferred manager.')
-                          : null)
-                      }
-                      onClick={() =>
-                        void s.saveSettings({
-                          ...s.data.settings,
-                          preferred: { ...s.data.settings.preferred, [id]: item.name },
-                        })
-                      }
-                    >
-                      {preferred === item.name ? <Check /> : <Star />}
-                      {preferred === item.name
-                        ? t('优先使用', 'Preferred')
-                        : t('设为优先', 'Prefer')}
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
+          <CardContent className="space-y-4 px-0">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -374,6 +318,53 @@ export default function Environments({ id }: { id: ProviderId }) {
             )}
           </CardContent>
         </Card>
+      )}
+      {tab === 'runtime' && versionManagers.length > 0 && (
+        <details className="border-t pt-4">
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            {t('版本管理器', 'Version managers')} ·{' '}
+            {versionManagers.map((item) => item.name).join(' · ')}
+            {versionManagers.some(canUpdateTool) && (
+              <span className="ml-3 text-emerald-600">
+                {versionManagers.filter(canUpdateTool).length} {t('项可更新', 'updates')}
+              </span>
+            )}
+          </summary>
+          <div className="space-y-3 pt-4">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span id="preferred-manager-label">{t('优先使用', 'Preferred manager')}</span>
+              <Select
+                value={preferred}
+                onValueChange={(value) =>
+                  void s.saveSettings({
+                    ...s.data.settings,
+                    preferred: { ...s.data.settings.preferred, [id]: value },
+                  })
+                }
+              >
+                <SelectTrigger className="h-8 w-36" aria-labelledby="preferred-manager-label">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {provider.managers.map((item) => (
+                    <SelectItem key={item.name} value={item.name}>
+                      {item.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <Tools
+              providerId={id}
+              items={versionManagers}
+              global={false}
+              runtimeManagers
+              onUpdate={(item) => operation('updateTool', item.id)}
+              onBatch={(ids) => void s.prepare({ kind: 'updateTools', provider: id, ids })}
+              onRemove={(item) => operation('removeTool', item.id)}
+            />
+          </div>
+        </details>
       )}
       {(tab === 'pm' || tab === 'global') && (
         <Tools
@@ -780,7 +771,12 @@ function Tools({
   const [runtime, setRuntime] = useState('all')
   const visible = items.filter(
     (item) =>
-      item.name.toLowerCase().includes(query.trim().toLowerCase()) &&
+      [
+        item.name,
+        item.installation?.entry,
+        item.updateSource?.label,
+        item.installation?.origin,
+      ].some((value) => value?.toLowerCase().includes(query.trim().toLowerCase())) &&
       (source === 'all' || item.source === source) &&
       (runtime === 'all' || (item.runtime ?? 'standalone') === runtime) &&
       (status === 'all' ||
@@ -793,65 +789,26 @@ function Tools({
     s.completedSelectionIds,
   )
   return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle>
-          {runtimeManagers
-            ? t('版本管理器', 'Version managers')
-            : global
-              ? t('全局工具', 'Global tools')
-              : t('包管理器与构建工具', 'Package managers & build tools')}
-        </CardTitle>
-        <CardDescription>
-          {runtimeManagers
-            ? t(
-                '更新或卸载管理器本身；已安装的运行时版本会保留。',
-                'Update or remove the manager itself while keeping installed runtimes.',
-              )
-            : global
-              ? t(
-                  '显示安装来源、绑定运行时和可用操作。',
-                  'Inspect installation owners, runtime bindings, and available actions.',
-                )
-              : t(
-                  '查看包管理器版本，并在应用内检查和安装更新。',
-                  'Inspect package manager versions, check for updates, and install them here.',
-                )}
-        </CardDescription>
-        <CardAction className="flex items-center gap-2">
-          {selection.chosen.length > 0 && (
-            <Button size="sm" reason={busyReason} onClick={() => onBatch(selection.chosen)}>
-              <ArrowUp />
-              {t('更新所选', 'Update selected')} ({selection.chosen.length})
-            </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            reason={checking ? t('正在检查更新…', 'Checking tool updates…') : null}
-            onClick={() =>
-              s.data.settings.checkUpdates ? void s.checkToolUpdates(providerId) : s.go('settings')
-            }
-          >
-            {checking
-              ? t('正在检查…', 'Checking…')
-              : s.data.settings.checkUpdates
-                ? t('重新检查更新', 'Check updates again')
-                : t('开启更新检查', 'Enable update checks')}
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <ToolUpdateStatus provider={providerId} />
+    <section
+      className="space-y-3"
+      aria-label={
+        runtimeManagers
+          ? t('版本管理器', 'Version managers')
+          : global
+            ? t('全局工具', 'Global tools')
+            : t('包管理器与构建工具', 'Package managers & build tools')
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2">
         {global && (
-          <div className="flex flex-wrap items-center gap-2">
+          <>
             <SearchInput
               value={query}
               onChange={setQuery}
               placeholder={t('搜索工具', 'Search tools')}
             />
             <Select value={status} onValueChange={setStatus}>
-              <SelectTrigger className="w-36" aria-label={t('全部状态', 'All statuses')}>
+              <SelectTrigger className="w-32" aria-label={t('全部状态', 'All statuses')}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -869,153 +826,145 @@ function Tools({
                 ))}
               </SelectContent>
             </Select>
-            <Select value={runtime} onValueChange={setRuntime}>
-              <SelectTrigger className="ml-auto w-44" aria-label={t('全部运行时', 'All runtimes')}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t('全部运行时', 'All runtimes')}</SelectItem>
-                {[...new Set(items.map((item) => item.runtime ?? 'standalone'))].map((name) => (
-                  <SelectItem key={name} value={name}>
-                    {name === 'standalone' ? t('独立安装', 'Standalone') : name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={source} onValueChange={setSource}>
-              <SelectTrigger className="w-36" aria-label={t('全部来源', 'All sources')}>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t('全部来源', 'All sources')}</SelectItem>
-                {[...new Set(items.map((item) => item.source))].map((name) => (
-                  <SelectItem key={name} value={name}>
-                    {name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+            {new Set(items.map((item) => item.runtime ?? 'standalone')).size > 1 && (
+              <Select value={runtime} onValueChange={setRuntime}>
+                <SelectTrigger className="w-40" aria-label={t('全部运行时', 'All runtimes')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t('全部运行时', 'All runtimes')}</SelectItem>
+                  {[...new Set(items.map((item) => item.runtime ?? 'standalone'))].map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name === 'standalone' ? t('独立安装', 'Standalone') : name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {new Set(items.map((item) => item.source)).size > 1 && (
+              <Select value={source} onValueChange={setSource}>
+                <SelectTrigger className="w-32" aria-label={t('全部来源', 'All sources')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">{t('全部来源', 'All sources')}</SelectItem>
+                  {[...new Set(items.map((item) => item.source))].map((name) => (
+                    <SelectItem key={name} value={name}>
+                      {name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </>
         )}
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-10">
+        <div className="ml-auto flex items-center gap-2">
+          {selection.chosen.length > 0 && (
+            <Button size="sm" reason={busyReason} onClick={() => onBatch(selection.chosen)}>
+              <ArrowUp />
+              {t('更新所选', 'Update selected')} ({selection.chosen.length})
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            reason={checking ? t('正在检查更新…', 'Checking tool updates…') : null}
+            onClick={() =>
+              s.data.settings.checkUpdates ? void s.checkToolUpdates(providerId) : s.go('settings')
+            }
+          >
+            {checking
+              ? t('正在检查…', 'Checking…')
+              : s.data.settings.checkUpdates
+                ? t('重新检查更新', 'Check updates again')
+                : t('开启更新检查', 'Enable update checks')}
+          </Button>
+        </div>
+      </div>
+      <ToolUpdateStatus provider={providerId} />
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-10">
+              <Checkbox
+                aria-label={t('选择全部可更新工具', 'Select all updatable tools')}
+                reason={
+                  busyReason ||
+                  (!selection.eligibleCount
+                    ? t('当前没有可批量更新的工具。', 'No updatable tools.')
+                    : null)
+                }
+                checked={
+                  selection.checked ? true : selection.chosen.length ? 'indeterminate' : false
+                }
+                onCheckedChange={(on) => selection.toggleAll(on === true)}
+              />
+            </TableHead>
+            <TableHead>{t('名称', 'Name')}</TableHead>
+            <TableHead>{t('版本', 'Version')}</TableHead>
+            <TableHead>{t('来源 / 运行时', 'Source / runtime')}</TableHead>
+            <TableHead className="text-right">{t('操作', 'Actions')}</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {visible.map((item) => (
+            <TableRow key={item.id}>
+              <TableCell>
                 <Checkbox
-                  aria-label={t('选择全部可更新工具', 'Select all updatable tools')}
+                  aria-label={`${t('选择', 'Select')} ${item.name}`}
                   reason={
                     busyReason ||
-                    (!selection.eligibleCount
-                      ? t('当前没有可批量更新的工具。', 'No updatable tools.')
-                      : null)
+                    toolUpdateReason(
+                      item,
+                      s.data.settings.checkUpdates,
+                      t,
+                      s.updateChecks[providerId],
+                    )
                   }
-                  checked={
-                    selection.checked ? true : selection.chosen.length ? 'indeterminate' : false
-                  }
-                  onCheckedChange={(on) => selection.toggleAll(on === true)}
+                  checked={canUpdateTool(item) && selection.selected.has(item.id)}
+                  onCheckedChange={(on) => selection.toggle([item.id], on === true)}
                 />
-              </TableHead>
-              <TableHead>{t('名称', 'Name')}</TableHead>
-              <TableHead>{t('版本', 'Version')}</TableHead>
-              <TableHead>{t('来源 / 运行时', 'Source / runtime')}</TableHead>
-              <TableHead className="text-right">{t('操作', 'Actions')}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {visible.map((item) => (
-              <TableRow key={item.id}>
-                <TableCell>
-                  <Checkbox
-                    aria-label={`${t('选择', 'Select')} ${item.name}`}
-                    reason={
-                      busyReason ||
-                      toolUpdateReason(
-                        item,
-                        s.data.settings.checkUpdates,
-                        t,
-                        s.updateChecks[providerId],
-                      )
-                    }
-                    checked={canUpdateTool(item) && selection.selected.has(item.id)}
-                    onCheckedChange={(on) => selection.toggle([item.id], on === true)}
-                  />
-                </TableCell>
-                <TableCell>
-                  <div className="font-medium">{item.name}</div>
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {item.version}
-                  {['major', 'minor'].includes(updateKind(item)) && (
-                    <span className="block text-emerald-600">→ {item.latest}</span>
-                  )}
-                  {updateKind(item) === 'latest' && (
-                    <span className="block text-muted-foreground">
-                      {t('已是最新版本', 'Up to date')}
-                    </span>
-                  )}
-                  {updateKind(item) === 'ahead' && (
-                    <span className="block text-muted-foreground">
-                      {t('高于已发布版本', 'Ahead of published version')}
-                    </span>
-                  )}
-                  {updateIssueLabel(item, t) && (
-                    <div className="mt-1 font-sans text-xs text-muted-foreground">
-                      <span>{updateIssueLabel(item, t)}</span>
-                      {item.updateIssue && item.updateIssue.reason !== 'runtimeManaged' && (
-                        <details className="mt-1 max-w-sm">
-                          <summary className="cursor-pointer">
-                            {t('查看原因', 'Show reason')}
-                          </summary>
-                          <p className="mt-1 max-w-xs whitespace-normal break-all font-mono text-xs">
-                            {item.updateIssue.detail}
-                          </p>
-                        </details>
-                      )}
-                    </div>
-                  )}
-                  {updateKind(item) === 'unknown' && !updateIssueLabel(item, t) && (
-                    <span className="block text-muted-foreground">
-                      {checking
-                        ? t('正在查询…', 'Checking…')
-                        : t('版本信息暂不可用', 'Version information unavailable')}
-                    </span>
-                  )}
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {(
-                    {
-                      homebrew: 'Homebrew',
-                      bun: 'Bun',
-                      'uv-self': 'uv',
-                      corepack: 'Corepack',
-                      'pnpm-self': 'pnpm',
-                      'fnm-script': t('官方安装脚本', 'Official installer'),
-                      'nvm-script': t('官方安装脚本', 'Official installer'),
-                      'rustup-self': 'rustup',
-                      'sdkman-self': 'SDKMAN!',
-                      'mise-self': 'mise',
-                      'mise-winget': 'winget',
-                      'ollama-official': t('官方发行包', 'Official release'),
-                      'ollama-homebrew': 'Homebrew',
-                    } as Record<string, string>
-                  )[item.source] ?? item.source}
-                  <span className="mt-1 block font-mono">
-                    {item.source === 'corepack'
-                      ? t('全局默认', 'Global default')
-                      : (item.runtime ?? t('独立安装', 'Standalone'))}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <div className="flex justify-end gap-1">
-                    {followsRustToolchain(item) ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => s.go('env', 'rust', { tab: 'runtime' })}
-                      >
-                        {t('管理 Rust 工具链', 'Manage Rust toolchains')}
-                      </Button>
-                    ) : (
+              </TableCell>
+              <TableCell className="font-medium">{item.installation?.entry || item.name}</TableCell>
+              <TableCell>
+                <ToolVersion item={item} provider={providerId} />
+              </TableCell>
+              <TableCell>
+                <ToolSource
+                  item={item}
+                  manager={
+                    (
+                      {
+                        homebrew: 'Homebrew',
+                        bun: 'Bun',
+                        'uv-self': 'uv',
+                        corepack: 'Corepack',
+                        'pnpm-self': 'pnpm',
+                        'fnm-script': t('官方安装脚本', 'Official installer'),
+                        'nvm-script': t('官方安装脚本', 'Official installer'),
+                        'rustup-self': 'rustup',
+                        'sdkman-self': 'SDKMAN!',
+                        'mise-self': 'mise',
+                        'mise-winget': 'winget',
+                        'ollama-official': t('官方发行包', 'Official release'),
+                        'ollama-homebrew': 'Homebrew',
+                      } as Record<string, string>
+                    )[item.source] ?? item.source
+                  }
+                />
+              </TableCell>
+              <TableCell>
+                <div className="flex items-center justify-end gap-1">
+                  {followsRustToolchain(item) ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => s.go('env', 'rust', { tab: 'runtime' })}
+                    >
+                      {t('管理 Rust 工具链', 'Manage Rust toolchains')}
+                    </Button>
+                  ) : (
+                    updateKind(item) !== 'latest' && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -1033,46 +982,43 @@ function Tools({
                         <ArrowUp />
                         {t('更新', 'Update')}
                       </Button>
-                    )}
-                    {(global || item.canRemove) && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        reason={
-                          busyReason ||
-                          (!item.canRemove
-                            ? item.note ||
-                              t(
-                                '卸载归属无法确认，请使用原安装器。',
-                                'Removal ownership is unverified. Use the original installer.',
-                              )
-                            : null)
-                        }
-                        onClick={() => onRemove(item)}
-                      >
-                        <Trash2 />
-                        {t('卸载', 'Remove')}
-                      </Button>
-                    )}
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-        {!visible.length && (
-          <Empty>
-            {items.length
-              ? t('没有符合条件的工具。', 'No tools match these filters.')
-              : global
-                ? t('尚未检测到全局工具。', 'No global tools detected yet.')
-                : t(
-                    '尚未检测到包管理器或构建工具。',
-                    'No package managers or build tools detected yet.',
+                    )
                   )}
-          </Empty>
-        )}
-      </CardContent>
-    </Card>
+                  {(global || item.canRemove) && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`${t('卸载', 'Remove')} ${item.installation?.entry || item.name}`}
+                      hint={`${t('卸载', 'Remove')} ${item.installation?.entry || item.name}`}
+                      reason={
+                        busyReason ||
+                        (!item.canRemove
+                          ? item.note || t('卸载归属无法确认。', 'Removal ownership is unverified.')
+                          : null)
+                      }
+                      onClick={() => onRemove(item)}
+                    >
+                      <Trash2 className="text-muted-foreground" />
+                    </Button>
+                  )}
+                </div>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+      {!visible.length && (
+        <Empty>
+          {items.length
+            ? t('没有符合条件的工具。', 'No tools match these filters.')
+            : global
+              ? t('尚未检测到全局工具。', 'No global tools detected yet.')
+              : t(
+                  '尚未检测到包管理器或构建工具。',
+                  'No package managers or build tools detected yet.',
+                )}
+        </Empty>
+      )}
+    </section>
   )
 }

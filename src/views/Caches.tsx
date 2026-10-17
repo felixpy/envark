@@ -38,7 +38,7 @@ export default function Caches() {
     ? t('请等待当前操作完成。', 'Wait for the current operation to finish.')
     : null
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <PageHeader
         title={t('全局缓存', 'Global caches')}
         actions={
@@ -56,12 +56,8 @@ export default function Caches() {
             </ActionButton>
           </>
         }
-        description={t(
-          '在此清理共享缓存，自动调用对应工具或移至回收站。再次使用时可能需要重新下载。',
-          'Clean shared caches here using their native tools or the Trash. Future builds may need to download dependencies again.',
-        )}
       />
-      <div className="flex items-center gap-3 rounded-xl border p-4">
+      <div className="flex items-center gap-3 border-b pb-4">
         <Database className="size-5 text-muted-foreground" />
         <div>
           <p className="text-xl font-semibold tabular-nums">
@@ -108,7 +104,7 @@ export default function Caches() {
                 )}
               </p>
             )}
-            <Card className="overflow-hidden py-0 shadow-none">
+            <Card className="overflow-hidden rounded-none border-0 py-0 shadow-none">
               <CardContent className="px-0">
                 <Table>
                   <TableHeader>

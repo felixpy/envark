@@ -136,6 +136,7 @@ pub async fn discover(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
     if let Some(root) = ctx.cache_path("pnpm", &["root", "--global"]).await {
         add_packages(provider, &root, "pnpm", None);
     }
+    super::package_sources::discover_pnpm(ctx, provider).await;
     if let Some(root) = ctx.cache_path("yarn", &["global", "dir"]).await {
         add_packages(provider, &root.join("node_modules"), "yarn", None);
     }
@@ -174,10 +175,12 @@ fn add_packages(provider: &mut Provider, root: &Path, source: &str, runtime: Opt
             .as_ref()
             .and_then(|p| std::fs::symlink_metadata(p).ok())
             .is_some_and(|m| m.file_type().is_symlink());
-        tool.can_update = ["npm", "pnpm"].contains(&source) && !(source == "npm" && linked);
-        tool.can_remove = ["npm", "pnpm"].contains(&source)
+        tool.can_update =
+            ["npm", "pnpm", "yarn"].contains(&source) && !(source != "pnpm" && linked);
+        tool.can_remove = ["npm", "pnpm", "yarn"].contains(&source)
             && !["npm", "pnpm", "corepack", "yarn"].contains(&name);
         tool.note = manifest["description"].as_str().map(str::to_owned);
+        super::package_sources::discover_node_evidence(&mut tool, &root);
         provider.tools.push(tool);
     }
 }

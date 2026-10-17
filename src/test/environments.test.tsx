@@ -84,12 +84,54 @@ it('shows the actual lookup failure while retaining a cached release and prevent
   const prepare = fixture(provider)
   const user = userEvent.setup()
   await user.click(await screen.findByRole('tab', { name: 'Package managers' }))
-  await screen.findByText('Official source rejected the request')
+  await screen.findByText('Update source rejected the request')
   expect(screen.getByText('→ 0.13.0')).toBeTruthy()
-  await user.click(screen.getByText('Show reason'))
+  await user.click(screen.getByRole('button', { name: 'View update details uv' }))
   expect(screen.getByText(/HTTP 403 Forbidden/)).toBeTruthy()
   await user.click(screen.getByRole('button', { name: /^Update$/ }))
   expect(prepare).not.toHaveBeenCalled()
+})
+
+it('keeps current lookup sources separate from unknown historical registry evidence', async () => {
+  const provider = emptyProvider('js')
+  provider.tools = [
+    {
+      id: 'alias',
+      name: '@scope/original',
+      version: '1.0.0',
+      latest: '2.0.0',
+      updateStatus: 'major',
+      source: 'npm',
+      runtime: null,
+      path: '/example/node_modules/alias',
+      size: null,
+      canUpdate: true,
+      canRemove: true,
+      note: null,
+      installation: {
+        entry: 'alias',
+        package: '@scope/original',
+        root: '/example',
+        module: null,
+        origin: null,
+        evidence: null,
+      },
+      updateSource: { label: 'https://private.invalid/npm/', fingerprint: 'fixture' },
+    },
+  ]
+  fixture(provider)
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('tab', { name: 'Global tools' }))
+  const trigger = screen.getByRole('button', { name: 'View source @scope/original' })
+  await user.click(trigger)
+  expect(screen.getByText('https://private.invalid/npm/')).toBeTruthy()
+  expect(
+    screen.getByText(/Current configuration does not establish historical origin/),
+  ).toBeTruthy()
+  expect(screen.getByText('Installation alias')).toBeTruthy()
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(screen.queryByText('Current lookup source')).toBeNull())
+  expect(document.activeElement).toBe(trigger)
 })
 
 it('routes Cargo to Rust toolchains without labelling it as a failed version lookup', async () => {
@@ -314,7 +356,7 @@ it.each(['fnm', 'nvm'])(
     ]
     const prepare = fixture(provider)
     const user = userEvent.setup()
-    await screen.findByText('Version managers')
+    await user.click(await screen.findByText(/Version managers ·/))
     expect(screen.getByText('Official installer')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: 'Update' }))
     await waitFor(() =>
@@ -415,7 +457,8 @@ it('offers manager uninstall separately from installed Node runtime removal', as
   ]
   const prepare = fixture(provider)
   const user = userEvent.setup()
-  await user.click(await screen.findByRole('button', { name: /^Remove$/ }))
+  await user.click(await screen.findByText(/Version managers ·/))
+  await user.click(await screen.findByRole('button', { name: 'Remove fnm' }))
   await waitFor(() =>
     expect(prepare).toHaveBeenCalledWith(
       { kind: 'removeTool', provider: 'js', id: 'fnm' },

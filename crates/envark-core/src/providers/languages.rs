@@ -75,6 +75,7 @@ async fn python(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             provider.tools.push(tool);
         }
     }
+    super::package_sources::discover_python(ctx, provider).await;
     config(provider, ctx.home.join(".config/uv/uv.toml"), "toml", true);
     config(provider, ctx.data.join("uv/uv.toml"), "toml", true);
     config(provider, ctx.home.join(".config/pip/pip.conf"), "ini", true);
@@ -163,6 +164,7 @@ async fn rust(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
             }
         }
     }
+    super::package_sources::discover_cargo(ctx, provider);
     let cargo_root = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| ctx.home.join(".cargo"));
@@ -264,6 +266,13 @@ async fn go(ctx: &Context, provider: &mut Provider) -> Vec<Cache> {
                             }) && !info.lines().any(|line| line.trim_start().starts_with("=>"))
                                 && fields[1] != "(devel)";
                         let mut tool = basic_tool(name, fields[1].into(), "go", Some(path));
+                        tool.installation = Some(crate::model::PackageInstallation {
+                            entry: name.into(),
+                            package: name.into(),
+                            module: Some(fields[0].into()),
+                            evidence: Some("Go binary metadata".into()),
+                            ..Default::default()
+                        });
                         tool.can_update = verified;
                         tool.note = Some(if verified {
                             format!("Verified command import path; module {}.", fields[0])

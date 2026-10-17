@@ -1,6 +1,6 @@
 use super::*;
 
-fn npm_name(name: &str) -> Result<()> {
+pub(super) fn npm_name(name: &str) -> Result<()> {
     let parts: Vec<_> = name.strip_prefix('@').unwrap_or(name).split('/').collect();
     if parts.len() != if name.starts_with('@') { 2 } else { 1 }
         || parts.iter().any(|p| {
@@ -18,36 +18,20 @@ fn npm_name(name: &str) -> Result<()> {
 
 fn npm_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> {
     npm_name(&tool.name)?;
-    let path = tool
-        .path
-        .as_ref()
-        .ok_or_else(|| Error::Unavailable("Missing package installation path.".into()))?;
-    let modules = if tool.name.starts_with('@') {
-        path.parent().and_then(Path::parent)
-    } else {
-        path.parent()
-    }
-    .filter(|p| p.file_name().is_some_and(|n| n == "node_modules"))
-    .ok_or_else(|| Error::InvalidInput("Missing global node_modules directory.".into()))?;
-    let prefix = if cfg!(windows) {
-        modules.parent()
-    } else {
-        modules.parent().and_then(Path::parent)
-    }
-    .ok_or_else(|| Error::InvalidInput("Missing npm installation prefix.".into()))?;
-    let node = prefix.join(if cfg!(windows) {
-        "node.exe"
-    } else {
-        "bin/node"
-    });
-    let cli = modules.join("npm/bin/npm-cli.js");
+    let entry = super::package_sources::entry(tool);
+    npm_name(entry)?;
     let target = if remove {
-        tool.name.clone()
+        entry.into()
     } else {
-        tool.latest
-            .as_ref()
-            .map(|version| format!("{}@{version}", tool.name))
-            .unwrap_or(tool.name.clone())
+        let version = tool
+            .latest
+            .as_deref()
+            .ok_or_else(|| Error::Conflict("Check updates first.".into()))?;
+        if entry != tool.name {
+            format!("{entry}@npm:{}@{version}", tool.name)
+        } else {
+            format!("{}@{version}", tool.name)
+        }
     };
     valid_identifier(&target)?;
     let args = [
@@ -55,32 +39,7 @@ fn npm_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> 
         "--global",
         &target,
     ];
-    let mut spec = if node.is_file() && cli.is_file() {
-        let mut command = CommandSpec::new(&node, [cli.to_string_lossy().into_owned()]);
-        command.args.extend(args.map(str::to_owned));
-        // Lifecycle scripts must see the same runtime as npm itself.
-        let mut paths = vec![node.parent().unwrap().to_path_buf()];
-        paths.extend(
-            std::env::var_os("PATH")
-                .as_deref()
-                .map(std::env::split_paths)
-                .into_iter()
-                .flatten(),
-        );
-        command.env.insert(
-            "PATH".into(),
-            std::env::join_paths(paths)
-                .map_err(|e| Error::InvalidInput(e.to_string()))?
-                .to_string_lossy()
-                .into_owned(),
-        );
-        command
-    } else {
-        ctx.command("npm", &args)?
-    };
-    spec.args
-        .extend(["--prefix".into(), prefix.to_string_lossy().into_owned()]);
-    Ok(spec)
+    super::package_sources::npm_spec(ctx, tool, &args)
 }
 
 pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandSpec> {
@@ -92,12 +51,19 @@ pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandS
         "npm" => npm_command(ctx, tool, remove)?,
         "pnpm" => {
             npm_name(&tool.name)?;
+            let entry = super::package_sources::entry(tool);
             let name = if remove {
-                tool.name.clone()
+                entry.into()
             } else {
                 tool.latest
                     .as_ref()
-                    .map(|v| format!("{}@{v}", tool.name))
+                    .map(|v| {
+                        if entry != tool.name {
+                            format!("{entry}@npm:{}@{v}", tool.name)
+                        } else {
+                            format!("{}@{v}", tool.name)
+                        }
+                    })
                     .unwrap_or(tool.name.clone())
             };
             valid_identifier(&name)?;
@@ -118,10 +84,62 @@ pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandS
                 &tool.name,
             ],
         )?,
-        "pipx" => ctx.command(
-            "pipx",
-            &[if remove { "uninstall" } else { "upgrade" }, &tool.name],
-        )?,
+        "yarn" => {
+            let entry = super::package_sources::entry(tool);
+            npm_name(entry)?;
+            let target = if remove {
+                entry.into()
+            } else {
+                let version = tool
+                    .latest
+                    .as_deref()
+                    .ok_or_else(|| Error::Conflict("Check updates first.".into()))?;
+                if entry != tool.name {
+                    format!("{entry}@npm:{}@{version}", tool.name)
+                } else {
+                    format!("{}@{version}", tool.name)
+                }
+            };
+            valid_identifier(&target)?;
+            let mut command = ctx.command(
+                "yarn",
+                &[
+                    "global",
+                    if remove { "remove" } else { "add" },
+                    &target,
+                    "--non-interactive",
+                ],
+            )?;
+            if let Some(root) = tool.installation.as_ref().and_then(|i| i.root.as_ref()) {
+                command.args.extend([
+                    "--global-folder".into(),
+                    root.to_string_lossy().into_owned(),
+                ]);
+            }
+            command
+        }
+        "pipx" => {
+            let mut command = ctx.command(
+                "pipx",
+                &[if remove { "uninstall" } else { "upgrade" }, &tool.name],
+            )?;
+            if !remove {
+                let args = super::package_sources::pipx_args(tool)?;
+                if !args.is_empty() {
+                    command.args.extend([
+                        "--pip-args".into(),
+                        args.iter()
+                            .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ]);
+                }
+            }
+            command
+        }
+        "cargo" if tool.installation.is_some() => {
+            super::package_sources::cargo_command(ctx, tool, remove)?
+        }
         "cargo" => ctx.command(
             "cargo",
             &[if remove { "uninstall" } else { "install" }, &tool.name],
@@ -132,7 +150,17 @@ pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandS
                 .as_ref()
                 .and_then(|p| p.parent())
                 .ok_or_else(|| Error::Unavailable("Missing Go binary directory.".into()))?;
-            let mut command = ctx.command("go", &["install", &format!("{}@latest", tool.name)])?;
+            let version = tool
+                .latest
+                .as_deref()
+                .ok_or_else(|| Error::Conflict("Check updates first.".into()))?;
+            let version = if version.starts_with('v') {
+                version.into()
+            } else {
+                format!("v{version}")
+            };
+            let mut command =
+                ctx.command("go", &["install", &format!("{}@{version}", tool.name)])?;
             command
                 .env
                 .insert("GOBIN".into(), bin.to_string_lossy().into_owned());
@@ -146,7 +174,7 @@ pub fn tool_command(ctx: &Context, tool: &Tool, remove: bool) -> Result<CommandS
         }
     };
     spec.cwd = Some(ctx.home.clone());
-    if tool.source == "cargo" && !remove {
+    if tool.source == "cargo" && !remove && tool.installation.is_none() {
         spec.args.extend([
             "--version".into(),
             tool.latest.clone().expect("verified upgrade"),

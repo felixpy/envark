@@ -16,6 +16,7 @@ pub(crate) mod native_lifecycle;
 pub mod ollama;
 pub(crate) mod ollama_lifecycle;
 pub(crate) mod package_managers;
+pub(crate) mod package_sources;
 pub mod python;
 mod resources;
 pub(crate) mod script_installers;
@@ -404,6 +405,8 @@ pub(super) fn basic_tool(name: &str, version: String, source: &str, path: Option
         can_update: false,
         can_remove: false,
         note: None,
+        installation: None,
+        update_source: None,
     }
 }
 

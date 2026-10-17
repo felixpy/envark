@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import type { Backend } from './bridge'
 import type { Provider, ProviderId, Snapshot, Tool } from './domain'
+import { retryableUpdateIssue } from './lib/tool-update-info'
 
 export type UpdateCheck = 'checking' | 'checked' | 'error'
 const tools = (provider: Provider) => [...provider.packageManagers, ...provider.tools]
 const fingerprint = (provider: Provider) =>
   JSON.stringify(
     tools(provider).map(
-      ({ latest: _latest, updateStatus: _status, updateIssue: _issue, ...tool }) => tool,
+      ({
+        latest: _latest,
+        updateStatus: _status,
+        updateIssue: _issue,
+        updateSource: _source,
+        ...tool
+      }) => tool,
     ),
   )
 
@@ -64,7 +71,11 @@ export function useToolUpdates(
             (tool.updateIssue?.reason === 'queryFailed' ||
               (!tool.updateIssue && tool.updateStatus === 'unknown')),
         )
-        cache.current.set(id, { key, expires: Date.now() + (incomplete ? 60000 : 15 * 60000) })
+        const retry = tools(updated).some((tool) => tool.canUpdate && retryableUpdateIssue(tool))
+        cache.current.set(id, {
+          key: fingerprint(updated),
+          expires: Date.now() + (retry ? 60000 : 15 * 60000),
+        })
         setData((state) =>
           state.settings.checkUpdates
             ? {

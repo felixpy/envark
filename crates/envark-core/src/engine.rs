@@ -56,6 +56,19 @@ impl Engine {
             version: env!("CARGO_PKG_VERSION").into(),
         };
         state.inventory.issues.extend(storage.recovery_notices());
+        for tool in state
+            .inventory
+            .providers
+            .iter_mut()
+            .flat_map(|p| p.tools.iter_mut().chain(&mut p.package_managers))
+        {
+            if providers::package_sources::handles(tool) {
+                tool.latest = None;
+                tool.update_status = Default::default();
+                tool.update_source = None;
+                tool.update_issue = None;
+            }
+        }
         if state
             .inventory
             .projects
@@ -389,9 +402,10 @@ impl Engine {
             stage: "updates".into(),
             completed: 0,
             total: None,
-            message: "Checking public package registries".into(),
+            message: "Checking configured package sources".into(),
         });
         providers::package_managers::resolve(&ctx, &mut provider).await;
+        providers::package_sources::hydrate(&ctx, &mut provider).await;
         providers::updates::check(std::slice::from_mut(&mut provider), &token).await;
         self.jobs.lock().await.remove(&job_id);
         if token.is_cancelled() {
@@ -473,7 +487,7 @@ impl Engine {
                 stage: "updates".into(),
                 completed: 0,
                 total: None,
-                message: "Checking public package registries".into(),
+                message: "Checking configured package sources".into(),
             });
             providers::updates::check(&mut discovered.providers, &token).await;
         }

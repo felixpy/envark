@@ -227,6 +227,30 @@ pub struct Tool {
     pub can_update: bool,
     pub can_remove: bool,
     pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installation: Option<PackageInstallation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_source: Option<PackageUpdateSource>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageInstallation {
+    pub entry: String,
+    pub package: String,
+    pub root: Option<PathBuf>,
+    pub module: Option<String>,
+    pub origin: Option<String>,
+    pub evidence: Option<String>,
+    pub requirement: Option<String>,
+    pub source_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageUpdateSource {
+    pub label: String,
+    pub fingerprint: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
