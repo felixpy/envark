@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.4](https://github.com/felixpy/envark/compare/v0.4.3...v0.4.4) (2026-10-17)
+
+
+### Bug Fixes
+
+* **caches:** ignore read-only pnpm probes in occupancy checks ([#53](https://github.com/felixpy/envark/issues/53)) ([f654d47](https://github.com/felixpy/envark/commit/f654d47040711bf6b1689752dceda6a882a66e2a))
+* **environments:** correct runtime detection and clean legacy caches ([#51](https://github.com/felixpy/envark/issues/51)) ([d0e2ca6](https://github.com/felixpy/envark/commit/d0e2ca693d80b84d3bbb9defa3c622bac89b6ba4))
+* respect package sources and simplify environment views ([#54](https://github.com/felixpy/envark/issues/54)) ([4231d09](https://github.com/felixpy/envark/commit/4231d091a3ae85f3335a337294ccd1dba7714ed2))
+
 ## [0.4.3](https://github.com/felixpy/envark/compare/v0.4.2...v0.4.3) (2026-10-12)
 
 
