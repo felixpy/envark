@@ -1,7 +1,7 @@
-// These parent tests spawn fake pnpm processes in separate homes. They share
-// the OS process table, so mutating fixtures must not overlap cache removal.
+// These parent tests spawn fake Gradle, Java and pnpm processes. Their homes
+// are isolated but the OS process table is shared with cache occupancy checks.
 #[cfg(all(test, unix))]
-static PNPM_MUTATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static CACHE_PROCESS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) mod cache_cleanup;
 pub(crate) mod cache_discovery;
@@ -675,6 +675,7 @@ mod read_policy_tests {
     #[cfg(unix)]
     #[test]
     fn go_is_detected_without_shell_path() {
+        let _processes = super::CACHE_PROCESS_TEST_LOCK.lock().unwrap();
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("bin")).unwrap();

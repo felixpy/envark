@@ -159,6 +159,39 @@ fn uses_cache(strategy: &str, name: &str, args: &[String]) -> bool {
     }
 }
 
+fn gradle_home_identity(path: &Path) -> Option<PathBuf> {
+    // Resolve existing ancestors even after a snapshot's Gradle home has been
+    // deleted. Missing leaves are not evidence that it uses every other home.
+    // Relative, inaccessible and dangling-link paths remain unconfirmed.
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let mut ancestor = path;
+    let mut missing = vec![];
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut resolved) => {
+                for name in missing.into_iter().rev() {
+                    resolved.push(name);
+                }
+                return Some(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if ancestor.symlink_metadata().is_ok() {
+                    return None;
+                }
+                missing.push(ancestor.file_name()?.to_owned());
+                ancestor = ancestor.parent()?;
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 pub(crate) fn check_idle(cache: &Cache) -> Result<()> {
     if cache.strategy.starts_with("cargo-") {
         return Ok(());
@@ -192,8 +225,10 @@ pub(crate) fn check_idle(cache: &Cache) -> Result<()> {
             } else {
                 cache.path.parent().and_then(Path::parent)
             };
-            if let Some(home) = explicit_home.and_then(|path| path.canonicalize().ok())
-                && cache_home.is_some_and(|cache_home| cache_home != home)
+            if let Some(home) = explicit_home.and_then(|path| gradle_home_identity(&path))
+                && cache_home
+                    .and_then(gradle_home_identity)
+                    .is_some_and(|cache_home| cache_home != home)
             {
                 continue;
             }
@@ -237,6 +272,63 @@ pub(crate) async fn check(ctx: &Context, cache: &Cache) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_gradle_homes_keep_their_identity_without_resolving_uncertain_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let home = root.join("deleted/gradle-home");
+        std::fs::create_dir_all(&home).unwrap();
+        assert_eq!(gradle_home_identity(&home), Some(home.clone()));
+        std::fs::remove_dir_all(root.join("deleted")).unwrap();
+        assert_eq!(gradle_home_identity(&home), Some(home.clone()));
+        assert!(gradle_home_identity(Path::new("relative/gradle-home")).is_none());
+        // Windows joins normalize parent components on canonical verbatim
+        // roots. Preserve the raw command argument on every platform.
+        let traversal = PathBuf::from(format!(
+            "{}{sep}missing{sep}..{sep}gradle-home",
+            root.display(),
+            sep = std::path::MAIN_SEPARATOR,
+        ));
+        assert!(
+            traversal
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        );
+        assert!(gradle_home_identity(&traversal).is_none());
+
+        #[cfg(unix)]
+        {
+            let alias = root.join("alias");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            assert_eq!(
+                gradle_home_identity(&alias.join("deleted/gradle-home")),
+                Some(home)
+            );
+            let dangling = root.join("dangling");
+            std::os::unix::fs::symlink(root.join("missing"), &dangling).unwrap();
+            assert!(gradle_home_identity(&dangling).is_none());
+            assert!(gradle_home_identity(&dangling.join("gradle-home")).is_none());
+        }
+    }
+
+    #[test]
+    fn gradle_home_identity_rejects_parent_components_before_canonicalization() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("existing")).unwrap();
+        let traversal = PathBuf::from(format!(
+            "{}{sep}existing{sep}..",
+            root.display(),
+            sep = std::path::MAIN_SEPARATOR,
+        ));
+        assert!(
+            traversal
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        );
+        assert!(gradle_home_identity(&traversal).is_none());
+    }
 
     #[test]
     fn active_gradle_and_pnpm_processes_block_direct_removal() {
@@ -312,7 +404,7 @@ mod tests {
     fn live_pnpm_queries_do_not_block_cleanup_but_installs_do() {
         use std::io::BufRead;
         use std::os::unix::fs::PermissionsExt;
-        let _pnpm = super::super::PNPM_MUTATION_TEST_LOCK.lock().unwrap();
+        let _pnpm = super::super::CACHE_PROCESS_TEST_LOCK.lock().unwrap();
         struct ChildGuard(std::process::Child);
         impl Drop for ChildGuard {
             fn drop(&mut self) {
@@ -352,6 +444,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn live_gradle_process_is_detected_without_a_jdk() {
+        let _processes = super::super::CACHE_PROCESS_TEST_LOCK.lock().unwrap();
         use std::io::BufRead;
         struct ChildGuard(std::process::Child);
         impl Drop for ChildGuard {
@@ -397,6 +490,13 @@ mod tests {
         let mut unrelated = cache.clone();
         unrelated.path = other.path().canonicalize().unwrap().join("caches");
         check_idle(&unrelated).unwrap();
+
+        // A process snapshot can outlive a temporary Gradle home. Losing that
+        // directory must not make the process occupy every other Gradle cache.
+        std::fs::remove_dir(&cache.path).unwrap();
+        std::fs::remove_dir(cache.path.parent().unwrap()).unwrap();
+        check_idle(&unrelated).unwrap();
+        assert!(check_idle(&cache).is_err());
     }
 
     #[test]
