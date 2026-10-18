@@ -163,7 +163,11 @@ fn gradle_home_identity(path: &Path) -> Option<PathBuf> {
     // Resolve existing ancestors even after a snapshot's Gradle home has been
     // deleted. Missing leaves are not evidence that it uses every other home.
     // Relative, inaccessible and dangling-link paths remain unconfirmed.
-    if !path.is_absolute() {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
         return None;
     }
     let mut ancestor = path;
@@ -177,11 +181,7 @@ fn gradle_home_identity(path: &Path) -> Option<PathBuf> {
                 return Some(resolved);
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if ancestor.symlink_metadata().is_ok()
-                    || path
-                        .components()
-                        .any(|part| matches!(part, std::path::Component::ParentDir))
-                {
+                if ancestor.symlink_metadata().is_ok() {
                     return None;
                 }
                 missing.push(ancestor.file_name()?.to_owned());
@@ -283,7 +283,19 @@ mod tests {
         std::fs::remove_dir_all(root.join("deleted")).unwrap();
         assert_eq!(gradle_home_identity(&home), Some(home.clone()));
         assert!(gradle_home_identity(Path::new("relative/gradle-home")).is_none());
-        assert!(gradle_home_identity(&root.join("missing/../gradle-home")).is_none());
+        // Windows joins normalize parent components on canonical verbatim
+        // roots. Preserve the raw command argument on every platform.
+        let traversal = PathBuf::from(format!(
+            "{}{sep}missing{sep}..{sep}gradle-home",
+            root.display(),
+            sep = std::path::MAIN_SEPARATOR,
+        ));
+        assert!(
+            traversal
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        );
+        assert!(gradle_home_identity(&traversal).is_none());
 
         #[cfg(unix)]
         {
@@ -298,6 +310,24 @@ mod tests {
             assert!(gradle_home_identity(&dangling).is_none());
             assert!(gradle_home_identity(&dangling.join("gradle-home")).is_none());
         }
+    }
+
+    #[test]
+    fn gradle_home_identity_rejects_parent_components_before_canonicalization() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("existing")).unwrap();
+        let traversal = PathBuf::from(format!(
+            "{}{sep}existing{sep}..",
+            root.display(),
+            sep = std::path::MAIN_SEPARATOR,
+        ));
+        assert!(
+            traversal
+                .components()
+                .any(|part| matches!(part, std::path::Component::ParentDir))
+        );
+        assert!(gradle_home_identity(&traversal).is_none());
     }
 
     #[test]
