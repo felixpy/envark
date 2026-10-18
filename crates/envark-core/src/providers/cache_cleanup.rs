@@ -357,7 +357,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn cache_cleanup_completes_without_scanning_projects() {
-        let _pnpm = super::super::PNPM_MUTATION_TEST_LOCK.lock().unwrap();
+        let _pnpm = super::super::CACHE_PROCESS_TEST_LOCK.lock().unwrap();
         use std::os::unix::fs::PermissionsExt;
 
         let root = tempfile::tempdir().unwrap();
