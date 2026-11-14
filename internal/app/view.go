@@ -8,8 +8,23 @@ import (
 
 	"github.com/felixpy/envark/internal/classify"
 	"github.com/felixpy/envark/internal/human"
+	"github.com/felixpy/envark/internal/i18n"
 	"github.com/felixpy/envark/internal/scan"
 )
+
+func (a *App) t(s string) string { return i18n.T(a.Lang, s) }
+
+func (a *App) tone(c *ui.Context, selected bool, text string, normal ui.Color) ui.Element {
+	el := ui.Text(c, text).SingleLine()
+	if selected {
+		el.TextColor(c.Theme().AccentText)
+		return el
+	}
+	if normal != (ui.Color{}) {
+		el.TextColor(normal)
+	}
+	return el
+}
 
 // View builds one frame of the window.
 func (a *App) View(c *ui.Context) {
@@ -90,24 +105,24 @@ func (a *App) sidebar(c *ui.Context) {
 	ui.Column(c).Width(216).Padding(16, 12).Gap(12).Background(theme.Surface).Children(func() {
 		ui.Column(c).Gap(2).Children(func() {
 			ui.Text(c, "Envark").FontSize(18).FontWeight(650)
-			ui.Text(c, "Runtimes and disk").FontSize(12).TextColor(theme.TextMuted)
+			ui.Text(c, a.t("Runtimes and disk")).FontSize(12).TextColor(theme.TextMuted)
 		})
 		page := a.Page
 		if ui.Sidebar(c, &page, func() {
-			ui.SidebarItem(c, "space", nil, "Space")
-			ui.SidebarItem(c, "environments", nil, "Environments")
-			ui.SidebarItem(c, "review", nil, "Review").Children(func() {
+			ui.SidebarItem(c, "space", nil, a.t("Space"))
+			ui.SidebarItem(c, "environments", nil, a.t("Environments"))
+			ui.SidebarItem(c, "review", nil, a.t("Review")).Children(func() {
 				n := len(a.Marks) + len(a.Extras) + len(a.Commands)
 				if n > 0 {
 					ui.Badge(c, fmt.Sprint(n))
 				}
 			})
-			ui.SidebarItem(c, "history", nil, "History")
-			ui.SidebarItem(c, "settings", nil, "Settings")
+			ui.SidebarItem(c, "history", nil, a.t("History"))
+			ui.SidebarItem(c, "settings", nil, a.t("Settings"))
 		}).Grow(1).Changed() {
 			a.Page = page
 		}
-		if ui.Button(c, "Keyboard").Clicked() {
+		if ui.Button(c, a.t("Keyboard")).Clicked() {
 			a.Help = true
 		}
 	})
@@ -116,11 +131,11 @@ func (a *App) sidebar(c *ui.Context) {
 func (a *App) topnav(c *ui.Context) {
 	ui.Row(c).Padding(8, 12).Gap(6).Children(func() {
 		for _, item := range []struct{ id, label string }{
-			{"space", "Space"},
-			{"environments", "Environments"},
-			{"review", "Review"},
-			{"history", "History"},
-			{"settings", "Settings"},
+			{"space", a.t("Space")},
+			{"environments", a.t("Environments")},
+			{"review", a.t("Review")},
+			{"history", a.t("History")},
+			{"settings", a.t("Settings")},
 		} {
 			label := item.label
 			if item.id == a.Page {
@@ -163,7 +178,7 @@ func heading(c *ui.Context, title, sub string) {
 }
 
 func (a *App) space(c *ui.Context, width float32) {
-	heading(c, "Space", "File lengths and allocated blocks, for the folder you chose.")
+	heading(c, a.t("Space"), a.t("File lengths and allocated blocks, for the folder you chose."))
 	a.spaceToolbar(c, width)
 	if a.Tree == nil && !a.Scanning {
 		a.emptySpace(c)
@@ -172,14 +187,22 @@ func (a *App) space(c *ui.Context, width float32) {
 	if a.Result != nil && !a.Result.Tree.Complete {
 		banner(c, a.partialText(), c.Theme().Surface, c.Theme().Text)
 	}
+	a.followSelection()
 	if width < 980 {
 		ui.Column(c).Grow(1).Gap(12).Children(func() {
-			a.tree(c, width)
+			a.field(c)
 			a.detail(c)
+			a.tree(c, width)
 		})
 		return
 	}
-	ui.SplitPercent(c, &a.split, func() { a.tree(c, width) }, func() { a.detail(c) }).Grow(1)
+	ui.Row(c).Grow(1).Gap(12).AlignItems(ui.Stretch).Children(func() {
+		ui.Column(c).Grow(1).Gap(8).Children(func() {
+			a.field(c)
+			a.tree(c, width)
+		})
+		ui.Column(c).Width(300).Children(func() { a.detail(c) })
+	})
 }
 
 func (a *App) spaceToolbar(c *ui.Context, width float32) {
@@ -191,19 +214,19 @@ func (a *App) spaceToolbar(c *ui.Context, width float32) {
 		if len(a.Prefs.Roots) > 0 {
 			ui.Select(c, &a.ScanRoot, a.Prefs.Roots).MinWidth(min)
 		}
-		if ui.Button(c, "Add folder").Clicked() {
+		if ui.Button(c, a.t("Add folder")).Clicked() {
 			a.pickRoot()
 		}
-		if ui.PrimaryButton(c, "Scan").Disabled(a.Scanning).Clicked() {
+		if ui.PrimaryButton(c, a.t("Scan")).Disabled(a.Scanning).Clicked() {
 			a.startScan()
 		}
-		if ui.Button(c, "Cancel scan").Disabled(!a.Scanning).Clicked() {
+		if ui.Button(c, a.t("Cancel scan")).Disabled(!a.Scanning).Clicked() {
 			a.cancelScan()
 		}
 	}
 	filters := func() {
-		ui.SearchField(c, &a.Query).Placeholder("Filter by name").Width(180)
-		ui.Segmented(c, &a.Filter, "All", "Reclaimable")
+		ui.SearchField(c, &a.Query).Placeholder(a.t("Filter by name")).Width(180)
+		ui.Segmented(c, &a.Filter, a.t("All"), a.t("Reclaimable"))
 	}
 	if width < 1100 {
 		ui.Column(c).Gap(8).Children(func() {
@@ -225,8 +248,8 @@ func (a *App) spaceToolbar(c *ui.Context, width float32) {
 func (a *App) emptySpace(c *ui.Context) {
 	theme := c.Theme()
 	ui.Column(c).Grow(1).Padding(28).Gap(8).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
-		ui.Text(c, "Choose a folder to scan").FontSize(18).FontWeight(620)
-		ui.Text(c, "Envark measures only the folders you add. It does not walk your home directory until you say so.").FontSize(13).TextColor(theme.TextMuted).MaxWidth(460)
+		ui.Text(c, a.t("Choose a folder to scan")).FontSize(18).FontWeight(620)
+		ui.Text(c, a.t("Envark measures only the folders you add. It does not walk your home directory until you say so.")).FontSize(13).TextColor(theme.TextMuted).MaxWidth(460)
 		if a.ScanErr != "" {
 			ui.Text(c, a.ScanErr).FontSize(13).TextColor(theme.Danger)
 		}
@@ -234,7 +257,7 @@ func (a *App) emptySpace(c *ui.Context) {
 }
 
 func (a *App) partialText() string {
-	msg := "Some paths could not be read. Sizes are incomplete."
+	msg := a.t("Some paths could not be read. Sizes are incomplete.")
 	if a.Result != nil && len(a.Result.Errors) > 0 {
 		msg += " " + a.Result.Errors[0]
 		if len(a.Result.Errors) > 1 {
@@ -250,18 +273,18 @@ func (a *App) tree(c *ui.Context, width float32) {
 		kind, logical, allocated, risk = 150, 84, 92, 72
 	}
 	cols := []ui.TableColumn{
-		{Title: "Name"},
-		{Title: "Kind", Width: kind},
-		{Title: "Logical", Width: logical, Align: ui.End},
-		{Title: "Allocated", Width: allocated, Align: ui.End},
-		{Title: "Risk", Width: risk},
+		{Title: a.t("Name")},
+		{Title: a.t("Kind"), Width: kind},
+		{Title: a.t("Logical"), Width: logical, Align: ui.End},
+		{Title: a.t("Allocated"), Width: allocated, Align: ui.End},
+		{Title: a.t("Risk"), Width: risk},
 	}
 	roots := []string{}
 	if a.Tree != nil && a.visible[a.Tree.Path] {
 		roots = []string{a.Tree.Path}
 	}
 	if len(roots) == 0 {
-		ui.Text(c, "Nothing in this filter.").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("Nothing in this filter.")).TextColor(c.Theme().TextMuted)
 		return
 	}
 	a.outline.List.Selected = &a.row
@@ -270,6 +293,7 @@ func (a *App) tree(c *ui.Context, width float32) {
 		if n == nil {
 			return
 		}
+		selected := a.pathSelected(path)
 		switch col {
 		case 0:
 			if n.Class.Eligible {
@@ -285,7 +309,7 @@ func (a *App) tree(c *ui.Context, width float32) {
 				ui.Text(c, n.Name).SingleLine()
 			}
 		case 1:
-			ui.Text(c, n.Class.Title).SingleLine().TextColor(c.Theme().TextMuted)
+			a.tone(c, selected, a.t(n.Class.Title), c.Theme().TextMuted)
 		case 2:
 			ui.Text(c, human.Bytes(n.Logical)).Font("monospace")
 		case 3:
@@ -293,12 +317,21 @@ func (a *App) tree(c *ui.Context, width float32) {
 			if a.Result != nil && !a.Result.AllocExact {
 				label = "n/a"
 			}
-			ui.Text(c, label).Font("monospace").TextColor(c.Theme().TextMuted)
+			a.tone(c, selected, label, c.Theme().TextMuted)
 		case 4:
-			ui.Text(c, classify.TitleRisk(n.Class.Risk)).TextColor(riskColor(c.Theme(), n.Class.Risk))
+			a.tone(c, selected, a.t(classify.TitleRisk(n.Class.Risk)), riskColor(c.Theme(), n.Class.Risk))
 		}
-	}).Grow(1)
+	}).Height(220)
 	if a.outline.Rows() > 0 {
+		if a.wantPath != "" {
+			for i := 0; i < a.outline.Rows(); i++ {
+				if a.outline.Item(i) == a.wantPath {
+					a.row = i
+					break
+				}
+			}
+			a.wantPath = ""
+		}
 		if a.row < 0 || a.row >= a.outline.Rows() {
 			a.row = 0
 		}
@@ -322,25 +355,25 @@ func (a *App) detail(c *ui.Context) {
 	theme := c.Theme()
 	n := a.index[a.Selected]
 	ui.Column(c).Padding(4, 8).Gap(8).Children(func() {
-		ui.Text(c, "Details").FontSize(13).FontWeight(620)
+		ui.Text(c, a.t("Details")).FontSize(13).FontWeight(620)
 		if n == nil {
-			ui.Text(c, "Select a row.").TextColor(theme.TextMuted)
+			ui.Text(c, a.t("Select a row.")).TextColor(theme.TextMuted)
 			return
 		}
 		ui.Text(c, n.Name).FontSize(16).FontWeight(620)
 		ui.Text(c, n.Path).Font("monospace").FontSize(12)
-		ui.Text(c, n.Class.Reason).FontSize(13).TextColor(theme.TextMuted)
+		ui.Text(c, a.t(n.Class.Reason)).FontSize(13).TextColor(theme.TextMuted)
 		ui.Textf(c, "Logical %s · Allocated %s · %d files", human.Bytes(n.Logical), human.Bytes(n.Allocated), n.Files).FontSize(12)
 		if n.SmallFiles > 0 {
 			ui.Textf(c, "%d smaller files are included in the size and are not listed on their own.", n.SmallFiles).FontSize(12).TextColor(theme.TextMuted)
 		}
 		if !n.Complete {
-			ui.Text(c, "This subtree is incomplete.").FontSize(12).TextColor(theme.Warning)
+			ui.Text(c, a.t("This subtree is incomplete.")).FontSize(12).TextColor(theme.Warning)
 		}
 		if n.Class.Eligible {
-			label := "Mark for review"
+			label := a.t("Mark for review")
 			if a.Marks[n.Path] {
-				label = "Remove mark"
+				label = a.t("Remove mark")
 			}
 			if ui.Button(c, label).Clicked() {
 				a.toggle(n.Path)
@@ -355,61 +388,74 @@ func (a *App) proportion(c *ui.Context, n *scan.Entry) {
 		return
 	}
 	theme := c.Theme()
-	ui.Text(c, "Largest entries here").FontSize(12).FontWeight(600)
+	ui.Text(c, a.t("Largest first, by logical size")).FontSize(12).FontWeight(600)
 	shown := n.Children
-	if len(shown) > 6 {
-		shown = shown[:6]
+	if len(shown) > 8 {
+		shown = shown[:8]
 	}
-	ui.Row(c).Height(10).Gap(2).Children(func() {
-		var listed uint64
-		for _, child := range shown {
-			listed += child.Logical
+	largest := shown[0].Logical
+	for _, child := range shown[1:] {
+		if child.Logical > largest {
+			largest = child.Logical
 		}
-		for _, child := range shown {
-			color := theme.Accent
-			if child.Class.Eligible {
-				color = theme.Warning
-			}
-			share := float32(child.Logical) / float32(n.Logical)
-			if share < 0.02 {
-				share = 0.02
-			}
-			ui.Box(c).Grow(share).Height(10).Radius(2).Background(color)
-		}
-		if n.Logical > listed {
-			ui.Box(c).Grow(float32(n.Logical-listed) / float32(n.Logical)).Height(10).Radius(2).Background(theme.Border)
-		}
-	})
+	}
+	if largest == 0 {
+		largest = 1
+	}
 	for _, child := range shown {
-		share := float64(child.Logical) / float64(n.Logical) * 100
-		ui.Textf(c, "%s  %.0f%%  %s", child.Name, share, human.Bytes(child.Logical)).FontSize(12).SingleLine()
+		width := 4
+		if child.Logical > 0 {
+			width = int(child.Logical * 220 / largest)
+			if width < 4 {
+				width = 4
+			}
+		}
+		color := theme.Accent
+		if child.Class.Eligible {
+			color = theme.Warning
+		}
+		kind := child.Class.Title
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Box(c).Width(float32(width)).Height(10).Radius(2).Background(color)
+			ui.Textf(c, "%s  %s  %s", child.Name, human.Bytes(child.Logical), kind).FontSize(12).SingleLine()
+		})
 	}
 }
 
 func (a *App) environments(c *ui.Context) {
-	heading(c, "Environments", "Read-only probes. Removal appears only for an allowlisted, non-default installation.")
+	heading(c, a.t("Environments"), a.t("Installed versions, and the manager that owns them. Install and default changes are offered for fnm and uv only."))
 	ui.Row(c).Gap(8).Children(func() {
-		if ui.PrimaryButton(c, "Refresh").Disabled(a.EnvRunning).Clicked() {
+		if ui.PrimaryButton(c, a.t("Refresh")).Disabled(a.EnvRunning).Clicked() {
 			a.startDiscover()
 		}
-		if ui.Button(c, "Measure locations").Disabled(a.EnvRunning || len(a.Locations) == 0).Clicked() {
+		if ui.Button(c, a.t("Check available versions")).Disabled(a.EnvRunning).Clicked() {
+			a.fetchRemote()
+		}
+		if ui.Button(c, a.t("Cancel")).Disabled(!a.EnvRunning).Clicked() {
+			a.cancelEnvironment()
+		}
+		if ui.Button(c, a.t("Measure locations")).Disabled(a.EnvRunning || len(a.Locations) == 0).Clicked() {
 			a.measureLocations()
 		}
 	})
+	ui.Text(c, a.t("Envark runs the manager in a separate process. That does not change the terminal that is already open.")).FontSize(12).TextColor(c.Theme().TextMuted)
+	ui.Text(c, a.t("Only fnm and uv can install or change a default here. nvm, mise, asdf, volta, sdkman, Homebrew, rustup, Go, and Java stay unsupported.")).FontSize(12).TextColor(c.Theme().TextMuted)
 	if a.EnvRunning {
-		ui.Text(c, "Working…").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("Working…")).TextColor(c.Theme().TextMuted)
 	}
 	if a.EnvErr != "" {
-		ui.Text(c, a.EnvErr).TextColor(c.Theme().Danger)
+		ui.Text(c, a.t(a.EnvErr)).TextColor(c.Theme().Danger)
 	}
 	if len(a.Probes) == 0 {
-		ui.Text(c, "No probe yet. Refresh reads the versions on this PATH.").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("No probe yet. Refresh reads the versions on this PATH.")).TextColor(c.Theme().TextMuted)
 	} else {
+		a.scopeRail(c)
 		a.probeTable(c)
 	}
-	ui.Text(c, "Known locations").FontSize(16).FontWeight(620)
+	a.catalog(c)
+	ui.Text(c, a.t("Known locations")).FontSize(16).FontWeight(620)
 	if len(a.Locations) == 0 {
-		ui.Text(c, "Refresh also looks up cache locations. A missing tool stays missing; it is not shown as an empty cache.").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("Refresh also looks up cache locations. A missing tool stays missing; it is not shown as an empty cache.")).TextColor(c.Theme().TextMuted)
 		return
 	}
 	a.locationTable(c)
@@ -417,15 +463,16 @@ func (a *App) environments(c *ui.Context) {
 
 func (a *App) probeTable(c *ui.Context) {
 	cols := []ui.TableColumn{
-		{Title: "Ecosystem", Width: 110},
-		{Title: "Version", Width: 160},
-		{Title: "Manager", Width: 110},
-		{Title: "Ownership", Width: 110},
-		{Title: "Action"},
+		{Title: a.t("Ecosystem"), Width: 100},
+		{Title: a.t("Version"), Width: 130},
+		{Title: a.t("Scope"), Width: 90},
+		{Title: a.t("Manager"), Width: 90},
+		{Title: a.t("Action")},
 	}
 	a.envList.Selected = &a.envRow
 	ui.Table(c, &a.envList, cols, len(a.Probes), func(row, col int) {
 		probe := a.Probes[row]
+		selected := row == a.envRow
 		switch col {
 		case 0:
 			ui.Text(c, probe.Ecosystem).SingleLine()
@@ -436,17 +483,17 @@ func (a *App) probeTable(c *ui.Context) {
 			}
 			ui.Text(c, text).Font("monospace").SingleLine()
 		case 2:
-			ui.Text(c, emptyDash(probe.Manager)).SingleLine()
+			a.tone(c, selected, a.t(emptyDash(probe.Scope)), c.Theme().TextMuted)
 		case 3:
-			ui.Text(c, emptyDash(probe.Ownership)).SingleLine()
+			ui.Text(c, emptyDash(probe.Manager)).SingleLine()
 		case 4:
 			if probe.Removal != nil {
-				if ui.Button(c.Key("probe:"+probe.Ecosystem+probe.Version), "Review removal").Clicked() {
+				if ui.Button(c.Key("probe:"+probe.Ecosystem+probe.Version), a.t("Review removal")).Clicked() {
 					a.addProbe(probe)
 				}
 				return
 			}
-			ui.Text(c, probe.Unavailable).FontSize(12).TextColor(c.Theme().TextMuted)
+			a.tone(c, selected, a.t(probe.Unavailable), c.Theme().TextMuted)
 		}
 	}).Height(float32(56 + len(a.Probes)*42))
 	if len(a.Probes) > 0 {
@@ -464,15 +511,80 @@ func (a *App) probeTable(c *ui.Context) {
 	}
 }
 
+func (a *App) catalog(c *ui.Context) {
+	ui.Text(c, a.t("Available versions")).FontSize(16).FontWeight(620)
+	ui.Text(c, a.t("Check available versions asks fnm and uv. It does not install anything.")).FontSize(12).TextColor(c.Theme().TextMuted)
+	for _, note := range a.CatalogNotes {
+		ui.Text(c, a.t(note)).FontSize(12)
+	}
+	if len(a.Catalog) == 0 {
+		a.pinForm(c)
+		return
+	}
+	cols := []ui.TableColumn{
+		{Title: a.t("Ecosystem"), Width: 100},
+		{Title: a.t("Version"), Width: 120},
+		{Title: a.t("Scope"), Width: 90},
+		{Title: a.t("Manager"), Width: 80},
+		{Title: a.t("Action")},
+	}
+	a.catList.Selected = &a.catRow
+	ui.Table(c, &a.catList, cols, len(a.Catalog), func(row, col int) {
+		item := a.Catalog[row]
+		selected := row == a.catRow
+		switch col {
+		case 0:
+			ui.Text(c, item.Ecosystem).SingleLine()
+		case 1:
+			ui.Text(c, item.Version).Font("monospace").SingleLine()
+		case 2:
+			a.tone(c, selected, a.t(item.Scope), c.Theme().TextMuted)
+		case 3:
+			ui.Text(c, item.Manager).SingleLine()
+		case 4:
+			acted := false
+			if item.Install != nil && ui.Button(c.Key("inst:"+item.Manager+item.Version), a.t("Review install")).Clicked() {
+				a.addCommand(*item.Install)
+				acted = true
+			}
+			if item.MakeDefault != nil && ui.Button(c.Key("def:"+item.Manager+item.Version), a.t("Make default")).Clicked() {
+				a.addCommand(*item.MakeDefault)
+				acted = true
+			}
+			if item.Removal != nil && ui.Button(c.Key("rm:"+item.Manager+item.Version), a.t("Review removal")).Clicked() {
+				a.addCommand(*item.Removal)
+				acted = true
+			}
+			if !acted && item.Install == nil && item.MakeDefault == nil && item.Removal == nil {
+				a.tone(c, selected, a.t(item.Hint), c.Theme().TextMuted)
+			}
+		}
+	}).Height(float32(56 + len(a.Catalog)*42))
+	a.pinForm(c)
+}
+
+func (a *App) pinForm(c *ui.Context) {
+	ui.Text(c, a.t("Project pin")).FontSize(16).FontWeight(620)
+	ui.Text(c, a.t("uv python pin writes .python-version in a directory you choose. It does not change an open terminal.")).FontSize(12).TextColor(c.Theme().TextMuted)
+	ui.Row(c).Gap(8).Children(func() {
+		ui.TextInput(c, &a.PinDir).Placeholder(a.t("Project directory")).Grow(1)
+		ui.TextInput(c, &a.PinVersion).Placeholder(a.t("Python version")).Width(140)
+		if ui.Button(c, a.t("Review pin")).Clicked() {
+			a.reviewPin()
+		}
+	})
+}
+
 func (a *App) locationTable(c *ui.Context) {
 	cols := []ui.TableColumn{
-		{Title: "Location", Width: 180},
-		{Title: "Logical", Width: 100, Align: ui.End},
-		{Title: "Status"},
+		{Title: a.t("Location"), Width: 180},
+		{Title: a.t("Logical"), Width: 100, Align: ui.End},
+		{Title: a.t("Status")},
 	}
 	a.locList.Selected = &a.locRow
 	ui.Table(c, &a.locList, cols, len(a.Locations), func(row, col int) {
 		loc := a.Locations[row]
+		selected := row == a.locRow
 		switch col {
 		case 0:
 			ui.Text(c, loc.Title).SingleLine()
@@ -484,16 +596,16 @@ func (a *App) locationTable(c *ui.Context) {
 			ui.Text(c, text).Font("monospace")
 		case 2:
 			if loc.Missing {
-				ui.Text(c, "Not present").TextColor(c.Theme().TextMuted)
+				a.tone(c, selected, a.t("Not present"), c.Theme().TextMuted)
 				return
 			}
 			if loc.Err != "" && loc.Command == nil && !loc.Policy.Eligible {
-				ui.Text(c, loc.Err).FontSize(12).TextColor(c.Theme().TextMuted)
+				a.tone(c, selected, loc.Err, c.Theme().TextMuted)
 				return
 			}
-			label := "Details"
+			label := a.t("Details")
 			if loc.Policy.Eligible {
-				label = "Add to review"
+				label = a.t("Add to review")
 			}
 			if ui.Button(c.Key("loc:"+loc.ID), label).Clicked() {
 				if loc.Policy.Eligible {
@@ -508,9 +620,9 @@ func (a *App) locationTable(c *ui.Context) {
 
 func (a *App) review(c *ui.Context) {
 	resolved, _ := a.reviewTargets()
-	heading(c, "Review", "Nothing is selected until you mark it. Nested directories count once. Manager commands do not add a byte total.")
+	heading(c, a.t("Review"), a.t("Nothing is selected until you mark it. Nested directories count once. Manager commands do not add a byte total."))
 	if len(resolved.Targets) == 0 && len(a.Commands) == 0 {
-		ui.Text(c, "Nothing is marked. Mark a reclaimable directory in Space, or add a cache command from Environments.").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("Nothing is marked. Mark a reclaimable directory in Space, or add a command from Environments.")).TextColor(c.Theme().TextMuted)
 		return
 	}
 	if len(resolved.Targets) > 0 {
@@ -524,28 +636,39 @@ func (a *App) review(c *ui.Context) {
 			})
 		}
 		ui.Row(c).Gap(8).Children(func() {
-			if ui.PrimaryButton(c, "Move to Trash").Disabled(a.Running || !a.Prefs.UseTrash).Clicked() {
+			if ui.PrimaryButton(c, a.t("Move to Trash")).Disabled(a.Running || !a.Prefs.UseTrash).Clicked() {
 				a.Confirm = "trash"
 			}
-			if ui.Button(c, "Delete permanently").Disabled(a.Running || !a.Prefs.AllowPermanent).Clicked() {
+			if ui.Button(c, a.t("Delete permanently")).Disabled(a.Running || !a.Prefs.AllowPermanent).Clicked() {
 				a.Confirm = "permanent"
 			}
 		})
 	}
 	if len(a.Commands) > 0 {
-		ui.Text(c, "Manager commands").FontSize(16).FontWeight(620)
+		ui.Text(c, a.t("Manager commands")).FontSize(16).FontWeight(620)
 		for _, cmd := range a.Commands {
 			ui.Column(c).Padding(8, 10).Gap(2).Border(1, c.Theme().Border).Radius(8).Children(func() {
 				ui.Text(c, cmd.Display()).Font("monospace").FontSize(12)
 				ui.Text(c, cmd.Effect).FontSize(12).TextColor(c.Theme().TextMuted)
+				if cmd.Hint != "" {
+					ui.Text(c, a.t(cmd.Hint)).FontSize(12)
+				}
+				if cmd.Use != "" {
+					ui.Text(c, cmd.Use).Font("monospace").FontSize(12)
+				}
 			})
 		}
 		on := a.Ack
-		if ui.Checkbox(c, &on, "These commands cannot be restored from Trash.").Changed() {
+		if ui.Checkbox(c, &on, a.t("These commands cannot be restored from Trash.")).Changed() {
 			a.Ack = on
 		}
-		if ui.Button(c, "Run manager commands").Disabled(a.Running || !a.Ack).Clicked() {
+		if ui.Button(c, a.t("Run manager commands")).Disabled(a.Running || !a.Ack).Clicked() {
 			a.Confirm = "commands"
+		}
+		if ui.Button(c, a.t("Cancel")).Disabled(!a.Running).Clicked() {
+			if a.cancelRun != nil {
+				a.cancelRun()
+			}
 		}
 	}
 	for _, note := range resolved.Notes {
@@ -554,9 +677,9 @@ func (a *App) review(c *ui.Context) {
 }
 
 func (a *App) history(c *ui.Context) {
-	heading(c, "History", "Each line is one item. A failed or cancelled item is not reported as removed.")
+	heading(c, a.t("History"), a.t("Each line is one item. A failed or cancelled item is not reported as removed."))
 	if len(a.History) == 0 {
-		ui.Text(c, "No operations yet.").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("No operations yet.")).TextColor(c.Theme().TextMuted)
 		return
 	}
 	labels := make([]string, len(a.History))
@@ -589,7 +712,7 @@ func (a *App) history(c *ui.Context) {
 				if root == "" {
 					root = parentOf(item.Path)
 				}
-				if ui.Button(c.Key("restore:"+item.TrashPath), "Restore").Clicked() {
+				if ui.Button(c.Key("restore:"+item.TrashPath), a.t("Restore")).Clicked() {
 					a.restore(item, root)
 				}
 			}
@@ -598,50 +721,62 @@ func (a *App) history(c *ui.Context) {
 }
 
 func (a *App) settings(c *ui.Context) {
-	heading(c, "Settings", "Scan roots, name excludes, and protected projects are stored in this app's data directory. The previous settings.json file is left as it was.")
-	ui.Text(c, "Scan roots").FontWeight(620)
+	heading(c, a.t("Settings"), a.t("Scan roots, excludes, protected projects, and language are stored in this app's data directory. The previous settings.json file is left as it was."))
+	ui.Text(c, a.t("Scan roots")).FontWeight(620)
 	if len(a.Prefs.Roots) == 0 {
-		ui.Text(c, "No folders yet.").TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("No folders yet.")).TextColor(c.Theme().TextMuted)
 	}
 	for _, root := range a.Prefs.Roots {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, root).Font("monospace").FontSize(12).Grow(1)
-			if ui.Button(c.Key("remove-root:"+root), "Remove").Clicked() {
+			if ui.Button(c.Key("remove-root:"+root), a.t("Remove")).Clicked() {
 				a.RemoveRoot(root)
 			}
 		})
 	}
-	ui.Text(c, "Excluded directory names").FontWeight(620)
+	ui.Text(c, a.t("Excluded directory names")).FontWeight(620)
 	ui.TextArea(c, &a.ExcludeDraft).Height(80)
-	if ui.Button(c, "Save excludes").Clicked() {
+	if ui.Button(c, a.t("Save excludes")).Clicked() {
 		a.saveExcludes()
 	}
-	ui.Text(c, "Protected projects").FontWeight(620)
-	ui.Text(c, "Cleanup refuses these paths, their parents, and their contents.").FontSize(12).TextColor(c.Theme().TextMuted)
+	ui.Text(c, a.t("Protected projects")).FontWeight(620)
+	ui.Text(c, a.t("Cleanup refuses these paths, their parents, and their contents.")).FontSize(12).TextColor(c.Theme().TextMuted)
 	for _, path := range a.Prefs.Protected {
 		ui.Text(c, path).Font("monospace").FontSize(12)
 	}
 	ui.Row(c).Gap(8).Children(func() {
-		ui.TextInput(c, &a.ProtectedDraft).Placeholder("Absolute path").Grow(1)
-		if ui.Button(c, "Protect").Clicked() {
+		ui.TextInput(c, &a.ProtectedDraft).Placeholder(a.t("Absolute path")).Grow(1)
+		if ui.Button(c, a.t("Protect")).Clicked() {
 			a.addProtected()
 		}
 	})
-	if ui.Checkbox(c, &a.Prefs.UseTrash, "Move files to Trash").Changed() {
+	if ui.Checkbox(c, &a.Prefs.UseTrash, a.t("Move files to Trash")).Changed() {
 		a.persist()
 	}
-	if ui.Checkbox(c, &a.Prefs.AllowPermanent, "Allow permanent deletion").Changed() {
+	if ui.Checkbox(c, &a.Prefs.AllowPermanent, a.t("Allow permanent deletion")).Changed() {
 		a.persist()
 	}
-	if ui.Checkbox(c, &a.Prefs.ScanOnLaunch, "Scan the first folder when Envark opens").Changed() {
+	if ui.Checkbox(c, &a.Prefs.ScanOnLaunch, a.t("Scan the first folder when Envark opens")).Changed() {
 		a.persist()
 	}
-	ui.Text(c, "Appearance").FontWeight(620)
+	ui.Text(c, a.t("Language")).FontWeight(620)
+	ui.Text(c, a.t("system follows the operating system. en is English. zh is Simplified Chinese.")).FontSize(12).TextColor(c.Theme().TextMuted)
+	if ui.Select(c, &a.Prefs.Language, []string{"system", "en", "zh"}).Changed() {
+		a.applyLanguage()
+		a.persist()
+	}
+	ui.Text(c, a.t("Appearance")).FontWeight(620)
 	if ui.Select(c, &a.Prefs.Theme, []string{"system", "light", "dark"}).Changed() {
 		a.persist()
 		a.applyTheme()
 	}
-	ui.Text(c, "Data directory").FontWeight(620)
+	if ui.Checkbox(c, &a.Prefs.ReduceMotion, a.t("Reduce motion")).Changed() {
+		a.persist()
+	}
+	ui.Text(c, a.t("Renderer")).FontWeight(620)
+	ui.Text(c, a.rendererLine()).FontSize(12).TextColor(c.Theme().TextMuted)
+	a.shaderSample(c)
+	ui.Text(c, a.t("Data directory")).FontWeight(620)
 	ui.Text(c, a.Dir).Font("monospace").FontSize(12)
 }
 
@@ -649,7 +784,7 @@ func (a *App) overlays(c *ui.Context) {
 	if a.Help {
 		ui.Modal(c, &a.Help, func() {
 			ui.Column(c).Padding(16).Gap(8).MaxWidth(420).Children(func() {
-				ui.Text(c, "Keyboard").FontSize(18).FontWeight(640)
+				ui.Text(c, a.t("Keyboard")).FontSize(18).FontWeight(640)
 				for _, line := range []string{
 					"Ctrl/Cmd 1–5 switch pages",
 					"Ctrl/Cmd R scans, or refreshes Environments",
@@ -658,7 +793,7 @@ func (a *App) overlays(c *ui.Context) {
 					"Up and Down move in the table",
 					"Left and Right collapse and expand a row",
 				} {
-					ui.Text(c, line).FontSize(13)
+					ui.Text(c, a.t(line)).FontSize(13)
 				}
 			})
 		})
@@ -668,30 +803,33 @@ func (a *App) overlays(c *ui.Context) {
 		ui.Column(c).Padding(16).Gap(10).MaxWidth(520).Children(func() {
 			switch a.Confirm {
 			case "permanent":
-				ui.Text(c, "Delete permanently?").FontSize(18).FontWeight(640)
-				ui.Text(c, "These directories will be deleted. Trash will not have them. This cannot be undone.").TextColor(c.Theme().Danger)
+				ui.Text(c, a.t("Delete permanently?")).FontSize(18).FontWeight(640)
+				ui.Text(c, a.t("These directories will be deleted. Trash will not have them. This cannot be undone.")).TextColor(c.Theme().Danger)
 				a.confirmPaths(c)
-				if ui.Button(c, "Delete permanently now").Clicked() {
+				if ui.Button(c, a.t("Delete permanently now")).Clicked() {
 					a.runFiles(true)
 				}
 			case "commands":
-				ui.Text(c, "Run manager commands?").FontSize(18).FontWeight(640)
-				ui.Text(c, "Each command runs as a separate argument list. Envark will not report bytes freed.").FontSize(13)
+				ui.Text(c, a.t("Run manager commands?")).FontSize(18).FontWeight(640)
+				ui.Text(c, a.t("Each command runs as a separate argument list. Envark will not report bytes freed.")).FontSize(13)
 				for _, cmd := range a.Commands {
 					ui.Text(c, cmd.Display()).Font("monospace").FontSize(12)
+					if cmd.Hint != "" {
+						ui.Text(c, a.t(cmd.Hint)).FontSize(12)
+					}
 				}
-				if ui.PrimaryButton(c, "Run commands").Clicked() {
+				if ui.PrimaryButton(c, a.t("Run commands")).Clicked() {
 					a.runCommands()
 				}
 			default:
-				ui.Text(c, "Move to Trash?").FontSize(18).FontWeight(640)
-				ui.Text(c, "The directories below move to Trash. You can restore them from History while the trash path still exists.").FontSize(13)
+				ui.Text(c, a.t("Move to Trash?")).FontSize(18).FontWeight(640)
+				ui.Text(c, a.t("The directories below move to Trash. You can restore them from History while the trash path still exists.")).FontSize(13)
 				a.confirmPaths(c)
-				if ui.PrimaryButton(c, "Confirm move to Trash").Clicked() {
+				if ui.PrimaryButton(c, a.t("Confirm move to Trash")).Clicked() {
 					a.runFiles(false)
 				}
 			}
-			if ui.Button(c, "Back").Clicked() {
+			if ui.Button(c, a.t("Back")).Clicked() {
 				a.Confirm = ""
 			}
 		})
@@ -715,6 +853,14 @@ func (a *App) confirmPaths(c *ui.Context) {
 	if extra > 0 {
 		ui.Textf(c, "and %d more", extra).FontSize(12)
 	}
+}
+
+func (a *App) pathSelected(path string) bool {
+	sel := a.outline.List.Selected
+	if sel == nil || *sel < 0 || *sel >= a.outline.Rows() {
+		return false
+	}
+	return a.outline.Item(*sel) == path
 }
 
 func riskColor(theme *ui.Theme, risk string) ui.Color {

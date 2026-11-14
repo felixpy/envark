@@ -54,13 +54,14 @@ section of the README records which systems actually ran.
 Three workflows, each finished before another manager button is added:
 
 1. **Space.** The user chooses directories. Nothing is walked until they
-   ask. The result is a sortable outline of real directories and large
-   files, with logical and allocated sizes, a search box, a reclaimable
-   filter, and a detail pane for the selected row.
-2. **Environments.** Read-only probes of Node.js, Python, Java, Rust, and
-   Go, plus known cache locations. Each row names the manager or says why
-   ownership is unknown. Removal and cleanup commands exist only for an
-   allowlisted argv and are absent, with a reason, otherwise.
+   ask. The result is a squarified map of logical size, linked to a
+   sortable outline of real directories and large files, with logical and
+   allocated sizes, a search box, a reclaimable filter, and a detail pane.
+2. **Environments.** Probes of Node.js, Python, Java, Rust, and Go, plus
+   known cache locations. Each row names the manager, the scope, and why
+   an action is absent. fnm and uv can install a version and can change
+   what a new shell or a project file selects. That does not change the
+   terminal that is already open. Other managers stay unavailable.
 3. **Review.** Marks and commands gather here. The page lists exact paths
    or exact argument vectors, risk, recoverability, and the expected
    effect. Trash is the file default. Irreversible commands and permanent
@@ -119,29 +120,67 @@ restore when Envark still knows the trashed path.
 - A missing binary is an unavailable row, not a disabled button that
   reports success.
 
+## Capability matrix
+
+| 0.4.4 capability | This version | Why |
+| --- | --- | --- |
+| See installed Node, Python, Java, Rust, Go and who owns them | Kept | The inspection half of environment management |
+| `fnm install`, `fnm default`, `uv python install`, `uv python pin` | Kept, after an explicit preview | These are the supported end-to-end manager paths. `fnm default` affects new shells. `uv python pin` writes `.python-version`. The open terminal is unchanged, and the review says so |
+| `fnm list-remote`, `uv python list` | Kept, on Check available versions | Not run during a passive refresh. The Node list is capped at 12 newest names and says the full list is longer |
+| Uninstall a non-default fnm, uv, or rustup toolchain | Kept | Active and default versions are refused |
+| npm, pnpm, pip, and `go clean -cache` | Kept | The manager's own cache command, with no byte claim |
+| Install or remove the managers, rewrite shell profiles | Dropped | A partial installer that edits rc files is worse than leaving the manager's own install instructions |
+| nvm, mise, asdf, volta, sdkman, Homebrew, Go, Java changes | Dropped, shown as unavailable | nvm is a shell function. The others are not an allowlisted argv here |
+| Corepack, package updates, background "latest" checks | Dropped | Not required to install or select a runtime, and easy to present as success without doing the work |
+| Envark updater, signing, installer publishing | Dropped | Release machinery, not a disk or runtime workflow |
+| Ollama start/stop and model deletion | Dropped | A service and model store, measured only |
+| Gradle retention, Cargo download locks, Maven deletion, Go module cache deletion | Dropped | Those trees can be the only copy of an artifact. Measurement stays |
+| Git worktree removal | Dropped | It discards local checkouts |
+| Browser profile cleanup | Dropped | Playwright and Puppeteer cache directories can still be trashed when the path is the known cache directory |
+| Traditional Chinese catalog, editable shortcut map | Simplified Chinese, system, or English | `zh-TW` and `zh-Hant` preferences use the Simplified catalog and say so. Missing strings stay English |
+
+## Space map
+
+The scanned directory is a squarified treemap. Cell area is logical size.
+Empty entries stay in the list so a zero-byte directory is not drawn as if
+it had size. At most 12 cells are drawn; the rest is one remainder cell
+labeled with its count and its real byte total. Click selects the same
+path as the outline. Double-click or Open drills into a directory.
+Breadcrumbs and Up move back. A short zoom plays on that change and
+finishes; Reduce motion holds the final frame. The outline and the
+inspector stay, because small cells cannot carry a readable label.
+
+The cell shader colors the pixel of the cell that contains it, plus a
+selection edge, an incomplete hatch, and a scan band only while a scan is
+running on a GPU renderer. It does not cover the window with a gradient.
+Where `Painter.Accelerated` is false and the map is larger than about
+24,000 DIPs squared, the same rectangles are filled on the CPU. A 220×88
+sample in Settings always runs the shader, including MyGo's CPU
+interpreter, so the shader path is exercised without pretending the main
+map was drawn by a GPU. Scope marks beside environment rows use a second
+shader. Their size is fixed. They encode missing, installed, or default,
+not disk usage.
+
+MyGo draws a frame only when something changes. The scan band calls
+`AnimationFrameRate(30)` only while a scan is running, the GPU renderer is
+active, and Reduce motion is off. Drill motion is one `Keyframes` pass of
+180ms. An idle window does not ask for another frame.
+
 ## What this version drops
 
-These existed in 0.4.4 and are not in this rewrite:
-
-- Installing or removing fnm, nvm-sh, Bun, uv, pnpm, Yarn, rustup,
-  SDKMAN!, mise, or Ollama, and rewriting shell profiles.
-- Setting the default runtime, Corepack and package updates, and online
-  "latest version" checks.
-- Envark's own updater, signed release metadata, and installer publishing.
-- Ollama service start/stop and model deletion.
-- Gradle's retention cleanup, Cargo's download locks, and Maven deletion.
-  Those directories can be measured. Maven and the Go module cache cannot
-  be removed here because they may be the only copy of an artifact.
-- Git worktree removal and discarding local Git changes.
-- Browser profile cleanup. Playwright and Puppeteer cache directories can
-  be trashed only when the path is the known cache directory.
-- The Traditional Chinese catalog and the configurable shortcut map.
-  Previous `settings.json` is left in place and is not overwritten.
+The matrix above is the list. In short: manager installation and shell
+profiles, unsupported version managers, package and app updates, Ollama
+lifecycle, deletion of caches that may be unique, Git worktrees, browser
+profiles, and a separate Traditional Chinese catalog. Previous
+`settings.json` is left in place and is not overwritten.
 
 Removal that remains is narrow: non-default `rustup toolchain uninstall`,
 non-default `fnm uninstall`, and non-default `uv python uninstall`, plus
 `npm cache clean --force`, `python -m pip cache purge`, `go clean -cache`,
-and `pnpm store prune`. Each is unavailable when its binary is absent.
+and `pnpm store prune`. Install and default changes that remain are
+`fnm install`, `fnm default`, `uv python install`, and `uv python pin`.
+Each is unavailable when its binary is absent. A plan whose catalog
+generation is no longer current fails as stale and does not run.
 
 ## Migration
 
@@ -176,10 +215,11 @@ Public pages read, and not their implementation trees:
   descendants without double counting, review before trash or permanent
   delete, and free-space honesty.
 
-Envark does not use their names, layout, icons, copy, or source. Space is
-an outline with a proportion bar for the open directory, not a disk
-mosaic. Cleanup does not offer a general file shredder, a remote delete
-script, app uninstall leftovers, or system optimization.
+Envark does not use their names, layout, icons, copy, or source. The space
+map is a squarified treemap of one directory at a time, drawn with
+Envark's own ink and MyGo's shader or CPU rectangles. It is not a copy of
+another disk map. Cleanup does not offer a general file shredder, a
+remote delete script, app uninstall leftovers, or system optimization.
 
 The safety rules that came from Envark itself stay: plan the target,
 revalidate, reject link escapes, prefer trash for project artifacts, and
@@ -188,32 +228,28 @@ let a package manager clean its own cache.
 ## Verification
 
 Commands run on Linux x86_64 (Go 1.27.4, GTK 3, MyGo v0.9.0). The display
-was X.Org. MyGo logged that native UI draws without a GPU. The window
-still mapped and the workflows below were clicked on a temporary fixture
-under `/tmp`, with `ENVARK_DATA_DIR`, `ENVARK_HOME`, `ENVARK_PATH`, and
-`ENVARK_TRASH_DIR` pointed at that fixture. Nothing under a real home
-directory was scanned or deleted.
+was X.Org. There is no `/dev/dri`. With the default renderer, MyGo logged
+four startup frames, each `drawn in memory`, and then no further frames
+while the window sat idle (`MYGO_FRAME_STATS=all`). A click or scroll
+produced more frames and then stopped. `MYGO_GPU=1` produced one later
+frame logged as `drawn on the GPU` (950 ms, software OpenGL; there is
+still no DRM device). `Painter.Accelerated` stayed false, and the map
+kept the CPU rectangles. The shader itself was executed by MyGo's CPU
+interpreter: an 80×40 cell painted `#ead9b0` in 2.8 ms inside
+`ui.NewTester`, and Settings shows the same three-cell sample.
+
+Nothing under a real home directory was scanned or deleted. The live
+window used `/tmp/envark-live` for data, home, PATH, trash, and the
+scanned tree.
 
 - `gofmt -l .` printed nothing.
-- `go test ./...` passed, including scan accuracy, unreadable entries,
-  other-volume refusal, symlink rejection, nested marks, stale-size
-  revalidation, cancellation, manager argv rejection, and the Space to
-  Trash path through `ui.NewTester`.
+- `go test ./...` passed (35 tests), including argv, cancellation, stale
+  plans, missing managers, the size map, selected-row contrast, and
+  Simplified Chinese at 720 px.
 - `go vet ./...` passed.
-- `go build -o envark .` produced a Linux binary that opened a window.
-- `go tool mygo build` wrote `dist/linux-amd64/` (executable, `.deb`,
-  `.rpm`, and `.tar.gz`) for Envark 0.5.0. Those packages were not
-  installed.
-- `GOOS=windows` and `GOOS=darwin`, each for `amd64` and `arm64`, compiled
-  with `CGO_ENABLED=0`. Those binaries were not run.
-- In the window: a fixture scan showed `node_modules` and a Cargo `target`
-  with logical and allocated sizes; both were marked, confirmed, and moved
-  to the fixture trash while `package.json`, `Cargo.toml`, and `README.md`
-  stayed; History restored both; Environments probed fixture binaries and
-  left missing tools as unavailable; Measure reported the fixture cache
-  sizes; adding the npm cache command opened Review with
-  `npm "cache" "clean" "--force"` and a disabled Run button until the
-  acknowledgement checkbox. A 720px-wide window switched to the top
-  navigation and kept the filter on its own row.
-
-macOS and Windows were not launched. A cross-compile is not that test.
+- `go build -o envark .` produced a Linux binary. The window mapped.
+  Double-clicking the `api` cell drilled to `target` (4 MiB, reclaimable)
+  beside `photo.bin` (3 MiB, a file). The permission failure on `locked`
+  stayed on screen.
+- macOS and Windows app processes were not run. A cross-compile is not
+  that test. The earlier CI compile jobs are not a runtime result.

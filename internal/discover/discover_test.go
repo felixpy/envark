@@ -75,6 +75,51 @@ func TestDiscoveryAndUnavailableManagers(t *testing.T) {
 	}
 }
 
+func TestRemoteCatalogAndMissingManagers(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(bin, "fnm"), "#!/bin/sh\nif [ \"$1\" = list ]; then printf '* v22.14.0 default\\n  v20.11.0\\n'; exit 0; fi\nif [ \"$1\" = list-remote ]; then printf 'v22.14.0\\nv22.13.0\\nv20.11.0\\n'; exit 0; fi\nexit 1\n")
+	write(t, filepath.Join(bin, "uv"), "#!/bin/sh\nif [ \"$1\" = python ] && [ \"$2\" = list ]; then printf 'cpython-3.12.1-linux (default) /tmp/py\\ncpython-3.11.8-linux <download available>\\n'; exit 0; fi\nexit 1\n")
+	items, notes, err := Remote(context.Background(), Env{Home: home, Path: bin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 0 && !strings.Contains(strings.Join(notes, " "), "longer") {
+		t.Fatalf("notes: %v", notes)
+	}
+	def := findCatalog(items, "fnm", "v22.14.0")
+	if def == nil || def.Scope != "default" || def.Install != nil || def.Removal != nil || def.MakeDefault != nil {
+		t.Fatalf("default: %+v", def)
+	}
+	old := findCatalog(items, "fnm", "v20.11.0")
+	if old == nil || old.Removal == nil || old.Removal.Args[0] != "uninstall" || old.MakeDefault == nil || old.MakeDefault.Args[0] != "default" {
+		t.Fatalf("installed: %+v", old)
+	}
+	fresh := findCatalog(items, "fnm", "v22.13.0")
+	if fresh == nil || fresh.Scope != "available" || fresh.Install == nil || fresh.Install.Args[0] != "install" || fresh.Removal != nil {
+		t.Fatalf("available: %+v", fresh)
+	}
+	py := findCatalog(items, "uv", "3.11.8")
+	if py == nil || py.Install == nil || py.Install.Args[1] != "install" {
+		t.Fatalf("uv available: %+v", py)
+	}
+	pyDef := findCatalog(items, "uv", "3.12.1")
+	if pyDef == nil || pyDef.Scope != "default" || pyDef.Removal != nil {
+		t.Fatalf("uv default: %+v", pyDef)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := Remote(ctx, Env{Home: home, Path: bin}); err == nil {
+		t.Fatal("cancelled remote listed versions")
+	}
+	if _, _, err := Remote(context.Background(), Env{Home: home, Path: t.TempDir()}); err == nil {
+		t.Fatal("missing managers looked like an empty catalog")
+	}
+}
+
 func TestAbsentToolIsNotSuccess(t *testing.T) {
 	env := Env{Home: t.TempDir(), Path: t.TempDir()}
 	probes := Discover(context.Background(), env)
@@ -99,6 +144,15 @@ func findProbe(probes []Probe, eco, version string) *Probe {
 	for i := range probes {
 		if probes[i].Ecosystem == eco && probes[i].Version == version {
 			return &probes[i]
+		}
+	}
+	return nil
+}
+
+func findCatalog(items []CatalogItem, manager, version string) *CatalogItem {
+	for i := range items {
+		if items[i].Manager == manager && items[i].Version == version {
+			return &items[i]
 		}
 	}
 	return nil

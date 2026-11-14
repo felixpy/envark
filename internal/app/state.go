@@ -14,6 +14,7 @@ import (
 
 	"github.com/felixpy/envark/internal/cleanup"
 	"github.com/felixpy/envark/internal/discover"
+	"github.com/felixpy/envark/internal/i18n"
 	"github.com/felixpy/envark/internal/managers"
 	"github.com/felixpy/envark/internal/mark"
 	"github.com/felixpy/envark/internal/safe"
@@ -37,34 +38,48 @@ type App struct {
 	Notices []string
 	Notice  string
 	Page    string
+	Lang    string
 	Help    bool
 	Confirm string
 
-	Tree     *scan.Entry
-	ScanRoot string
-	Result   *scan.Result
-	Scanning bool
-	Progress string
-	ScanErr  string
-	Previous bool
-	Query    string
-	Filter   int
-	Marks    map[string]bool
-	Selected string
-	row      int
-	outline  ui.OutlineState[string]
-	index    map[string]*scan.Entry
-	visible  map[string]bool
-	split    float32
+	Tree         *scan.Entry
+	ScanRoot     string
+	Result       *scan.Result
+	Scanning     bool
+	Progress     string
+	ScanErr      string
+	Previous     bool
+	Query        string
+	Filter       int
+	Marks        map[string]bool
+	Selected     string
+	row          int
+	outline      ui.OutlineState[string]
+	MapDir       string
+	MapHover     string
+	wantPath     string
+	lastMap      []mapCell
+	drillRun     uint64
+	shownBackend string
+	Paint        Renderer
+	index        map[string]*scan.Entry
+	visible      map[string]bool
+	split        float32
 
-	Probes     []discover.Probe
-	Locations  []discover.Location
-	EnvErr     string
-	EnvRunning bool
-	envRow     int
-	envList    ui.ListState
-	locRow     int
-	locList    ui.ListState
+	Probes       []discover.Probe
+	Locations    []discover.Location
+	Catalog      []discover.CatalogItem
+	CatalogNotes []string
+	EnvErr       string
+	EnvRunning   bool
+	PinDir       string
+	PinVersion   string
+	envRow       int
+	envList      ui.ListState
+	locRow       int
+	locList      ui.ListState
+	catRow       int
+	catList      ui.ListState
 
 	Extras   []mark.Target
 	Commands []managers.Command
@@ -78,6 +93,9 @@ type App struct {
 	ExcludeDraft   string
 	ProtectedDraft string
 	cancel         context.CancelFunc
+	cancelEnv      context.CancelFunc
+	cancelRun      context.CancelFunc
+	catalogGen     uint64
 	win            *mygo.Window
 }
 
@@ -116,6 +134,7 @@ func Open(cfg Config) (*App, error) {
 		Notices:      loaded.Notices,
 		History:      loaded.History,
 		Page:         "space",
+		Lang:         i18n.Resolve(loaded.Prefs.Language, os.Getenv("LC_ALL"), os.Getenv("LC_MESSAGES"), os.Getenv("LANG")),
 		Marks:        map[string]bool{},
 		index:        map[string]*scan.Entry{},
 		visible:      map[string]bool{},
@@ -142,6 +161,10 @@ func (a *App) persist() {
 	if err := store.SavePreferences(a.Dir, a.Prefs); err != nil {
 		a.Notice = err.Error()
 	}
+}
+
+func (a *App) applyLanguage() {
+	a.Lang = i18n.Resolve(a.Prefs.Language, os.Getenv("LC_ALL"), os.Getenv("LC_MESSAGES"), os.Getenv("LANG"))
 }
 
 // ApplyTheme follows the saved appearance once the window exists.
@@ -422,14 +445,21 @@ func (a *App) startDiscover() {
 	}
 	a.EnvRunning = true
 	a.EnvErr = ""
+	a.catalogGen++
 	env := a.env()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	a.cancelEnv = cancel
 	run := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		probes := discover.Discover(ctx, env)
 		locs := discover.Locations(ctx, env)
 		apply := func() {
 			a.EnvRunning = false
+			a.cancelEnv = nil
+			if ctx.Err() != nil {
+				a.EnvErr = "Version check cancelled."
+				return
+			}
 			a.Probes = probes
 			a.Locations = locs
 		}
@@ -444,6 +474,52 @@ func (a *App) startDiscover() {
 		return
 	}
 	go run()
+}
+
+func (a *App) fetchRemote() {
+	if a.EnvRunning {
+		return
+	}
+	a.EnvRunning = true
+	a.EnvErr = ""
+	a.catalogGen++
+	env := a.env()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	a.cancelEnv = cancel
+	run := func() {
+		defer cancel()
+		items, notes, err := discover.Remote(ctx, env)
+		apply := func() {
+			a.EnvRunning = false
+			a.cancelEnv = nil
+			if ctx.Err() != nil {
+				a.Catalog = nil
+				a.EnvErr = "Version check cancelled."
+				return
+			}
+			a.Catalog = items
+			a.CatalogNotes = notes
+			if err != nil {
+				a.EnvErr = err.Error()
+			}
+		}
+		if a.win == nil {
+			apply()
+			return
+		}
+		a.win.Update(apply)
+	}
+	if a.win == nil {
+		run()
+		return
+	}
+	go run()
+}
+
+func (a *App) cancelEnvironment() {
+	if a.cancelEnv != nil {
+		a.cancelEnv()
+	}
 }
 
 func (a *App) measureLocations() {
@@ -490,15 +566,7 @@ func (a *App) addProbe(probe discover.Probe) {
 		a.Notice = probe.Unavailable
 		return
 	}
-	for _, have := range a.Commands {
-		if have.ID == probe.Removal.ID && sameArgs(have.Args, probe.Removal.Args) {
-			a.Page = "review"
-			return
-		}
-	}
-	a.Commands = append(a.Commands, *probe.Removal)
-	a.Page = "review"
-	a.Notice = ""
+	a.addCommand(*probe.Removal)
 }
 
 func (a *App) addLocation(loc discover.Location) {
@@ -507,14 +575,7 @@ func (a *App) addLocation(loc discover.Location) {
 			a.Notice = firstText(loc.Err, loc.Policy.Reason, "This command is unavailable.")
 			return
 		}
-		for _, have := range a.Commands {
-			if have.ID == loc.Command.ID {
-				a.Page = "review"
-				return
-			}
-		}
-		a.Commands = append(a.Commands, *loc.Command)
-		a.Page = "review"
+		a.addCommand(*loc.Command)
 		return
 	}
 	if !loc.Policy.Eligible || loc.Path == "" {
@@ -586,6 +647,44 @@ func (a *App) runFiles(permanent bool) {
 	go run()
 }
 
+func (a *App) addCommand(cmd managers.Command) {
+	cmd.Revision = a.catalogGen
+	for _, have := range a.Commands {
+		if have.ID == cmd.ID && sameArgs(have.Args, cmd.Args) && have.Dir == cmd.Dir {
+			a.Page = "review"
+			return
+		}
+	}
+	a.Commands = append(a.Commands, cmd)
+	a.Page = "review"
+	a.Notice = ""
+}
+
+func (a *App) reviewPin() {
+	dir := strings.TrimSpace(a.PinDir)
+	abs, err := safe.Absolute(dir)
+	if err != nil || safe.System(abs) {
+		a.Notice = "A project pin needs a real project directory, not a system location."
+		return
+	}
+	info, statErr := os.Lstat(abs)
+	if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		a.Notice = "A project pin needs a real directory."
+		return
+	}
+	uv, err := discover.Look(a.PathEnv, "uv")
+	if err != nil {
+		a.Notice = "uv was not found. Envark will not write a Python pin."
+		return
+	}
+	cmd, err := managers.UvPythonPin(uv, strings.TrimSpace(a.PinVersion), abs)
+	if err != nil {
+		a.Notice = err.Error()
+		return
+	}
+	a.addCommand(cmd)
+}
+
 func (a *App) runCommands() {
 	if a.Running {
 		return
@@ -600,22 +699,14 @@ func (a *App) runCommands() {
 		return
 	}
 	a.Running = true
+	ctx, cancel := context.WithCancel(context.Background())
+	a.cancelRun = cancel
 	run := func() {
-		var items []cleanup.ItemResult
-		for _, cmd := range cmds {
-			stdout, stderr, err := managers.Run(context.Background(), cmd)
-			item := cleanup.ItemResult{Action: "command", Path: cmd.Display(), Detail: strings.TrimSpace(stdout + "\n" + stderr)}
-			if err != nil {
-				item.Outcome = "failed"
-				item.Error = err.Error()
-			} else {
-				item.Outcome = "completed"
-			}
-			items = append(items, item)
-		}
+		items := a.executePlans(ctx, cmds)
 		note := cleanup.Summary(items)
 		apply := func() {
 			a.Running = false
+			a.cancelRun = nil
 			a.Confirm = ""
 			a.Ack = false
 			a.Commands = nil
@@ -633,6 +724,41 @@ func (a *App) runCommands() {
 		return
 	}
 	go run()
+}
+
+func (a *App) executePlans(ctx context.Context, cmds []managers.Command) []cleanup.ItemResult {
+	generation := a.catalogGen
+	var items []cleanup.ItemResult
+	for _, cmd := range cmds {
+		item := cleanup.ItemResult{Action: "command", Path: cmd.Display()}
+		if cmd.Revision != generation {
+			item.Outcome = "failed"
+			item.Error = "This plan is stale. Refresh versions and review the command again."
+			items = append(items, item)
+			continue
+		}
+		if ctx.Err() != nil {
+			item.Outcome = "cancelled"
+			item.Error = ctx.Err().Error()
+			items = append(items, item)
+			continue
+		}
+		stdout, stderr, err := managers.Run(ctx, cmd)
+		item.Detail = strings.TrimSpace(stdout + "\n" + stderr)
+		if err != nil {
+			if ctx.Err() != nil {
+				item.Outcome = "cancelled"
+				item.Error = ctx.Err().Error()
+			} else {
+				item.Outcome = "failed"
+				item.Error = err.Error()
+			}
+		} else {
+			item.Outcome = "completed"
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (a *App) restore(item cleanup.ItemResult, root string) {

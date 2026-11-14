@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/felixpy/envark/internal/safe"
 )
 
 // Command is one allowlisted invocation. Validate rejects anything the
@@ -19,9 +21,21 @@ type Command struct {
 	ID           string
 	Bin          string
 	Args         []string
+	Dir          string
 	Effect       string
+	Hint         string
+	Use          string
 	Irreversible bool
+	// Revision is the catalog generation that produced this plan. A later
+	// refresh makes it stale.
+	Revision uint64
 }
+
+const (
+	HintInstall = "The install runs in a separate process. It does not change PATH in the terminal that is already open. Open a new terminal, or run the manager's use command there."
+	HintDefault = "This changes the version new shells start with. It does not change the terminal that is already open. In that terminal, run the use command, or open a new one."
+	HintPin     = "This writes .python-version in the chosen directory. It does not change PATH in the terminal that is already open."
+)
 
 var (
 	toolchainName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$`)
@@ -63,6 +77,44 @@ func FnmUninstall(bin, version string) (Command, error) {
 	}, nil
 }
 
+// FnmInstall downloads one Node.js version. It does not switch the open shell.
+func FnmInstall(bin, version string) (Command, error) {
+	if err := executable(bin, "fnm"); err != nil {
+		return Command{}, err
+	}
+	if !nodeVersion.MatchString(version) {
+		return Command{}, fmt.Errorf("refusing fnm version %q", version)
+	}
+	return Command{
+		ID:           "fnm-install",
+		Bin:          bin,
+		Args:         []string{"install", version},
+		Effect:       "fnm downloads and installs that Node.js version. Trash cannot undo the download.",
+		Hint:         HintInstall,
+		Use:          "fnm use " + version,
+		Irreversible: true,
+	}, nil
+}
+
+// FnmDefault sets fnm's default for new shells. It does not change the open shell.
+func FnmDefault(bin, version string) (Command, error) {
+	if err := executable(bin, "fnm"); err != nil {
+		return Command{}, err
+	}
+	if !nodeVersion.MatchString(version) {
+		return Command{}, fmt.Errorf("refusing fnm version %q", version)
+	}
+	return Command{
+		ID:           "fnm-default",
+		Bin:          bin,
+		Args:         []string{"default", version},
+		Effect:       "fnm records that version as the default for new shells.",
+		Hint:         HintDefault,
+		Use:          "fnm use " + version,
+		Irreversible: true,
+	}, nil
+}
+
 // UvPythonUninstall removes one Python version uv installed.
 func UvPythonUninstall(bin, version string) (Command, error) {
 	if err := executable(bin, "uv"); err != nil {
@@ -76,6 +128,46 @@ func UvPythonUninstall(bin, version string) (Command, error) {
 		Bin:          bin,
 		Args:         []string{"python", "uninstall", version},
 		Effect:       "uv removes that Python version. This is not undone from Trash.",
+		Irreversible: true,
+	}, nil
+}
+
+// UvPythonInstall downloads one Python version. It does not switch the open shell.
+func UvPythonInstall(bin, version string) (Command, error) {
+	if err := executable(bin, "uv"); err != nil {
+		return Command{}, err
+	}
+	if !pyVersion.MatchString(version) {
+		return Command{}, fmt.Errorf("refusing uv python version %q", version)
+	}
+	return Command{
+		ID:           "uv-python-install",
+		Bin:          bin,
+		Args:         []string{"python", "install", version},
+		Effect:       "uv downloads and installs that Python version. Trash cannot undo the download.",
+		Hint:         HintInstall,
+		Irreversible: true,
+	}, nil
+}
+
+// UvPythonPin writes .python-version in dir. dir must be a real directory.
+func UvPythonPin(bin, version, dir string) (Command, error) {
+	if err := executable(bin, "uv"); err != nil {
+		return Command{}, err
+	}
+	if !pyVersion.MatchString(version) {
+		return Command{}, fmt.Errorf("refusing uv python version %q", version)
+	}
+	if err := projectDir(dir); err != nil {
+		return Command{}, err
+	}
+	return Command{
+		ID:           "uv-python-pin",
+		Bin:          bin,
+		Args:         []string{"python", "pin", version},
+		Dir:          dir,
+		Effect:       "uv writes .python-version in the chosen directory. The file is the project pin.",
+		Hint:         HintPin,
 		Irreversible: true,
 	}, nil
 }
@@ -153,6 +245,25 @@ func (c Command) Validate() error {
 		if base != "uv" || len(c.Args) != 3 || c.Args[0] != "python" || c.Args[1] != "uninstall" || !pyVersion.MatchString(c.Args[2]) {
 			return errors.New("uv command does not match the allowlist")
 		}
+	case "fnm-install":
+		if base != "fnm" || len(c.Args) != 2 || c.Args[0] != "install" || !nodeVersion.MatchString(c.Args[1]) {
+			return errors.New("fnm command does not match the allowlist")
+		}
+	case "fnm-default":
+		if base != "fnm" || len(c.Args) != 2 || c.Args[0] != "default" || !nodeVersion.MatchString(c.Args[1]) {
+			return errors.New("fnm command does not match the allowlist")
+		}
+	case "uv-python-install":
+		if base != "uv" || len(c.Args) != 3 || c.Args[0] != "python" || c.Args[1] != "install" || !pyVersion.MatchString(c.Args[2]) {
+			return errors.New("uv command does not match the allowlist")
+		}
+	case "uv-python-pin":
+		if base != "uv" || len(c.Args) != 3 || c.Args[0] != "python" || c.Args[1] != "pin" || !pyVersion.MatchString(c.Args[2]) {
+			return errors.New("uv command does not match the allowlist")
+		}
+		if err := projectDir(c.Dir); err != nil {
+			return err
+		}
 	case "npm-cache-clean":
 		if base != "npm" || !same(c.Args, []string{"cache", "clean", "--force"}) {
 			return errors.New("npm command does not match the allowlist")
@@ -174,6 +285,9 @@ func (c Command) Validate() error {
 	}
 	if !filepath.IsAbs(c.Bin) || strings.ContainsAny(c.Bin, "\r\n") {
 		return errors.New("manager binary must be an absolute path")
+	}
+	if c.ID != "uv-python-pin" && c.Dir != "" {
+		return errors.New("this command does not take a working directory")
 	}
 	for _, arg := range c.Args {
 		if strings.ContainsAny(arg, "\r\n;&|$`") {
@@ -197,18 +311,22 @@ func Run(ctx context.Context, c Command) (string, string, error) {
 	if err := c.Validate(); err != nil {
 		return "", "", err
 	}
-	dir, err := os.MkdirTemp("", "envark-cmd-")
-	if err != nil {
-		return "", "", err
+	dir := c.Dir
+	if dir == "" {
+		temp, err := os.MkdirTemp("", "envark-cmd-")
+		if err != nil {
+			return "", "", err
+		}
+		defer os.RemoveAll(temp)
+		dir = temp
 	}
-	defer os.RemoveAll(dir)
 	cmd := exec.CommandContext(ctx, c.Bin, c.Args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err = cmd.Run()
+	err := cmd.Run()
 	return stdout.String(), stderr.String(), err
 }
 
@@ -224,6 +342,23 @@ func executable(bin string, names ...string) error {
 		}
 	}
 	return fmt.Errorf("refusing binary named %s", filepath.Base(bin))
+}
+
+func projectDir(dir string) error {
+	if !filepath.IsAbs(dir) || strings.ContainsAny(dir, "\r\n") {
+		return errors.New("project directory must be absolute")
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("project directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return errors.New("project directory must be a real directory")
+	}
+	if safe.System(dir) {
+		return errors.New("project directory must not be a system location")
+	}
+	return nil
 }
 
 func same(a, b []string) bool {

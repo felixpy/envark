@@ -10,7 +10,7 @@ The interface is English. The app does not scan your home directory until you ad
 
 **Space.** Add a folder and scan it. The outline shows directory names, kind, logical size, allocated size, and risk. Search filters by name. Reclaimable hides everything that is not a recognized project artifact. The detail pane shows the path, why it was classified, and how the largest children share the logical size.
 
-**Environments.** Refresh reads Node.js, Python, Java, Rust, and Go from `PATH`. A row can offer removal only for a non-default toolchain behind an allowlisted command (`fnm uninstall`, `uv python uninstall`, `rustup toolchain uninstall`). Anything else states why it is unavailable. Known cache locations are measured only after you ask. A missing tool stays missing; Envark does not invent an empty cache path.
+**Environments.** Refresh reads Node.js, Python, Java, Rust, and Go from `PATH`. Check available versions asks `fnm` and `uv` and does not install anything. For those two managers, Envark can preview `fnm install`, `fnm default`, `uv python install`, and `uv python pin`. `fnm default` changes the version new shells start with. `uv python pin` writes `.python-version` in a directory you choose. Neither changes `PATH` in a terminal that is already open; the review shows the `fnm use` text to run there yourself. Removal stays limited to a non-default toolchain (`fnm uninstall`, `uv python uninstall`, `rustup toolchain uninstall`). nvm, mise, asdf, volta, sdkman, Homebrew, Go, and Java stay unavailable, with a reason. Known cache locations are measured only after you ask. A missing tool stays missing.
 
 **Review.** Marks and commands collect here with the exact path or the exact argument vector, the risk, and whether Trash can restore the item. Moving files to Trash is the default and still asks for confirmation. Permanent deletion stays disabled until Settings turns it on, and then asks again. Manager commands stay disabled until you acknowledge that Trash cannot restore them, and they do not report a byte count. History lists each item, including failures, and can restore a trashed directory while the trash path still exists.
 
@@ -26,7 +26,7 @@ Envark 0.4.4 installed managers, changed the default runtime, updated packages, 
 
 Still unavailable on purpose:
 
-- Installing or removing fnm, nvm, Bun, uv, pnpm, Yarn, rustup, SDKMAN!, mise, or Ollama, and editing shell profiles.
+- Installing the managers themselves (fnm, nvm, Bun, uv, pnpm, Yarn, rustup, SDKMAN!, mise, Ollama) and editing shell profiles. Version install and default/pin are offered only for fnm and uv, and they do not rewrite the shell that is already open.
 - Corepack, package updates, and online "latest version" checks.
 - Envark's own installer, signed updates, and release publishing.
 - Starting or stopping Ollama, or deleting models.

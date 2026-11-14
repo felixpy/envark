@@ -25,6 +25,8 @@ type Preferences struct {
 	UseTrash       bool     `json:"useTrash"`
 	AllowPermanent bool     `json:"allowPermanent"`
 	ScanOnLaunch   bool     `json:"scanOnLaunch"`
+	Language       string   `json:"language"`
+	ReduceMotion   bool     `json:"reduceMotion"`
 }
 
 // HistoryEntry is one finished or cancelled operation.
@@ -104,7 +106,7 @@ func Open(dir string) (Loaded, error) {
 // DefaultPreferences is a new install: trash on, permanent deletion off,
 // and no scan until the user chooses a folder.
 func DefaultPreferences() Preferences {
-	return Preferences{Theme: "system", UseTrash: true, Excludes: []string{".git", ".svn", ".hg"}}
+	return Preferences{Theme: "system", Language: "system", UseTrash: true, Excludes: []string{".git", ".svn", ".hg"}}
 }
 
 // SavePreferences writes preferences.json without touching settings.json.
@@ -147,6 +149,19 @@ func migrate(dir string, prefs *Preferences) ([]string, error) {
 	next.Protected = append([]string(nil), legacy.ProtectedProjects...)
 	next.UseTrash = legacy.UseTrash
 	next.ScanOnLaunch = legacy.ScanOnLaunch
+	notices := []string{"Imported roots, excludes, protected projects, theme, trash, and scan-on-launch from settings.json. The original file was not modified."}
+	switch legacy.Language {
+	case "", "en":
+		next.Language = "en"
+	case "zh", "zh-CN", "zh-Hans":
+		next.Language = "zh"
+	case "zh-TW", "zh-Hant":
+		next.Language = "zh"
+		notices = append(notices, "Traditional Chinese is not a separate catalog. Simplified Chinese is used.")
+	default:
+		next.Language = "system"
+		notices = append(notices, "The previous language preference was not recognized. The interface follows the operating system.")
+	}
 	if err := SavePreferences(dir, next); err != nil {
 		return nil, err
 	}
@@ -157,10 +172,6 @@ func migrate(dir string, prefs *Preferences) ([]string, error) {
 	}
 	if string(before) != string(after) {
 		return nil, errors.New("migration changed settings.json")
-	}
-	notices := []string{"Imported roots, excludes, protected projects, theme, trash, and scan-on-launch from settings.json. The original file was not modified."}
-	if legacy.Language != "" && legacy.Language != "en" {
-		notices = append(notices, "The previous language preference was left in settings.json. This version's interface is English.")
 	}
 	return notices, nil
 }

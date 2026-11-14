@@ -44,6 +44,7 @@ type Probe struct {
 	Unavailable string
 	Removal     *managers.Command
 	Err         string
+	Scope       string
 }
 
 // Location is a known cache directory or an unavailable command.
@@ -111,7 +112,7 @@ func (e Env) normalized() Env {
 func nodeProbes(ctx context.Context, env Env) []Probe {
 	node, err := env.Look("node")
 	if err != nil {
-		return []Probe{{Ecosystem: "Node.js", Name: "node", Unavailable: "Node.js was not found on PATH.", Err: "not installed"}}
+		return []Probe{{Ecosystem: "Node.js", Name: "node", Scope: "missing", Unavailable: "Node.js was not found on PATH.", Err: "not installed"}}
 	}
 	version, _, runErr := env.Run(ctx, node, "-v")
 	version = firstLine(version)
@@ -143,9 +144,10 @@ func nodeProbes(ctx context.Context, env Env) []Probe {
 	for _, row := range rows {
 		item := Probe{
 			Ecosystem: "Node.js", Name: "node", Version: row.version, Manager: "fnm",
-			Ownership: "manager", Path: node, Active: row.active, Detail: "Listed by fnm.",
+			Ownership: "manager", Path: node, Active: row.active, Scope: "installed", Detail: "Listed by fnm.",
 		}
 		if row.active {
+			item.Scope = "default"
 			item.Unavailable = "This is the active or default Node.js. Envark will not remove it."
 		} else if cmd, err := managers.FnmUninstall(fnm, row.version); err != nil {
 			item.Unavailable = err.Error()
@@ -163,7 +165,7 @@ func pythonProbes(ctx context.Context, env Env) []Probe {
 		bin, err = env.Look("python")
 	}
 	if err != nil {
-		return []Probe{{Ecosystem: "Python", Name: "python", Unavailable: "Python was not found on PATH.", Err: "not installed"}}
+		return []Probe{{Ecosystem: "Python", Name: "python", Scope: "missing", Unavailable: "Python was not found on PATH.", Err: "not installed"}}
 	}
 	version, _, runErr := env.Run(ctx, bin, "--version")
 	manager, ownership := classifyPath(bin, env.Home)
@@ -191,8 +193,9 @@ func pythonProbes(ctx context.Context, env Env) []Probe {
 	}
 	var out []Probe
 	for _, row := range rows {
-		item := Probe{Ecosystem: "Python", Name: "python", Version: row.version, Manager: "uv", Ownership: "manager", Path: bin, Active: row.active, Detail: "Listed by uv."}
+		item := Probe{Ecosystem: "Python", Name: "python", Version: row.version, Manager: "uv", Ownership: "manager", Path: bin, Active: row.active, Scope: "installed", Detail: "Listed by uv."}
 		if row.active {
+			item.Scope = "default"
 			item.Unavailable = "This is the active or default Python. Envark will not remove it."
 		} else if cmd, err := managers.UvPythonUninstall(uv, row.version); err != nil {
 			item.Unavailable = err.Error()
@@ -541,6 +544,191 @@ func quotedVersion(s string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+// CatalogItem is one version a supported manager can install, remove, or
+// mark as the default. Unsupported managers are absent from this list.
+type CatalogItem struct {
+	Ecosystem   string
+	Manager     string
+	Version     string
+	Scope       string
+	Install     *managers.Command
+	Removal     *managers.Command
+	MakeDefault *managers.Command
+	Hint        string
+}
+
+// Remote asks fnm and uv which versions exist. It does not install them.
+// A missing manager is reported in notes. Cancellation returns no catalog.
+func Remote(ctx context.Context, env Env) ([]CatalogItem, []string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	env = env.normalized()
+	var items []CatalogItem
+	var notes []string
+	fnmItems, fnmNote, fnmErr := fnmRemote(ctx, env)
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	uvItems, uvNote, uvErr := uvRemote(ctx, env)
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	if fnmNote != "" {
+		notes = append(notes, fnmNote)
+	}
+	if uvNote != "" {
+		notes = append(notes, uvNote)
+	}
+	items = append(items, fnmItems...)
+	items = append(items, uvItems...)
+	if len(items) == 0 && fnmErr != nil && uvErr != nil {
+		return nil, notes, errors.New("fnm and uv were not found. Envark will not invent versions.")
+	}
+	return items, notes, nil
+}
+
+func fnmRemote(ctx context.Context, env Env) ([]CatalogItem, string, error) {
+	bin, err := env.Look("fnm")
+	if err != nil {
+		return nil, "fnm was not found. Node.js versions are not listed.", err
+	}
+	installedText, _, listErr := env.Run(ctx, bin, "list")
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
+	if listErr != nil {
+		return nil, "fnm list failed, so Node.js versions are not listed.", listErr
+	}
+	remoteText, _, remoteErr := env.Run(ctx, bin, "list-remote")
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
+	if remoteErr != nil {
+		return nil, "fnm list-remote failed, so available Node.js versions are not listed.", remoteErr
+	}
+	installed := map[string]versionRow{}
+	for _, row := range parseVersionLines(installedText, true) {
+		installed[row.version] = row
+	}
+	var items []CatalogItem
+	for _, row := range parseVersionLines(installedText, true) {
+		items = append(items, nodeCatalog(bin, row.version, row.active, true))
+	}
+	added := 0
+	for _, row := range parseVersionLines(remoteText, true) {
+		if _, ok := installed[row.version]; ok {
+			continue
+		}
+		items = append(items, nodeCatalog(bin, row.version, false, false))
+		added++
+		if added == 12 {
+			break
+		}
+	}
+	note := ""
+	if added == 12 {
+		note = "Showing the newest Node.js versions fnm list-remote returned. The full list is longer."
+	}
+	return items, note, nil
+}
+
+func nodeCatalog(bin, version string, active, present bool) CatalogItem {
+	item := CatalogItem{Ecosystem: "Node.js", Manager: "fnm", Version: version, Scope: "available"}
+	if present {
+		item.Scope = "installed"
+		if active {
+			item.Scope = "default"
+			item.Hint = "This is already fnm's default. Envark will not remove it or set it again."
+			return item
+		}
+		if cmd, err := managers.FnmUninstall(bin, version); err == nil {
+			item.Removal = &cmd
+		}
+		if cmd, err := managers.FnmDefault(bin, version); err == nil {
+			item.MakeDefault = &cmd
+		}
+		return item
+	}
+	if cmd, err := managers.FnmInstall(bin, version); err == nil {
+		item.Install = &cmd
+		item.Hint = cmd.Hint
+	}
+	return item
+}
+
+func uvRemote(ctx context.Context, env Env) ([]CatalogItem, string, error) {
+	bin, err := env.Look("uv")
+	if err != nil {
+		return nil, "uv was not found. Python versions are not listed.", err
+	}
+	text, _, runErr := env.Run(ctx, bin, "python", "list")
+	if ctx.Err() != nil {
+		return nil, "", ctx.Err()
+	}
+	if runErr != nil {
+		return nil, "uv python list failed, so Python versions are not listed.", runErr
+	}
+	var items []CatalogItem
+	available := 0
+	for _, line := range strings.Split(text, "\n") {
+		row, ok := parseUVLine(line)
+		if !ok {
+			continue
+		}
+		item := CatalogItem{Ecosystem: "Python", Manager: "uv", Version: row.version, Scope: "available"}
+		if row.present {
+			item.Scope = "installed"
+			if row.active {
+				item.Scope = "default"
+				item.Hint = "This is already uv's default. Envark will not remove it."
+			} else if cmd, err := managers.UvPythonUninstall(bin, row.version); err == nil {
+				item.Removal = &cmd
+			}
+			items = append(items, item)
+			continue
+		}
+		if available == 12 {
+			continue
+		}
+		if cmd, err := managers.UvPythonInstall(bin, row.version); err == nil {
+			item.Install = &cmd
+			item.Hint = cmd.Hint
+		}
+		items = append(items, item)
+		available++
+	}
+	note := ""
+	if available == 12 {
+		note = "Showing 12 Python versions uv can download. The full list is longer."
+	}
+	return items, note, nil
+}
+
+type uvRow struct {
+	version string
+	active  bool
+	present bool
+}
+
+func parseUVLine(line string) (uvRow, bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return uvRow{}, false
+	}
+	version := pyVersionPattern.FindString(fields[0])
+	if version == "" {
+		return uvRow{}, false
+	}
+	lower := strings.ToLower(line)
+	present := !strings.Contains(lower, "download available")
+	if !present {
+		return uvRow{version: version}, true
+	}
+	active := strings.Contains(lower, "default") || strings.Contains(lower, "active")
+	return uvRow{version: version, active: active, present: true}, true
 }
 
 // Look finds name on pathEnv. It rejects names that are paths.

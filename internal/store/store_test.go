@@ -29,8 +29,11 @@ func TestMigrationPreservesSettingsJSON(t *testing.T) {
 	if len(loaded.Prefs.Protected) != 1 || loaded.Prefs.Theme != "dark" || !loaded.Prefs.UseTrash || loaded.Prefs.ScanOnLaunch {
 		t.Fatalf("prefs: %+v", loaded.Prefs)
 	}
-	if len(loaded.Notices) == 0 {
-		t.Fatal("expected a migration notice")
+	if loaded.Prefs.Language != "zh" {
+		t.Fatalf("language: %+v", loaded.Prefs)
+	}
+	if len(loaded.Notices) < 2 {
+		t.Fatal("expected the traditional-chinese notice")
 	}
 	again, err := Open(dir)
 	if err != nil {
