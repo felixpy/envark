@@ -2,9 +2,8 @@
 
 - Keep source code, comments, identifiers, commit messages, and technical documentation in English.
 - Follow Conventional Commits and the guidance in CONTRIBUTING.md. Keep each commit focused on one logical change with its relevant tests; separate unrelated fixes, refactors, and formatting.
-- Preserve the Figma Make design while replacing prototype data and simulated actions with real desktop services.
-- Keep provider integrations independent from the interface. New providers should declare capabilities rather than require new page structures.
-- Perform filesystem traversal and process execution in the Rust core, away from the UI thread.
+- Keep provider integrations independent from the interface. A new provider is a probe or a known location with an explicit unavailable reason, not a new page.
+- Perform filesystem traversal and process execution off the UI thread.
 - Bound parallel work, support cancellation, and report partial failures without inventing successful results.
 - Use argument arrays for subprocesses. Never interpolate user input into shell commands.
 - Resolve installation ownership before changing an environment or tool.

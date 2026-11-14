@@ -1,4 +1,4 @@
-name: Build desktop applications
+name: Build
 
 on:
   push:
@@ -10,11 +10,54 @@ permissions:
   contents: read
 
 concurrency:
-  group: desktop-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  desktop:
-    uses: ./.github/workflows/desktop.yml
-    with:
-      ref: ${{ github.sha }}
+  linux:
+    name: Test and build on Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: GTK 3
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -o /tmp/envark .
+      - name: Commit subjects
+        if: github.event_name == 'pull_request'
+        run: |
+          set -eu
+          git log --format=%s "origin/${{ github.base_ref }}..HEAD" | while read -r subject; do
+            [ -z "$subject" ] && continue
+            printf '%s\n' "$subject" | grep -Eq '^(feat|fix|docs|chore|test|ci|refactor|perf|build|revert)(\([^)]+\))?(!)?: .+' \
+              || { echo "commit subject is not a conventional commit: $subject"; exit 1; }
+          done
+
+  compile:
+    name: Compile for ${{ matrix.goos }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          CGO_ENABLED: "0"
+        run: go build -o /tmp/envark .

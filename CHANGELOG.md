@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+
+Unreleased rewrite. Envark is a Go and MyGo application. The entries below describe the Tauri, Rust, and React releases through 0.4.4. See the README for the behavior this version drops, including the updater and installer publishing.
+
 ## [0.4.4](https://github.com/felixpy/envark/compare/v0.4.3...v0.4.4) (2026-10-18)
 
 

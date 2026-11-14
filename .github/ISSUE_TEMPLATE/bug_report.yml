@@ -6,7 +6,7 @@ body:
     id: version
     attributes:
       label: Envark version
-      placeholder: e.g. 0.2.1
+      placeholder: e.g. 0.5.0
     validations:
       required: true
   - type: dropdown
