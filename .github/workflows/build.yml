@@ -36,9 +36,14 @@ jobs:
         run: go build -o /tmp/envark .
       - name: Commit subjects
         if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
-          git log --format=%s "origin/${{ github.base_ref }}..HEAD" | while read -r subject; do
+          # Lint the pull request's own commits. GitHub checks out a synthetic
+          # merge commit whose subject is not one of those commits.
+          git log --format=%s "$BASE..$HEAD" | while read -r subject; do
             [ -z "$subject" ] && continue
             printf '%s\n' "$subject" | grep -Eq '^(feat|fix|docs|chore|test|ci|refactor|perf|build|revert)(\([^)]+\))?(!)?: .+' \
               || { echo "commit subject is not a conventional commit: $subject"; exit 1; }
