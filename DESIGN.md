@@ -141,25 +141,37 @@ restore when Envark still knows the trashed path.
 
 ## Space map
 
-The scanned directory is a squarified treemap. Cell area is logical size.
-Empty entries stay in the list so a zero-byte directory is not drawn as if
-it had size. At most 12 cells are drawn; the rest is one remainder cell
-labeled with its count and its real byte total. Click selects the same
+The scanned directory is a squarified treemap and it is the main view.
+Cell area is logical size. A directory shifts from stone toward clay as
+more of its bytes are reclaimable; files stay sage. That color is the
+data, not a second theme. Empty entries stay in the list so a zero-byte
+directory is not drawn as if it had size. At most 12 cells are drawn; the
+rest is one remainder cell labeled with its count and its real byte total.
+A bar above the map shows the breadcrumb, the selected path, its logical
+size, and whether any of that size is reclaimable, plus Up, Open, and the
+mark action when the selection is a cleanup target. Click selects the same
 path as the outline. Double-click or Open drills into a directory.
 Breadcrumbs and Up move back. A short zoom plays on that change and
-finishes; Reduce motion holds the final frame. The outline and the
-inspector stay, because small cells cannot carry a readable label.
+finishes; Reduce motion holds the final frame. On a wide window the
+outline scrolls beside the map and shows the name and logical size. On a
+narrow window the page scrolls, so the list is not clipped under the map,
+and that outline keeps the name, logical size, and risk. Kind and allocated
+size stay in the detail panel. Small cells stay unlabeled; the list and
+the inspector carry their names.
 
 The cell shader colors the pixel of the cell that contains it, plus a
 selection edge, an incomplete hatch, and a scan band only while a scan is
 running on a GPU renderer. It does not cover the window with a gradient.
 Where `Painter.Accelerated` is false and the map is larger than about
-24,000 DIPs squared, the same rectangles are filled on the CPU. A 220×88
-sample in Settings always runs the shader, including MyGo's CPU
-interpreter, so the shader path is exercised without pretending the main
-map was drawn by a GPU. Scope marks beside environment rows use a second
-shader. Their size is fixed. They encode missing, installed, or default,
-not disk usage.
+24,000 DIPs squared, the same rectangles are filled on the CPU. Renderer
+diagnostics and a 220×88 shader sample stay on Settings. The sample always
+runs the shader, including MyGo's CPU interpreter, so the shader path is
+exercised without pretending the main map was drawn by a GPU.
+
+Environments uses the same graphite surface. Each runtime is a card with
+its version, scope, and manager. The long reason wraps in the panel under
+the selected card. fnm and uv actions stay on the card. The page says once
+that those commands do not change the open terminal.
 
 MyGo draws a frame only when something changes. The scan band calls
 `AnimationFrameRate(30)` only while a scan is running, the GPU renderer is

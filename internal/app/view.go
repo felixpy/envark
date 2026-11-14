@@ -9,7 +9,6 @@ import (
 	"github.com/felixpy/envark/internal/classify"
 	"github.com/felixpy/envark/internal/human"
 	"github.com/felixpy/envark/internal/i18n"
-	"github.com/felixpy/envark/internal/scan"
 )
 
 func (a *App) t(s string) string { return i18n.T(a.Lang, s) }
@@ -28,6 +27,7 @@ func (a *App) tone(c *ui.Context, selected bool, text string, normal ui.Color) u
 
 // View builds one frame of the window.
 func (a *App) View(c *ui.Context) {
+	a.applyChrome(c)
 	a.shortcuts(c)
 	a.paintVisible()
 	theme := c.Theme()
@@ -154,10 +154,10 @@ func (a *App) topnav(c *ui.Context) {
 func (a *App) banners(c *ui.Context) {
 	theme := c.Theme()
 	for _, notice := range a.Notices {
-		banner(c, notice, theme.Surface, theme.Text)
+		banner(c, a.t(notice), theme.Surface, theme.Text)
 	}
 	if a.Notice != "" {
-		banner(c, a.Notice, theme.Surface, theme.Text)
+		banner(c, a.t(a.Notice), theme.Surface, theme.Text)
 	}
 }
 
@@ -178,8 +178,7 @@ func heading(c *ui.Context, title, sub string) {
 }
 
 func (a *App) space(c *ui.Context, width float32) {
-	heading(c, a.t("Space"), a.t("File lengths and allocated blocks, for the folder you chose."))
-	a.spaceToolbar(c, width)
+	a.spaceChrome(c, width)
 	if a.Tree == nil && !a.Scanning {
 		a.emptySpace(c)
 		return
@@ -189,23 +188,42 @@ func (a *App) space(c *ui.Context, width float32) {
 	}
 	a.followSelection()
 	if width < 980 {
-		ui.Column(c).Grow(1).Gap(12).Children(func() {
-			a.field(c)
-			a.detail(c)
-			a.tree(c, width)
+		ui.Scroll(c).Grow(1).Children(func() {
+			ui.Column(c).Gap(10).MaxWidth(contentWidth(c)).Children(func() {
+				a.contextBar(c)
+				a.field(c, 380)
+				a.detail(c)
+				a.tree(c, width, 320)
+			})
 		})
 		return
 	}
-	ui.Row(c).Grow(1).Gap(12).AlignItems(ui.Stretch).Children(func() {
-		ui.Column(c).Grow(1).Gap(8).Children(func() {
-			a.field(c)
-			a.tree(c, width)
+	ui.Column(c).Grow(1).Gap(10).Children(func() {
+		a.contextBar(c)
+		ui.Row(c).Grow(1).Gap(12).AlignItems(ui.Stretch).Children(func() {
+			a.field(c, 420)
+			ui.Column(c).Width(320).Gap(8).Children(func() {
+				a.detail(c)
+				a.tree(c, width, 0)
+			})
 		})
-		ui.Column(c).Width(300).Children(func() { a.detail(c) })
 	})
 }
 
-func (a *App) spaceToolbar(c *ui.Context, width float32) {
+func (a *App) spaceChrome(c *ui.Context, width float32) {
+	ui.Row(c).Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
+		ui.Text(c, a.t("Space")).FontSize(20).FontWeight(650)
+		if width >= 1100 {
+			ui.Spacer(c).Grow(1)
+		}
+		a.spaceActions(c, width)
+	})
+	if a.Scanning {
+		ui.Text(c, a.t("Scanning.")+" "+a.Progress).FontSize(12).TextColor(c.Theme().TextMuted)
+	}
+}
+
+func (a *App) spaceActions(c *ui.Context, width float32) {
 	actions := func() {
 		min := float32(220)
 		if width < 1100 {
@@ -230,19 +248,15 @@ func (a *App) spaceToolbar(c *ui.Context, width float32) {
 	}
 	if width < 1100 {
 		ui.Column(c).Gap(8).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(actions)
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(filters)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(actions)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(filters)
 		})
-	} else {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			actions()
-			ui.Spacer(c).Grow(1)
-			filters()
-		})
+		return
 	}
-	if a.Scanning {
-		ui.Text(c, "Scanning. "+a.Progress).FontSize(13).TextColor(c.Theme().TextMuted)
-	}
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		actions()
+		filters()
+	})
 }
 
 func (a *App) emptySpace(c *ui.Context) {
@@ -267,17 +281,72 @@ func (a *App) partialText() string {
 	return msg
 }
 
-func (a *App) tree(c *ui.Context, width float32) {
-	kind, logical, allocated, risk := float32(210), float32(100), float32(110), float32(90)
-	if width < 1100 {
-		kind, logical, allocated, risk = 150, 84, 92, 72
+func (a *App) contextBar(c *ui.Context) {
+	node := a.mapNode()
+	if node == nil {
+		return
 	}
-	cols := []ui.TableColumn{
-		{Title: a.t("Name")},
-		{Title: a.t("Kind"), Width: kind},
-		{Title: a.t("Logical"), Width: logical, Align: ui.End},
-		{Title: a.t("Allocated"), Width: allocated, Align: ui.End},
-		{Title: a.t("Risk"), Width: risk},
+	theme := c.Theme()
+	sel := a.index[a.Selected]
+	if sel == nil {
+		sel = node
+	}
+	ui.Column(c).Padding(10, 12).Gap(8).Radius(10).Background(theme.Surface).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Wrap().Children(func() {
+			a.crumbs(c, node)
+			ui.Spacer(c).Grow(1)
+			if ui.Button(c, a.t("Up")).Disabled(a.Tree == nil || node.Path == a.Tree.Path).Clicked() {
+				a.mapUp()
+			}
+			if ui.Button(c, a.t("Open")).Disabled(!a.canDrill(a.Selected)).Clicked() {
+				a.drill(a.Selected)
+			}
+			if sel.Class.Eligible {
+				label := a.t("Mark for review")
+				if a.Marks[sel.Path] {
+					label = a.t("Remove mark")
+				}
+				if ui.PrimaryButton(c, label).Clicked() {
+					a.toggle(sel.Path)
+				}
+			}
+		})
+		ui.Row(c).Gap(10).AlignItems(ui.Center).Wrap().Children(func() {
+			ui.Text(c, sel.Name).FontSize(16).FontWeight(640)
+			ui.Text(c, human.Bytes(sel.Logical)+" "+a.t("logical")).Font("monospace").FontSize(13)
+			label, warm := a.reclaimLabel(sel)
+			color := theme.TextMuted
+			if warm {
+				color = ui.Hex("#6a3d16")
+			}
+			ui.Text(c, label).FontSize(13).TextColor(color)
+			if a.MapHover != "" && a.MapHover != sel.Path {
+				if hover := a.index[a.MapHover]; hover != nil {
+					ui.Text(c, hover.Name+"  "+human.Bytes(hover.Logical)).FontSize(12).TextColor(theme.TextMuted)
+				}
+			}
+		})
+	})
+}
+
+func (a *App) tree(c *ui.Context, width, height float32) {
+	rail := height <= 0
+	// The side rail and the narrow page keep the columns that fit.
+	// Kind and allocated size stay in the detail panel, so a 720px
+	// window does not ellipsize "Allocated" or a long classification.
+	compact := !rail && width < 980
+	kind, logical, allocated, risk := float32(120), float32(96), float32(104), float32(72)
+	cols := []ui.TableColumn{{Title: a.t("Name")}, {Title: a.t("Logical"), Width: logical, Align: ui.End}}
+	if compact {
+		cols = append(cols, ui.TableColumn{Title: a.t("Risk"), Width: risk})
+	} else if !rail {
+		cols = []ui.TableColumn{
+			{Title: a.t("Name")},
+			{Title: a.t("Kind"), Width: kind},
+			{Title: a.t("Logical"), Width: logical, Align: ui.End},
+			{Title: a.t("Allocated"), Width: allocated, Align: ui.End},
+			{Title: a.t("Risk"), Width: risk},
+		}
 	}
 	roots := []string{}
 	if a.Tree != nil && a.visible[a.Tree.Path] {
@@ -288,12 +357,18 @@ func (a *App) tree(c *ui.Context, width float32) {
 		return
 	}
 	a.outline.List.Selected = &a.row
-	ui.OutlineTable(c, &a.outline, cols, roots, a.children, func(path string, col int) {
+	table := ui.OutlineTable(c, &a.outline, cols, roots, a.children, func(path string, col int) {
 		n := a.index[path]
 		if n == nil {
 			return
 		}
 		selected := a.pathSelected(path)
+		logicalCol, kindCol, allocatedCol, riskCol := 1, -1, -1, -1
+		if compact {
+			riskCol = 2
+		} else if !rail {
+			kindCol, logicalCol, allocatedCol, riskCol = 1, 2, 3, 4
+		}
 		switch col {
 		case 0:
 			if n.Class.Eligible {
@@ -308,20 +383,27 @@ func (a *App) tree(c *ui.Context, width float32) {
 			} else {
 				ui.Text(c, n.Name).SingleLine()
 			}
-		case 1:
-			a.tone(c, selected, a.t(n.Class.Title), c.Theme().TextMuted)
-		case 2:
+		case logicalCol:
 			ui.Text(c, human.Bytes(n.Logical)).Font("monospace")
-		case 3:
-			label := human.Bytes(n.Allocated)
-			if a.Result != nil && !a.Result.AllocExact {
-				label = "n/a"
+		default:
+			if col == kindCol {
+				a.tone(c, selected, a.t(n.Class.Title), c.Theme().TextMuted)
+			} else if col == allocatedCol {
+				label := human.Bytes(n.Allocated)
+				if a.Result != nil && !a.Result.AllocExact {
+					label = "n/a"
+				}
+				a.tone(c, selected, label, c.Theme().TextMuted)
+			} else if col == riskCol {
+				a.tone(c, selected, a.t(classify.TitleRisk(n.Class.Risk)), riskColor(c.Theme(), n.Class.Risk))
 			}
-			a.tone(c, selected, label, c.Theme().TextMuted)
-		case 4:
-			a.tone(c, selected, a.t(classify.TitleRisk(n.Class.Risk)), riskColor(c.Theme(), n.Class.Risk))
 		}
-	}).Height(220)
+	})
+	if height <= 0 {
+		table.Grow(1).MinHeight(180)
+	} else {
+		table.Height(height)
+	}
 	if a.outline.Rows() > 0 {
 		if a.wantPath != "" {
 			for i := 0; i < a.outline.Rows(); i++ {
@@ -339,13 +421,13 @@ func (a *App) tree(c *ui.Context, width float32) {
 			a.Selected = item
 		}
 	}
-	if a.Result != nil {
-		note := fmt.Sprintf("%s logical · %s allocated · %d files. Hard links count once. Symlinks are not followed. Other volumes are not entered.", human.Bytes(a.Tree.Logical), human.Bytes(a.Tree.Allocated), a.Tree.Files)
+	if a.Result != nil && a.Tree != nil {
+		note := a.t("Hard links once. Links are not followed.")
 		if !a.Result.AllocExact {
-			note += " · allocated size is not reported separately on this system"
+			note += " " + a.t("Allocated size is not separate on this system.")
 		}
 		if a.Result.Excluded > 0 {
-			note += fmt.Sprintf(" · %d excluded directories omitted", a.Result.Excluded)
+			note += fmt.Sprintf(" %d excluded.", a.Result.Excluded)
 		}
 		ui.Text(c, note).FontSize(12).TextColor(c.Theme().TextMuted)
 	}
@@ -354,77 +436,37 @@ func (a *App) tree(c *ui.Context, width float32) {
 func (a *App) detail(c *ui.Context) {
 	theme := c.Theme()
 	n := a.index[a.Selected]
-	ui.Column(c).Padding(4, 8).Gap(8).Children(func() {
-		ui.Text(c, a.t("Details")).FontSize(13).FontWeight(620)
+	ui.Column(c).Padding(12).Gap(6).Radius(10).Background(theme.Surface).MaxWidth(contentWidth(c)).Children(func() {
+		ui.Text(c, a.t("Details")).FontSize(11).FontWeight(620).TextColor(theme.TextMuted)
 		if n == nil {
 			ui.Text(c, a.t("Select a row.")).TextColor(theme.TextMuted)
 			return
 		}
-		ui.Text(c, n.Name).FontSize(16).FontWeight(620)
-		ui.Text(c, n.Path).Font("monospace").FontSize(12)
-		ui.Text(c, a.t(n.Class.Reason)).FontSize(13).TextColor(theme.TextMuted)
-		ui.Textf(c, "Logical %s · Allocated %s · %d files", human.Bytes(n.Logical), human.Bytes(n.Allocated), n.Files).FontSize(12)
+		ui.Text(c, n.Name).FontSize(15).FontWeight(640)
+		ui.Text(c, n.Path).Font("monospace").FontSize(12).TextColor(theme.TextMuted)
+		ui.Text(c, fmt.Sprintf("%s %s · %s %s · %s", a.t("Logical"), human.Bytes(n.Logical), a.t("Allocated"), human.Bytes(n.Allocated), fmt.Sprintf(a.t("%d files"), n.Files))).FontSize(12)
+		label, warm := a.reclaimLabel(n)
+		color := theme.TextMuted
+		if warm {
+			color = ui.Hex("#6a3d16")
+		}
+		ui.Text(c, label).FontSize(13).TextColor(color)
+		if reason := a.t(n.Class.Reason); reason != "" {
+			ui.Text(c, reason).FontSize(13)
+		}
 		if n.SmallFiles > 0 {
-			ui.Textf(c, "%d smaller files are included in the size and are not listed on their own.", n.SmallFiles).FontSize(12).TextColor(theme.TextMuted)
+			ui.Text(c, fmt.Sprintf(a.t("%d smaller files are included in the size and are not listed on their own."), n.SmallFiles)).FontSize(12).TextColor(theme.TextMuted)
 		}
 		if !n.Complete {
 			ui.Text(c, a.t("This subtree is incomplete.")).FontSize(12).TextColor(theme.Warning)
 		}
-		if n.Class.Eligible {
-			label := a.t("Mark for review")
-			if a.Marks[n.Path] {
-				label = a.t("Remove mark")
-			}
-			if ui.Button(c, label).Clicked() {
-				a.toggle(n.Path)
-			}
-		}
-		a.proportion(c, n)
 	})
 }
 
-func (a *App) proportion(c *ui.Context, n *scan.Entry) {
-	if n == nil || !n.Dir || n.Logical == 0 || len(n.Children) == 0 {
-		return
-	}
-	theme := c.Theme()
-	ui.Text(c, a.t("Largest first, by logical size")).FontSize(12).FontWeight(600)
-	shown := n.Children
-	if len(shown) > 8 {
-		shown = shown[:8]
-	}
-	largest := shown[0].Logical
-	for _, child := range shown[1:] {
-		if child.Logical > largest {
-			largest = child.Logical
-		}
-	}
-	if largest == 0 {
-		largest = 1
-	}
-	for _, child := range shown {
-		width := 4
-		if child.Logical > 0 {
-			width = int(child.Logical * 220 / largest)
-			if width < 4 {
-				width = 4
-			}
-		}
-		color := theme.Accent
-		if child.Class.Eligible {
-			color = theme.Warning
-		}
-		kind := child.Class.Title
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Box(c).Width(float32(width)).Height(10).Radius(2).Background(color)
-			ui.Textf(c, "%s  %s  %s", child.Name, human.Bytes(child.Logical), kind).FontSize(12).SingleLine()
-		})
-	}
-}
-
 func (a *App) environments(c *ui.Context) {
-	heading(c, a.t("Environments"), a.t("Installed versions, and the manager that owns them. Install and default changes are offered for fnm and uv only."))
-	ui.Row(c).Gap(8).Children(func() {
+	theme := c.Theme()
+	heading(c, a.t("Environments"), a.t("fnm and uv only. This does not change the open terminal."))
+	ui.Row(c).Gap(8).Wrap().Children(func() {
 		if ui.PrimaryButton(c, a.t("Refresh")).Disabled(a.EnvRunning).Clicked() {
 			a.startDiscover()
 		}
@@ -438,137 +480,141 @@ func (a *App) environments(c *ui.Context) {
 			a.measureLocations()
 		}
 	})
-	ui.Text(c, a.t("Envark runs the manager in a separate process. That does not change the terminal that is already open.")).FontSize(12).TextColor(c.Theme().TextMuted)
-	ui.Text(c, a.t("Only fnm and uv can install or change a default here. nvm, mise, asdf, volta, sdkman, Homebrew, rustup, Go, and Java stay unsupported.")).FontSize(12).TextColor(c.Theme().TextMuted)
 	if a.EnvRunning {
-		ui.Text(c, a.t("Working…")).TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("Working…")).TextColor(theme.TextMuted)
 	}
 	if a.EnvErr != "" {
-		ui.Text(c, a.t(a.EnvErr)).TextColor(c.Theme().Danger)
+		ui.Text(c, a.t(a.EnvErr)).TextColor(theme.Danger)
 	}
+	ui.Text(c, a.t("Installed")).FontSize(13).FontWeight(640)
 	if len(a.Probes) == 0 {
-		ui.Text(c, a.t("No probe yet. Refresh reads the versions on this PATH.")).TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("No probe yet. Refresh reads the versions on this PATH.")).TextColor(theme.TextMuted)
 	} else {
-		a.scopeRail(c)
-		a.probeTable(c)
+		if a.envRow < 0 || a.envRow >= len(a.Probes) {
+			a.envRow = 0
+		}
+		ui.Row(c).Gap(8).Wrap().Children(func() {
+			for i := range a.Probes {
+				a.runtimeCard(c, i)
+			}
+		})
+		a.runtimeDetail(c, a.envRow)
 	}
 	a.catalog(c)
-	ui.Text(c, a.t("Known locations")).FontSize(16).FontWeight(620)
+	ui.Text(c, a.t("Known locations")).FontSize(13).FontWeight(640)
 	if len(a.Locations) == 0 {
-		ui.Text(c, a.t("Refresh also looks up cache locations. A missing tool stays missing; it is not shown as an empty cache.")).TextColor(c.Theme().TextMuted)
+		ui.Text(c, a.t("Refresh also looks up cache locations. A missing tool stays missing; it is not shown as an empty cache.")).TextColor(theme.TextMuted)
 		return
 	}
 	a.locationTable(c)
 }
 
-func (a *App) probeTable(c *ui.Context) {
-	cols := []ui.TableColumn{
-		{Title: a.t("Ecosystem"), Width: 100},
-		{Title: a.t("Version"), Width: 130},
-		{Title: a.t("Scope"), Width: 90},
-		{Title: a.t("Manager"), Width: 90},
-		{Title: a.t("Action")},
+func (a *App) runtimeCard(c *ui.Context, i int) {
+	probe := a.Probes[i]
+	theme := c.Theme()
+	selected := i == a.envRow
+	border := theme.Border
+	width := float32(1)
+	if selected {
+		border = theme.Accent
+		width = 2
 	}
-	a.envList.Selected = &a.envRow
-	ui.Table(c, &a.envList, cols, len(a.Probes), func(row, col int) {
-		probe := a.Probes[row]
-		selected := row == a.envRow
-		switch col {
-		case 0:
-			ui.Text(c, probe.Ecosystem).SingleLine()
-		case 1:
-			text := probe.Version
-			if text == "" {
-				text = "—"
+	version := probe.Version
+	if version == "" {
+		version = "—"
+	}
+	card := ui.Column(c.Key("runtime:"+probe.Ecosystem+probe.Version+probe.Manager)).MinWidth(210).Grow(1).MaxWidth(360).Padding(12).Gap(4).Radius(10).Background(theme.Surface).Border(width, border).Focusable()
+	card.Children(func() {
+		ui.Text(c, probe.Ecosystem).FontSize(12).TextColor(theme.TextMuted)
+		ui.Text(c, version).Font("monospace").FontSize(18).FontWeight(640)
+		ui.Text(c, a.t(emptyDash(probe.Scope))+" · "+emptyDash(probe.Manager)).FontSize(12)
+		if probe.Removal != nil {
+			if ui.Button(c.Key("probe:"+probe.Ecosystem+probe.Version), a.t("Review removal")).Clicked() {
+				a.envRow = i
+				a.addProbe(probe)
 			}
-			ui.Text(c, text).Font("monospace").SingleLine()
-		case 2:
-			a.tone(c, selected, a.t(emptyDash(probe.Scope)), c.Theme().TextMuted)
-		case 3:
-			ui.Text(c, emptyDash(probe.Manager)).SingleLine()
-		case 4:
-			if probe.Removal != nil {
-				if ui.Button(c.Key("probe:"+probe.Ecosystem+probe.Version), a.t("Review removal")).Clicked() {
-					a.addProbe(probe)
-				}
-				return
-			}
-			a.tone(c, selected, a.t(probe.Unavailable), c.Theme().TextMuted)
+			return
 		}
-	}).Height(float32(56 + len(a.Probes)*42))
-	if len(a.Probes) > 0 {
-		if a.envRow < 0 || a.envRow >= len(a.Probes) {
-			a.envRow = 0
-		}
-		probe := a.Probes[a.envRow]
-		ui.Text(c, probe.Path).Font("monospace").FontSize(12)
-		if probe.Err != "" {
-			ui.Text(c, probe.Err).FontSize(12).TextColor(c.Theme().Danger)
-		}
-		if probe.Detail != "" {
-			ui.Text(c, probe.Detail).FontSize(12).TextColor(c.Theme().TextMuted)
-		}
+		ui.Text(c, a.t("Kept")).FontSize(12).TextColor(theme.TextMuted)
+	})
+	if card.Clicked() || card.Focused() {
+		a.envRow = i
 	}
 }
 
+func (a *App) runtimeDetail(c *ui.Context, i int) {
+	if i < 0 || i >= len(a.Probes) {
+		return
+	}
+	probe := a.Probes[i]
+	theme := c.Theme()
+	ui.Column(c).Padding(12).Gap(6).Radius(10).Background(theme.Surface).MaxWidth(contentWidth(c)).Children(func() {
+		ui.Text(c, probe.Ecosystem+" "+emptyDash(probe.Version)).FontSize(14).FontWeight(620)
+		if probe.Path != "" {
+			ui.Text(c, probe.Path).Font("monospace").FontSize(12).TextColor(theme.TextMuted)
+		}
+		if probe.Unavailable != "" {
+			ui.Text(c, a.t(probe.Unavailable)).FontSize(13)
+		}
+		if probe.Err != "" {
+			ui.Text(c, probe.Err).FontSize(12).TextColor(theme.Danger)
+		}
+		if probe.Detail != "" {
+			ui.Text(c, a.t(probe.Detail)).FontSize(12).TextColor(theme.TextMuted)
+		}
+	})
+}
+
 func (a *App) catalog(c *ui.Context) {
-	ui.Text(c, a.t("Available versions")).FontSize(16).FontWeight(620)
-	ui.Text(c, a.t("Check available versions asks fnm and uv. It does not install anything.")).FontSize(12).TextColor(c.Theme().TextMuted)
+	theme := c.Theme()
+	ui.Text(c, a.t("Available versions")).FontSize(13).FontWeight(640)
+	ui.Text(c, a.t("Lists versions. It does not install.")).FontSize(12).TextColor(theme.TextMuted)
 	for _, note := range a.CatalogNotes {
 		ui.Text(c, a.t(note)).FontSize(12)
 	}
 	if len(a.Catalog) == 0 {
-		a.pinForm(c)
-		return
+		ui.Text(c, a.t("Nothing listed yet.")).FontSize(12).TextColor(theme.TextMuted)
+	} else {
+		ui.Row(c).Gap(8).Wrap().Children(func() {
+			for i := range a.Catalog {
+				a.versionCard(c, i)
+			}
+		})
 	}
-	cols := []ui.TableColumn{
-		{Title: a.t("Ecosystem"), Width: 100},
-		{Title: a.t("Version"), Width: 120},
-		{Title: a.t("Scope"), Width: 90},
-		{Title: a.t("Manager"), Width: 80},
-		{Title: a.t("Action")},
-	}
-	a.catList.Selected = &a.catRow
-	ui.Table(c, &a.catList, cols, len(a.Catalog), func(row, col int) {
-		item := a.Catalog[row]
-		selected := row == a.catRow
-		switch col {
-		case 0:
-			ui.Text(c, item.Ecosystem).SingleLine()
-		case 1:
-			ui.Text(c, item.Version).Font("monospace").SingleLine()
-		case 2:
-			a.tone(c, selected, a.t(item.Scope), c.Theme().TextMuted)
-		case 3:
-			ui.Text(c, item.Manager).SingleLine()
-		case 4:
-			acted := false
-			if item.Install != nil && ui.Button(c.Key("inst:"+item.Manager+item.Version), a.t("Review install")).Clicked() {
-				a.addCommand(*item.Install)
-				acted = true
-			}
-			if item.MakeDefault != nil && ui.Button(c.Key("def:"+item.Manager+item.Version), a.t("Make default")).Clicked() {
-				a.addCommand(*item.MakeDefault)
-				acted = true
-			}
-			if item.Removal != nil && ui.Button(c.Key("rm:"+item.Manager+item.Version), a.t("Review removal")).Clicked() {
-				a.addCommand(*item.Removal)
-				acted = true
-			}
-			if !acted && item.Install == nil && item.MakeDefault == nil && item.Removal == nil {
-				a.tone(c, selected, a.t(item.Hint), c.Theme().TextMuted)
-			}
-		}
-	}).Height(float32(56 + len(a.Catalog)*42))
 	a.pinForm(c)
 }
 
+func (a *App) versionCard(c *ui.Context, i int) {
+	item := a.Catalog[i]
+	theme := c.Theme()
+	ui.Column(c.Key("ver:"+item.Manager+item.Version)).MinWidth(210).Grow(1).MaxWidth(360).Padding(12).Gap(6).Radius(10).Background(theme.Surface).Border(1, theme.Border).Children(func() {
+		ui.Text(c, item.Ecosystem+" · "+a.t(item.Scope)).FontSize(12).TextColor(theme.TextMuted)
+		ui.Text(c, item.Version).Font("monospace").FontSize(16).FontWeight(620)
+		ui.Text(c, item.Manager).FontSize(12)
+		ui.Row(c).Gap(6).Wrap().Children(func() {
+			if item.Install != nil && ui.Button(c.Key("inst:"+item.Manager+item.Version), a.t("Review install")).Clicked() {
+				a.addCommand(*item.Install)
+			}
+			if item.MakeDefault != nil && ui.Button(c.Key("def:"+item.Manager+item.Version), a.t("Make default")).Clicked() {
+				a.addCommand(*item.MakeDefault)
+			}
+			if item.Removal != nil && ui.Button(c.Key("rm:"+item.Manager+item.Version), a.t("Review removal")).Clicked() {
+				a.addCommand(*item.Removal)
+			}
+		})
+		if item.Install == nil && item.MakeDefault == nil && item.Removal == nil && item.Hint != "" {
+			ui.Text(c, a.t(item.Hint)).FontSize(12).TextColor(theme.TextMuted)
+		}
+	})
+}
+
 func (a *App) pinForm(c *ui.Context) {
-	ui.Text(c, a.t("Project pin")).FontSize(16).FontWeight(620)
-	ui.Text(c, a.t("uv python pin writes .python-version in a directory you choose. It does not change an open terminal.")).FontSize(12).TextColor(c.Theme().TextMuted)
-	ui.Row(c).Gap(8).Children(func() {
-		ui.TextInput(c, &a.PinDir).Placeholder(a.t("Project directory")).Grow(1)
-		ui.TextInput(c, &a.PinVersion).Placeholder(a.t("Python version")).Width(140)
+	theme := c.Theme()
+	ui.Column(c).Padding(12).Gap(8).Radius(10).Background(theme.Surface).Border(1, theme.Border).MaxWidth(contentWidth(c)).Children(func() {
+		ui.Text(c, a.t("Project pin")).FontSize(13).FontWeight(640)
+		ui.Text(c, a.t("Writes .python-version in the directory below. The open terminal stays as it is.")).FontSize(12).TextColor(theme.TextMuted)
+		ui.TextInput(c, &a.PinDir).Placeholder(a.t("Project directory"))
+		ui.TextInput(c, &a.PinVersion).Placeholder(a.t("Python version"))
 		if ui.Button(c, a.t("Review pin")).Clicked() {
 			a.reviewPin()
 		}
@@ -600,7 +646,7 @@ func (a *App) locationTable(c *ui.Context) {
 				return
 			}
 			if loc.Err != "" && loc.Command == nil && !loc.Policy.Eligible {
-				a.tone(c, selected, loc.Err, c.Theme().TextMuted)
+				a.tone(c, selected, a.t("Note"), c.Theme().TextMuted)
 				return
 			}
 			label := a.t("Details")
@@ -616,6 +662,14 @@ func (a *App) locationTable(c *ui.Context) {
 			}
 		}
 	}).Height(float32(56 + len(a.Locations)*42))
+	if a.locRow >= 0 && a.locRow < len(a.Locations) {
+		loc := a.Locations[a.locRow]
+		if loc.Err != "" {
+			ui.Text(c, loc.Err).FontSize(12).TextColor(c.Theme().TextMuted)
+		} else if loc.Path != "" {
+			ui.Text(c, loc.Path).Font("monospace").FontSize(12).TextColor(c.Theme().TextMuted)
+		}
+	}
 }
 
 func (a *App) review(c *ui.Context) {
@@ -702,7 +756,7 @@ func (a *App) history(c *ui.Context) {
 				ui.Text(c, item.Error).FontSize(12).TextColor(c.Theme().Danger)
 			}
 			if item.Detail != "" {
-				ui.Text(c, item.Detail).FontSize(12).TextColor(c.Theme().TextMuted)
+				ui.Text(c, a.t(item.Detail)).FontSize(12).TextColor(c.Theme().TextMuted)
 			}
 			if item.Outcome == "removed" && item.TrashPath != "" {
 				root := ""
@@ -861,6 +915,76 @@ func (a *App) pathSelected(path string) bool {
 		return false
 	}
 	return a.outline.Item(*sel) == path
+}
+
+func (a *App) applyChrome(c *ui.Context) {
+	base := c.Theme()
+	if base == nil {
+		return
+	}
+	next := graphiteTheme(base.Dark)
+	if base.FontSize > 0 {
+		next.FontSize = base.FontSize
+	}
+	next.Font = base.Font
+	c.SetTheme(next)
+}
+
+func contentWidth(c *ui.Context) float32 {
+	w, _ := c.Size()
+	inset := float32(56)
+	if w >= 760 {
+		inset += 216
+	}
+	if w-inset < 300 {
+		return 300
+	}
+	return w - inset
+}
+
+func graphiteTheme(dark bool) *ui.Theme {
+	if dark {
+		t := ui.DarkTheme()
+		t.Background = ui.Hex("#141311")
+		t.Surface = ui.Hex("#221f1c")
+		t.SurfaceHover = ui.Hex("#2c2824")
+		t.SurfacePressed = ui.Hex("#38332e")
+		t.Border = ui.Hex("#3a342e")
+		t.Text = ui.Hex("#f3efe8")
+		t.TextMuted = ui.Hex("#a39990")
+		t.Accent = ui.Hex("#e4d2b0")
+		t.AccentHover = ui.Hex("#efe3c8")
+		t.AccentPressed = ui.Hex("#d3be96")
+		t.AccentText = ui.Hex("#1c1a17")
+		t.InactiveAccent = t.Accent
+		t.Danger = ui.Hex("#e07a72")
+		t.Warning = ui.Hex("#e0b15a")
+		t.Success = ui.Hex("#8fbf9a")
+		t.Selection = ui.RGBA(228, 210, 176, 0.28)
+		t.Focus = ui.RGBA(228, 210, 176, 0.7)
+		t.Radius = 8
+		return t
+	}
+	t := ui.LightTheme()
+	t.Background = ui.Hex("#f3f1ec")
+	t.Surface = ui.Hex("#e7e2d8")
+	t.SurfaceHover = ui.Hex("#dbd6cb")
+	t.SurfacePressed = ui.Hex("#d0cbc0")
+	t.Border = ui.Hex("#d5cfc3")
+	t.Text = ui.Hex("#1c1a17")
+	t.TextMuted = ui.Hex("#6f675e")
+	t.Accent = ui.Hex("#24312c")
+	t.AccentHover = ui.Hex("#1b2622")
+	t.AccentPressed = ui.Hex("#141c19")
+	t.AccentText = ui.Hex("#f6f3ec")
+	t.InactiveAccent = t.Accent
+	t.Danger = ui.Hex("#9f3a32")
+	t.Warning = ui.Hex("#9a6230")
+	t.Success = ui.Hex("#3d6b4f")
+	t.Selection = ui.RGBA(36, 49, 44, 0.16)
+	t.Focus = ui.RGBA(36, 49, 44, 0.55)
+	t.Radius = 8
+	return t
 }
 
 func riskColor(theme *ui.Theme, risk string) ui.Color {

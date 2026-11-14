@@ -22,7 +22,7 @@ var CellCount int
 var Sweep float
 
 func Fragment(dst vec4, pos vec2) vec4 {
-	paper := vec4(0.965, 0.957, 0.941, 1)
+	paper := vec4(0.937, 0.925, 0.894, 1)
 	hit := -1
 	for i := 0; i < 12; i++ {
 		if i >= CellCount {
@@ -37,7 +37,7 @@ func Fragment(dst vec4, pos vec2) vec4 {
 		return paper
 	}
 	r := Cells[hit]
-	inset := float(4)
+	inset := float(5)
 	if pos.x < r.x+inset || pos.y < r.y+inset || pos.x > r.x+r.z-inset || pos.y > r.y+r.w-inset {
 		return paper
 	}
@@ -66,42 +66,15 @@ func Fragment(dst vec4, pos vec2) vec4 {
 }
 `)
 
-// scopeShader paints one runtime's state. The mark is a fixed size; it is
-// not a disk measurement.
-var scopeShader = shader.MustCompile(`package main
-
-var Mode float
-var Fill vec4
-
-func Fragment(dst vec4, pos vec2) vec4 {
-	size := rectSize()
-	c := pos - size*0.5
-	d := length(c) / max(min(size.x, size.y)*0.5, float(1))
-	ink := Fill.rgb
-	if Mode < 0.5 {
-		if d > 0.72 && d < 0.98 {
-			return vec4(ink, 1)
-		}
-		return vec4(0, 0, 0, 0)
-	}
-	if d > 0.98 {
-		return vec4(0, 0, 0, 0)
-	}
-	if Mode > 1.5 && d < 0.34 {
-		return vec4(0.11, 0.098, 0.086, 1)
-	}
-	return vec4(ink, 1)
-}
-`)
-
 const (
-	fieldPaper = "#f6f4f0"
-	inkDir     = "#d9d3c7"
-	inkFile    = "#c5d0c6"
-	inkLink    = "#d4d4d8"
-	inkLow     = "#ead9b0"
-	inkCaution = "#e4c4b8"
-	inkText    = "#1c1917"
+	fieldPaper = "#efece4"
+	inkDir     = "#d4cfc4"
+	inkFile    = "#9aab9e"
+	inkLink    = "#c4c1ba"
+	inkClay    = "#d08a45"
+	inkCaution = "#c47b62"
+	inkText    = "#1c1a17"
+	inkMuted   = "#4a453f"
 )
 
 // mapCell is one visible block of the current directory.
@@ -112,6 +85,7 @@ type mapCell struct {
 	Kind       string
 	Incomplete bool
 	Rest       int
+	Share      float32
 	Ink        ui.Color
 	X, Y, W, H float32
 }
@@ -197,23 +171,14 @@ func (a *App) selectPath(path string) {
 	a.wantPath = path
 }
 
-func (a *App) field(c *ui.Context) {
+func (a *App) field(c *ui.Context, minH float32) {
 	node := a.mapNode()
 	if node == nil {
 		return
 	}
-	a.crumbs(c, node)
-	ui.Row(c).Gap(8).Children(func() {
-		if ui.Button(c, a.t("Up")).Disabled(a.Tree == nil || node.Path == a.Tree.Path).Clicked() {
-			a.mapUp()
-		}
-		if ui.Button(c, a.t("Open")).Disabled(!a.canDrill(a.Selected)).Clicked() {
-			a.drill(a.Selected)
-		}
-	})
 	zoom := float32(1)
-	box := ui.Box(c).MinHeight(280).Grow(1).Background(ui.Hex(fieldPaper)).Radius(8).Focusable()
-	if a.drillRun > 0 {
+	box := ui.Box(c).MinHeight(minH).Grow(1).Background(ui.Hex(fieldPaper)).Radius(10).Focusable()
+	if a.drillRun > 0 && !a.Prefs.ReduceMotion {
 		zoom = box.Keyframes(a.drillRun, []ui.Keyframe{
 			{Value: 0.94},
 			{At: 180 * time.Millisecond, Value: 1},
@@ -243,8 +208,6 @@ func (a *App) field(c *ui.Context) {
 			a.selectPath(path)
 		}
 	}
-	ui.Text(c, a.t("Area is logical size. A warmer cell has more reclaimable bytes inside it.")).FontSize(12).TextColor(c.Theme().TextMuted)
-	ui.Text(c, a.rendererLine()).FontSize(12).TextColor(c.Theme().TextMuted)
 }
 
 func (a *App) canDrill(path string) bool {
@@ -315,8 +278,13 @@ func (a *App) paintField(p *ui.Painter, r ui.Rect, node *scan.Entry, zoom float3
 		if cell.W < 72 || cell.H < 32 {
 			continue
 		}
-		p.Text(cell.X+8, cell.Y+8, cell.Name, 13, ui.Hex(inkText))
-		p.Text(cell.X+8, cell.Y+26, human.Bytes(cell.Logical), 11, ui.Hex("#44403c"))
+		p.Text(cell.X+12, cell.Y+10, cell.Name, 14, ui.Hex(inkText))
+		if cell.H >= 48 {
+			p.Text(cell.X+12, cell.Y+30, human.Bytes(cell.Logical), 12, ui.Hex(inkMuted))
+		}
+		if cell.H >= 66 && cell.Share >= 0.05 {
+			p.Text(cell.X+12, cell.Y+48, fmt.Sprintf("%d%% %s", int(cell.Share*100+0.5), a.t("reclaimable")), 11, ui.Hex("#6a3d16"))
+		}
 	}
 }
 
@@ -346,7 +314,7 @@ func (a *App) cellsFor(node *scan.Entry, r ui.Rect) []mapCell {
 		items = append(items, mapWeight{Key: child.Path, Weight: float64(child.Logical)})
 		cells = append(cells, mapCell{
 			Path: child.Path, Name: child.Name, Logical: child.Logical,
-			Kind: cellKind(child), Incomplete: !child.Complete, Ink: cellInk(child),
+			Kind: cellKind(child), Incomplete: !child.Complete, Share: reclaimShare(child), Ink: cellInk(child),
 		})
 	}
 	if restN > 0 {
@@ -391,11 +359,11 @@ func cellInk(e *scan.Entry) ui.Color {
 	case "link":
 		return ui.Hex(inkLink)
 	case "low":
-		return ui.Hex(inkLow)
+		return ui.Hex(inkClay)
 	case "caution":
 		return ui.Hex(inkCaution)
 	default:
-		return mixInk(ui.Hex(inkDir), ui.Hex(inkLow), reclaimShare(e))
+		return mixInk(ui.Hex(inkDir), ui.Hex(inkClay), reclaimShare(e))
 	}
 }
 
@@ -447,7 +415,7 @@ func inkOf(kind string) ui.Color {
 	case "link":
 		return ui.Hex(inkLink)
 	case "low":
-		return ui.Hex(inkLow)
+		return ui.Hex(inkClay)
 	case "caution":
 		return ui.Hex(inkCaution)
 	default:
@@ -516,7 +484,7 @@ func (a *App) drawFieldRects(p *ui.Painter, cells []mapCell) {
 		if cell.W < 1 || cell.H < 1 {
 			continue
 		}
-		pad := float32(4)
+		pad := float32(5)
 		rect := ui.Rect{X: cell.X + pad, Y: cell.Y + pad, W: cell.W - pad*2, H: cell.H - pad*2}
 		if rect.W < 2 || rect.H < 2 {
 			rect = ui.Rect{X: cell.X, Y: cell.Y, W: cell.W, H: cell.H}
@@ -525,9 +493,12 @@ func (a *App) drawFieldRects(p *ui.Painter, cells []mapCell) {
 		if col.A == 0 {
 			col = inkOf(cell.Kind)
 		}
-		p.Fill(rect, col, 4)
+		if cell.Path != "" && cell.Path == a.MapHover && cell.Path != a.Selected {
+			col = mixInk(col, ui.Hex(inkText), 0.08)
+		}
+		p.Fill(rect, col, 6)
 		if cell.Path == a.Selected && cell.Rest == 0 {
-			p.Stroke(rect, ui.Hex(inkText), 4, 2)
+			p.Stroke(rect, ui.Hex(inkText), 6, 2.5)
 		}
 		if cell.Incomplete {
 			p.StrokeDashed(ui.Rect{X: cell.X + 4, Y: cell.Y + 4, W: cell.W - 8, H: cell.H - 8}, ui.Hex("#9a3412"), 3, 1)
@@ -548,48 +519,13 @@ func (a *App) rendererLine() string {
 	}
 }
 
-func (a *App) scopeMark(c *ui.Context, key, mode string) {
-	fill := ui.Hex(inkDir)
-	modeN := float32(0)
-	switch mode {
-	case "installed":
-		fill = ui.Hex(inkFile)
-		modeN = 1
-	case "default":
-		fill = ui.Hex(inkLow)
-		modeN = 2
-	case "missing":
-		fill = ui.Hex("#a8a29e")
+func (a *App) reclaimLabel(n *scan.Entry) (string, bool) {
+	if n == nil || n.Logical == 0 || reclaimShare(n) <= 0 {
+		return a.t("Not reclaimable"), false
 	}
-	ui.Box(c.Key(key)).Size(18, 18).Draw(func(p *ui.Painter, r ui.Rect) {
-		if p.Accelerated() || r.W*r.H <= 800 {
-			scopeShader.Draw(p, r, shader.Options{Uniforms: map[string]any{"Mode": modeN, "Fill": fill}})
-			if !a.Paint.GPU {
-				a.Paint.GPU = p.Accelerated()
-			}
-			return
-		}
-		p.Fill(r, fill, r.W/2)
-	})
-}
-
-func (a *App) scopeRail(c *ui.Context) {
-	if len(a.Probes) == 0 {
-		return
-	}
-	ui.Text(c, a.t("Scope marks are state, not disk size.")).FontSize(12).TextColor(c.Theme().TextMuted)
-	ui.Row(c).Gap(10).Children(func() {
-		for _, probe := range a.Probes {
-			mode := probe.Scope
-			if mode == "" {
-				mode = "missing"
-			}
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-				a.scopeMark(c, "scope:"+probe.Ecosystem+probe.Version+mode, mode)
-				ui.Text(c, probe.Ecosystem+" "+a.t(mode)).FontSize(12).SingleLine()
-			})
-		}
-	})
+	share := reclaimShare(n)
+	bytes := uint64(float64(n.Logical) * float64(share))
+	return human.Bytes(bytes) + " " + a.t("reclaimable"), true
 }
 
 func (a *App) shaderSample(c *ui.Context) {

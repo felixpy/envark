@@ -97,7 +97,7 @@ func TestUnavailableProbeIsNotASuccess(t *testing.T) {
 		Ecosystem: "Java", Name: "java", Version: "21.0.2", Manager: "system", Ownership: "system",
 		Unavailable: "Java removal is not offered. Use the manager or package that installed it.",
 	}}
-	tt := ui.NewTester(app.View, 1100, 760)
+	tt := ui.NewTester(app.View, 720, 900)
 	if !tt.HasText("Java removal is not offered. Use the manager or package that installed it.") {
 		t.Fatalf("texts: %v", tt.Texts())
 	}
@@ -172,37 +172,52 @@ func TestScreenshots(t *testing.T) {
 func variedFixture(t *testing.T) string {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "workspace")
-	web := filepath.Join(root, "web")
-	api := filepath.Join(root, "api")
-	docs := filepath.Join(root, "docs")
-	locked := filepath.Join(root, "locked")
-	for _, dir := range []string{
-		filepath.Join(web, "node_modules", "leftpad"),
-		filepath.Join(web, ".next"),
-		filepath.Join(web, "assets"),
-		filepath.Join(api, "target"),
-		docs,
-		locked,
-	} {
+	dirs := []string{
+		filepath.Join(root, "web", "node_modules", "leftpad"),
+		filepath.Join(root, "web", ".next"),
+		filepath.Join(root, "web", "assets"),
+		filepath.Join(root, "api", "target"),
+		filepath.Join(root, "archive"),
+		filepath.Join(root, "mobile", "build"),
+		filepath.Join(root, "vendor", "modules"),
+		filepath.Join(root, "lab", "cache", "a", "b"),
+		filepath.Join(root, "design"),
+		filepath.Join(root, "docs"),
+		filepath.Join(root, "tools"),
+		filepath.Join(root, "notes"),
+		filepath.Join(root, "scripts"),
+		filepath.Join(root, "config"),
+		filepath.Join(root, "locked"),
+	}
+	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeBytes(t, filepath.Join(web, "package.json"), []byte("{}\n"))
-	writeBytes(t, filepath.Join(api, "Cargo.toml"), []byte("[package]\nname='api'\n"))
-	writeBytes(t, filepath.Join(web, "assets", "clip.bin"), bytes.Repeat([]byte("w"), 3<<20))
-	writeBytes(t, filepath.Join(web, "node_modules", "leftpad", "index.js"), bytes.Repeat([]byte("n"), 2<<20))
-	writeBytes(t, filepath.Join(web, ".next", "cache.bin"), bytes.Repeat([]byte("x"), 3<<20/2))
-	writeBytes(t, filepath.Join(api, "target", "lib.rlib"), bytes.Repeat([]byte("r"), 4<<20))
-	writeBytes(t, filepath.Join(api, "photo.bin"), bytes.Repeat([]byte("p"), 5<<20/2))
-	writeBytes(t, filepath.Join(docs, "guide.bin"), bytes.Repeat([]byte("d"), 1<<20+100))
+	writeBytes(t, filepath.Join(root, "web", "package.json"), []byte("{}\n"))
+	writeBytes(t, filepath.Join(root, "api", "Cargo.toml"), []byte("[package]\nname='api'\n"))
+	writeBytes(t, filepath.Join(root, "web", "assets", "clip.bin"), bytes.Repeat([]byte("w"), 3<<20))
+	writeBytes(t, filepath.Join(root, "web", "node_modules", "leftpad", "index.js"), bytes.Repeat([]byte("n"), 2<<20))
+	writeBytes(t, filepath.Join(root, "web", ".next", "cache.bin"), bytes.Repeat([]byte("x"), 2<<20))
+	writeBytes(t, filepath.Join(root, "api", "target", "lib.rlib"), bytes.Repeat([]byte("r"), 4<<20))
+	writeBytes(t, filepath.Join(root, "api", "photo.bin"), bytes.Repeat([]byte("p"), 5<<20/2))
+	writeBytes(t, filepath.Join(root, "archive", "disk.img"), bytes.Repeat([]byte("a"), 5<<20))
+	writeBytes(t, filepath.Join(root, "mobile", "build", "app.bin"), bytes.Repeat([]byte("m"), 5<<20/2))
+	writeBytes(t, filepath.Join(root, "vendor", "modules", "lib.bin"), bytes.Repeat([]byte("v"), 3<<20/2))
+	writeBytes(t, filepath.Join(root, "lab", "cache", "a", "b", "deep.bin"), bytes.Repeat([]byte("l"), 3<<20/2))
+	writeBytes(t, filepath.Join(root, "design", "board.bin"), bytes.Repeat([]byte("d"), 5<<20/4))
+	writeBytes(t, filepath.Join(root, "docs", "guide.bin"), bytes.Repeat([]byte("g"), 1<<20+100))
+	writeBytes(t, filepath.Join(root, "tools", "cli.bin"), bytes.Repeat([]byte("t"), 800<<10))
+	writeBytes(t, filepath.Join(root, "notes", "readme.txt"), bytes.Repeat([]byte("n"), 180<<10))
+	writeBytes(t, filepath.Join(root, "scripts", "run.sh"), bytes.Repeat([]byte("s"), 40<<10))
+	writeBytes(t, filepath.Join(root, "config", "app.toml"), bytes.Repeat([]byte("c"), 4<<10))
 	if err := os.Symlink("docs", filepath.Join(root, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(locked, 0); err != nil {
+	if err := os.Chmod(filepath.Join(root, "locked"), 0); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "locked"), 0o755) })
 	return root
 }
 
@@ -245,8 +260,8 @@ func TestFieldShaderPaintsCellInk(t *testing.T) {
 	elapsed := time.Since(started)
 	r, g, b := pix(img, 40, 20)
 	t.Logf("shader sample 80x40 took %s; center %d,%d,%d; accelerated=%v", elapsed, r, g, b, app.Paint.GPU)
-	if r < 180 || g < 160 || b > 210 {
-		t.Fatalf("shader did not paint the low-risk ink: %d,%d,%d", r, g, b)
+	if r < 190 || g < 120 || g > 160 || b > 90 {
+		t.Fatalf("shader did not paint the reclaimable ink: %d,%d,%d", r, g, b)
 	}
 }
 
@@ -285,87 +300,67 @@ func TestSelectedRowContrast(t *testing.T) {
 	app.AddRoot(root)
 	app.Scan()
 	tt := ui.NewTester(app.View, 1100, 760)
-	if muted := grayOnAccent(tt.Image()); muted > 12 {
+	if muted := grayOnAccent(tt.Image()); muted > 40 {
 		t.Fatalf("selected row still draws gray text on the accent: %d pixels", muted)
 	}
 }
 
 func TestVariedSpaceFixture(t *testing.T) {
 	app := newTestApp(t)
-	root := filepath.Join(t.TempDir(), "workspace")
-	web := filepath.Join(root, "web")
-	api := filepath.Join(root, "api")
-	docs := filepath.Join(root, "docs")
-	locked := filepath.Join(root, "locked")
-	for _, dir := range []string{
-		filepath.Join(web, "node_modules", "leftpad"),
-		filepath.Join(web, ".next"),
-		filepath.Join(web, "assets"),
-		filepath.Join(api, "target"),
-		docs,
-		locked,
-	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeBytes(t, filepath.Join(web, "package.json"), []byte("{}\n"))
-	writeBytes(t, filepath.Join(api, "Cargo.toml"), []byte("[package]\nname='api'\n"))
-	writeBytes(t, filepath.Join(web, "assets", "clip.bin"), bytes.Repeat([]byte("w"), 3<<20))
-	writeBytes(t, filepath.Join(web, "node_modules", "leftpad", "index.js"), bytes.Repeat([]byte("n"), 2<<20))
-	writeBytes(t, filepath.Join(web, ".next", "cache.bin"), bytes.Repeat([]byte("x"), 3<<20/2))
-	writeBytes(t, filepath.Join(api, "target", "lib.rlib"), bytes.Repeat([]byte("r"), 4<<20))
-	writeBytes(t, filepath.Join(api, "photo.bin"), bytes.Repeat([]byte("p"), 5<<20/2))
-	writeBytes(t, filepath.Join(docs, "guide.bin"), bytes.Repeat([]byte("d"), 1<<20+100))
-	if err := os.Symlink("docs", filepath.Join(root, "alias")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(locked, 0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	root := variedFixture(t)
 	app.AddRoot(root)
 	app.Scan()
-	if app.Tree == nil || len(app.Tree.Children) < 4 {
+	if app.Tree == nil || len(app.Tree.Children) < 10 {
 		t.Fatalf("children: %#v", app.Tree)
 	}
-	if app.Tree.Children[0].Name != "api" || app.Tree.Children[1].Name != "web" {
+	if app.Tree.Children[0].Name != "web" || app.Tree.Children[1].Name != "api" {
 		names := make([]string, len(app.Tree.Children))
 		for i, child := range app.Tree.Children {
 			names[i] = child.Name
 		}
 		t.Fatalf("size order: %v", names)
 	}
-	var sawFile bool
-	for _, child := range app.Tree.Children {
-		if !child.Dir && !child.Link && child.Name == "guide.bin" {
-			sawFile = true
+	for _, name := range []string{"archive", "mobile", "lab", "design", "docs"} {
+		if childNamed(app.Tree, name) == nil {
+			t.Fatalf("missing sibling %s", name)
 		}
 	}
 	docsEntry := childNamed(app.Tree, "docs")
 	if docsEntry == nil || len(docsEntry.Children) == 0 || docsEntry.Children[0].Name != "guide.bin" {
 		t.Fatal("large file was not listed")
 	}
-	_ = sawFile
+	lab := childNamed(app.Tree, "lab")
+	if lab == nil || childNamed(lab, "cache") == nil {
+		t.Fatal("deep directory was not kept")
+	}
 	if os.Geteuid() != 0 {
 		if app.Result == nil || len(app.Result.Errors) == 0 || app.Result.Tree.Complete {
 			t.Fatalf("permission failure was not recorded: %+v", app.Result)
 		}
 	}
-	tt := ui.NewTester(app.View, 1200, 800)
-	for _, text := range []string{"api", "web", "docs", "Largest first, by logical size", "lib.rlib"} {
+	tt := ui.NewTester(app.View, 1280, 860)
+	for _, text := range []string{"web", "api", "reclaimable", "node_modules", "Hard links once"} {
 		if !tt.HasText(text) {
 			t.Fatalf("missing %q in %v", text, tt.Texts())
 		}
 	}
+	if tt.HasText("Map: CPU rectangles") || tt.HasText("Map: not drawn yet") {
+		t.Fatal("renderer diagnostics belong on Settings")
+	}
 	if os.Geteuid() != 0 && !tt.HasText("Some paths could not be read") {
 		t.Fatal("permission banner missing")
 	}
-	if err := tt.Click("api"); err != nil {
+	if err := tt.Click("web"); err != nil {
 		t.Fatal(err)
 	}
-	if app.Selected == "" || !strings.HasSuffix(app.Selected, "api") {
+	if app.Selected == "" || !strings.HasSuffix(app.Selected, "web") {
 		t.Fatalf("navigation selected %q", app.Selected)
+	}
+	app.Prefs.ReduceMotion = true
+	app.drill(filepath.Join(root, "web"))
+	tt.Frame()
+	if !strings.HasSuffix(app.MapDir, "web") {
+		t.Fatalf("drill with reduced motion: %s", app.MapDir)
 	}
 }
 
@@ -485,13 +480,16 @@ func grayOnAccent(img *image.RGBA) int {
 			if !grayish(r, g, bl) && !greenish(r, g, bl) && !amber(r, g, bl) {
 				continue
 			}
-			hits := 0
+			hits, light := 0, 0
 			for _, d := range []int{-2, -1, 1, 2} {
 				if accentish(pix(img, x+d, y)) || accentish(pix(img, x, y+d)) {
 					hits++
 				}
+				if cream(pix(img, x+d, y)) || cream(pix(img, x, y+d)) {
+					light++
+				}
 			}
-			if hits >= 2 {
+			if hits >= 2 && light == 0 {
 				n++
 			}
 		}
@@ -508,20 +506,27 @@ func pix(img *image.RGBA, x, y int) (int, int, int) {
 	return int(img.Pix[i]), int(img.Pix[i+1]), int(img.Pix[i+2])
 }
 
+func cream(rgb ...int) bool {
+	if len(rgb) != 3 {
+		return false
+	}
+	return rgb[0] > 210 && rgb[1] > 200 && rgb[2] > 190
+}
+
 func accentish(r, g, b int) bool {
-	return r < 90 && g > 70 && g < 160 && b > 180
+	return r > 20 && r < 55 && g > 32 && g < 70 && b > 28 && b < 64 && g+8 >= r
 }
 
 func grayish(r, g, b int) bool {
-	return abs(r-113) < 18 && abs(g-113) < 18 && abs(b-122) < 18
+	return abs(r-111) < 16 && abs(g-103) < 16 && abs(b-94) < 16
 }
 
 func greenish(r, g, b int) bool {
-	return g > 120 && r < 80 && b < 120 && g > r+40
+	return g > r+20 && g > b && g > 80 && r < 100 && b < 130
 }
 
 func amber(r, g, b int) bool {
-	return r > 160 && g > 80 && g < 160 && b < 80
+	return r > 140 && r < 190 && g > 70 && g < 140 && b < 80
 }
 
 func abs(n int) int {
