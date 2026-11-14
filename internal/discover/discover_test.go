@@ -18,7 +18,7 @@ func TestDiscoveryAndUnavailableManagers(t *testing.T) {
 	write(t, filepath.Join(bin, "node"), "#!/bin/sh\nif [ \"$1\" = \"-v\" ]; then echo v22.14.0; exit 0; fi\nexit 1\n")
 	write(t, filepath.Join(bin, "fnm"), "#!/bin/sh\nif [ \"$1\" = \"list\" ]; then printf '* v22.14.0 default\\n  v20.11.0\\n'; exit 0; fi\nexit 1\n")
 	write(t, filepath.Join(bin, "python3"), "#!/bin/sh\necho 'Python 3.12.1'\n")
-	write(t, filepath.Join(bin, "uv"), "#!/bin/sh\nif [ \"$1\" = \"python\" ]; then printf 'cpython-3.12.1-linux (default)\\ncpython-3.11.8-linux\\n'; exit 0; fi\nexit 1\n")
+	write(t, filepath.Join(bin, "uv"), "#!/bin/sh\nif [ \"$1\" = \"python\" ]; then printf 'cpython-3.12.1-linux (default)\\ncpython-3.11.8-linux\\ncpython-3.11.9-linux <download available>\\n'; exit 0; fi\nexit 1\n")
 	write(t, filepath.Join(bin, "java"), "#!/bin/sh\necho 'openjdk version \"21.0.2\"' >&2\nexit 1\n")
 	write(t, filepath.Join(bin, "rustc"), "#!/bin/sh\necho 'rustc 1.81.0'\n")
 	write(t, filepath.Join(bin, "rustup"), "#!/bin/sh\nif [ \"$1\" = \"toolchain\" ]; then printf 'stable-x86_64-unknown-linux-gnu (active, default)\\nnightly-x86_64-unknown-linux-gnu\\n'; exit 0; fi\nexit 1\n")
@@ -52,6 +52,9 @@ func TestDiscoveryAndUnavailableManagers(t *testing.T) {
 	pyOld := findProbe(probes, "Python", "3.11.8")
 	if pyOld == nil || pyOld.Removal == nil {
 		t.Fatalf("python: %+v", pyOld)
+	}
+	if findProbe(probes, "Python", "3.11.9") != nil {
+		t.Fatal("a downloadable Python was listed as installed")
 	}
 	goProbe := findProbe(probes, "Go", "go1.27.4")
 	if goProbe == nil || goProbe.Removal != nil || !strings.Contains(goProbe.Unavailable, "not offered") {

@@ -450,13 +450,15 @@ func (a *App) startDiscover() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	a.cancelEnv = cancel
 	run := func() {
-		defer cancel()
 		probes := discover.Discover(ctx, env)
 		locs := discover.Locations(ctx, env)
+		// Read the context before releasing it. Update can run after this
+		// function returns, and cancelling first would look like a user cancel.
+		stopped := ctx.Err()
 		apply := func() {
 			a.EnvRunning = false
 			a.cancelEnv = nil
-			if ctx.Err() != nil {
+			if stopped != nil {
 				a.EnvErr = "Version check cancelled."
 				return
 			}
@@ -465,9 +467,10 @@ func (a *App) startDiscover() {
 		}
 		if a.win == nil {
 			apply()
-			return
+		} else {
+			a.win.Update(apply)
 		}
-		a.win.Update(apply)
+		cancel()
 	}
 	if a.win == nil {
 		run()
@@ -487,12 +490,12 @@ func (a *App) fetchRemote() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	a.cancelEnv = cancel
 	run := func() {
-		defer cancel()
 		items, notes, err := discover.Remote(ctx, env)
+		stopped := ctx.Err()
 		apply := func() {
 			a.EnvRunning = false
 			a.cancelEnv = nil
-			if ctx.Err() != nil {
+			if stopped != nil {
 				a.Catalog = nil
 				a.EnvErr = "Version check cancelled."
 				return
@@ -505,9 +508,10 @@ func (a *App) fetchRemote() {
 		}
 		if a.win == nil {
 			apply()
-			return
+		} else {
+			a.win.Update(apply)
 		}
-		a.win.Update(apply)
+		cancel()
 	}
 	if a.win == nil {
 		run()

@@ -444,6 +444,9 @@ func parseVersionLines(text string, node bool) []versionRow {
 	var out []versionRow
 	seen := map[string]bool{}
 	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(strings.ToLower(line), "download available") {
+			continue
+		}
 		active := strings.Contains(line, "default") || strings.Contains(line, "active") || strings.HasPrefix(strings.TrimSpace(line), "*")
 		for _, field := range strings.Fields(line) {
 			field = strings.Trim(field, "*,()")
